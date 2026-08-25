@@ -19,12 +19,41 @@ export async function getCurrentUser(): Promise<AppSession | null> {
 
   const headerStore = await headers();
   const cookieStore = await cookies();
+
+  // 1. Check direct user ID
+  const userId = headerStore.get("x-demo-user-id") ?? cookieStore.get("demo-user-id")?.value;
+  if (userId) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (user) return user;
+  }
+
+  // 2. Check email
   const demoEmail = headerStore.get("x-demo-user-email");
   const demoCookieEmail = cookieStore.get("demo-user-email")?.value;
   const fallbackEmail = process.env.DEMO_USER_EMAIL;
   const email = demoEmail ?? demoCookieEmail ?? fallbackEmail;
-  if (!email) return null;
-  return prisma.user.findUnique({ where: { email } });
+  if (email) {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user) return user;
+  }
+
+  // 3. Check mobile
+  const demoMobile = headerStore.get("x-demo-user-mobile") ?? cookieStore.get("demo-user-mobile")?.value;
+  if (demoMobile) {
+    const cleanMobile = demoMobile.trim();
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { mobile: cleanMobile },
+          { mobile: `+91${cleanMobile.replace(/^\+91/, "")}` },
+          { mobile: cleanMobile.replace(/^\+91/, "") }
+        ]
+      }
+    });
+    if (user) return user;
+  }
+
+  return null;
 }
 
 export async function requireUser(allowedRoles?: Role[]) {

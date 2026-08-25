@@ -1,18 +1,29 @@
 import Link from "next/link";
-import { Boxes, Building2, ClipboardCheck, FileText, LayoutDashboard, PackageSearch, ReceiptText, Shield, Users } from "lucide-react";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { Boxes, Building2, ClipboardCheck, FileText, LayoutDashboard, LogOut, PackageSearch, ReceiptText, Shield, Truck, Users } from "lucide-react";
 import { Role } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/orders", label: "Orders", icon: ClipboardCheck },
+  { href: "/dashboard/orders/track", label: "Track & Verify", icon: Truck },
   { href: "/dashboard/inventory", label: "Inventory", icon: Boxes },
   { href: "/dashboard/clients", label: "Clients", icon: Users },
   { href: "/dashboard/accounting", label: "Accounting", icon: FileText },
-  { href: "/dashboard/invoice-import", label: "Invoice Import", icon: ReceiptText },
   { href: "/dashboard/reports", label: "Reports", icon: PackageSearch },
   { href: "/platform", label: "Platform", icon: Shield }
 ];
+
+async function signOut() {
+  "use server";
+  const cookieStore = await cookies();
+  cookieStore.delete("demo-user-id");
+  cookieStore.delete("demo-user-email");
+  cookieStore.delete("demo-user-mobile");
+  redirect("/login");
+}
 
 export function AppShell({ children, role, name }: { children: React.ReactNode; role: Role; name: string }) {
   return (
@@ -30,7 +41,6 @@ export function AppShell({ children, role, name }: { children: React.ReactNode; 
             const Icon = item.icon;
             if (item.href === "/platform" && role !== "PLATFORM_ADMIN") return null;
             if (item.href.includes("accounting") && !["WAREHOUSE_OWNER", "ACCOUNTANT", "CLIENT"].includes(role)) return null;
-            if (item.href.includes("invoice-import") && !["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "ACCOUNTANT"].includes(role)) return null;
             if (item.href.includes("clients") && role === "WAREHOUSE_STAFF") return null;
             return (
               <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
@@ -47,6 +57,15 @@ export function AppShell({ children, role, name }: { children: React.ReactNode; 
           <div className="flex items-center gap-3">
             <Badge>{role}</Badge>
             <span className="text-sm font-medium">{name}</span>
+            <form action={signOut}>
+              <button
+                type="submit"
+                title="Switch User / Sign Out"
+                className="flex items-center text-slate-400 hover:text-red-600 transition ml-2 p-1.5 rounded hover:bg-slate-100"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </form>
           </div>
         </header>
         <div className="p-5 lg:p-8">{children}</div>

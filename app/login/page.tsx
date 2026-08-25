@@ -1,102 +1,237 @@
-// app/login/page.tsx
-import { Building2, Lock } from "lucide-react";
+import { Building2, Lock, Shield, UserCheck, ArrowRight, Sparkles } from "lucide-react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
 
-const demoAccounts = [
-  { label: "Platform Admin", email: "platform-admin@example.test" },
-  { label: "Owner", email: "owner-apex@example.test" },
-  { label: "Moderator", email: "moderator-apex@example.test" },
-  { label: "Accountant", email: "accountant-apex@example.test" },
-  { label: "Staff", email: "staff-apex@example.test" }
-];
+async function signIn(formData: FormData): Promise<void> {
+  "use server";
+  
+  const identifier = String(formData.get("identifier") ?? "").trim();
+  if (!identifier) {
+    redirect("/login?error=missing_input");
+  }
 
-export default function LoginPage() {
-  async function demoSignIn(formData: FormData) {
-    "use server";
-    const mobile = String(formData.get("mobile") ?? "");
-    const otp = String(formData.get("otp") ?? "");
-    // For demo, you can validate OTP logic here
-    if (!mobile || !otp) throw new Error("Mobile and OTP required.");
-    const cookieStore = await cookies();
-    cookieStore.set("demo-user-mobile", mobile, {
+  // Look up user by email or mobile
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { email: identifier },
+        { mobile: identifier },
+        { mobile: `+91${identifier.replace(/^\+91/, "")}` },
+        { mobile: identifier.replace(/^\+91/, "") },
+      ],
+    },
+  });
+
+  if (!user) {
+    redirect("/login?error=user_not_found");
+  }
+
+  const cookieStore = await cookies();
+  cookieStore.set("demo-user-id", user.id, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 8, // 8 hours
+  });
+  if (user.email) {
+    cookieStore.set("demo-user-email", user.email, {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 8,
     });
-    redirect("/dashboard");
+  }
+  if (user.mobile) {
+    cookieStore.set("demo-user-mobile", user.mobile, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 8,
+    });
   }
 
+  redirect("/dashboard");
+}
+
+async function quickRoleSignIn(formData: FormData): Promise<void> {
+  "use server";
+  const userId = String(formData.get("userId") ?? "").trim();
+  if (!userId) {
+    redirect("/login");
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    redirect("/login?error=user_not_found");
+  }
+
+  const cookieStore = await cookies();
+  cookieStore.set("demo-user-id", user.id, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 8,
+  });
+  if (user.email) {
+    cookieStore.set("demo-user-email", user.email, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 8,
+    });
+  }
+  if (user.mobile) {
+    cookieStore.set("demo-user-mobile", user.mobile, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 8,
+    });
+  }
+
+  redirect("/dashboard");
+}
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const params = await searchParams;
+  const hasError = !!params?.error;
+  const errorMessage =
+    params?.error === "missing_input"
+      ? "Please enter your registered email or mobile number."
+      : params?.error === "user_not_found"
+      ? "No user account was found with that email or mobile number."
+      : "An error occurred during sign-in. Please try again.";
+
+  // Fetch sample demo accounts across roles for 1-click test login
+  const demoUsers = await prisma.user.findMany({
+    where: {
+      role: {
+        in: ["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "ACCOUNTANT", "CLIENT"],
+      },
+    },
+    include: {
+      tenant: {
+        select: {
+          name: true,
+        },
+      },
+    },
+    take: 6,
+    orderBy: { createdAt: "asc" },
+  });
+
+  const roleBadgeTones: Record<string, "neutral" | "green" | "amber" | "red" | "blue"> = {
+    WAREHOUSE_OWNER: "blue",
+    WAREHOUSE_MODERATOR: "amber",
+    WAREHOUSE_STAFF: "green",
+    ACCOUNTANT: "neutral",
+    CLIENT: "neutral",
+  };
+
   return (
-    <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
-      <Card className="w-full max-w-md">
-        <div className="mb-6 flex items-center gap-3">
-          <Building2 className="h-8 w-8 text-primary" />
-          <div>
-            <h1 className="text-xl font-semibold">WarehouseOS sign in</h1>
-            <p className="text-sm text-slate-500">Staff and platform accounts use mobile + OTP.</p>
+    <main className="grid min-h-screen place-items-center bg-slate-100 p-4 md:p-8">
+      <div className="w-full max-w-lg space-y-4">
+        <Card className="p-8 shadow-md border-border/80">
+          {/* Header */}
+          <div className="mb-6 flex flex-col items-center text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-teal-50 text-primary shadow-sm">
+              <Building2 className="h-8 w-8" />
+            </div>
+            <h1 className="mt-4 text-2xl font-bold text-slate-900">Sign in to Warevo</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Commercial multi-tenant warehouse & inventory operating system
+            </p>
           </div>
-        </div>
 
-        <div className="space-y-3">
-          <input
-            className="h-11 w-full rounded border border-border px-3"
-            placeholder="Mobile Number"
-            type="tel"
-            required
-          />
-          <input
-            className="h-11 w-full rounded border border-border px-3"
-            placeholder="OTP"
-            type="text"
-            required
-          />
-          <Button className="w-full justify-center" type="submit" formAction={demoSignIn}>
-            <Lock className="h-4 w-4" />
-            Sign in
-          </Button>
-        </div>
+          {/* Error Banner */}
+          {hasError && (
+            <div className="mb-5 rounded-lg bg-red-50 p-3.5 text-xs font-medium text-red-700 border border-red-200">
+              {errorMessage}
+            </div>
+          )}
 
-        <div className="mt-5 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          <div className="font-medium">Local demo mode</div>
-          <p className="mt-1">Use a seeded demo role after running the Prisma migrate and seed commands.</p>
-          <div className="mt-3 grid gap-2">
-            {demoAccounts.map((account) => (
-              <form key={account.email} action={demoSignIn}>
-                <input type="hidden" name="mobile" value={account.email} />
-                <input type="hidden" name="otp" value="123456" />
-                <Button className="w-full justify-center" variant="secondary">
-                  {account.label}
-                </Button>
-              </form>
-            ))}
+          {/* Direct Sign-In Form */}
+          <form action={signIn} className="space-y-4">
+            <div>
+              <label htmlFor="identifier" className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+                Email Address or Mobile Number
+              </label>
+              <input
+                id="identifier"
+                name="identifier"
+                type="text"
+                placeholder="e.g. staff-apex@example.test or +919800000001"
+                required
+                className="h-11 w-full rounded-md border border-border bg-slate-50 px-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-primary focus:bg-white focus:outline-none"
+              />
+            </div>
+
+            <Button className="w-full justify-center h-11 text-sm font-semibold shadow-sm" type="submit">
+              <Lock className="h-4 w-4" />
+              Sign in to Dashboard
+            </Button>
+          </form>
+
+          {/* Divider */}
+          <div className="my-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="text-xs font-medium uppercase text-slate-400">Or Quick Demo Sign-in</span>
+            <div className="h-px flex-1 bg-slate-200" />
           </div>
-        </div>
-      </Card>
-      
 
-      {/* Semi-transparent button in top-right corner */}
-      <Link
-        href="/admin-login"
-        className="absolute top-2 right-2"
-        style={{
-          backgroundColor: "rgba(255, 255, 255, 0.3)",
-          color: "#00e21e",
-          border: "none",
-          padding: "8px 16px",
-          borderRadius: "4px",
-          cursor: "pointer",
-          fontSize: "14px",
-          fontWeight: "bold",
-        }}
-      >
-        <Building2 className="h-5 w-5" />
-      </Link>
+          {/* Quick Demo Role Switcher */}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+              1-Click role preview for testing & evaluation:
+            </p>
+            
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {demoUsers.map((user) => (
+                <form key={user.id} action={quickRoleSignIn}>
+                  <input type="hidden" name="userId" value={user.id} />
+                  <button
+                    type="submit"
+                    className="w-full flex flex-col items-start p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 hover:bg-teal-50/50 hover:border-teal-300 transition text-left group"
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="text-xs font-semibold text-slate-800 group-hover:text-primary transition truncate max-w-[130px]">
+                        {user.name}
+                      </span>
+                      <Badge tone={roleBadgeTones[user.role] ?? "neutral"}>
+                        {user.role.replace("WAREHOUSE_", "")}
+                      </Badge>
+                    </div>
+                    <span className="text-[11px] text-slate-500 truncate max-w-[180px] mt-0.5">
+                      {user.tenant?.name ? user.tenant.name : user.email ?? user.mobile}
+                    </span>
+                  </button>
+                </form>
+              ))}
+            </div>
+          </div>
+
+          {/* Admin Login Link */}
+          <div className="mt-8 border-t border-border pt-4 text-center">
+            <Link
+              href="/admin-login"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-primary transition"
+            >
+              <Shield className="h-3.5 w-3.5 text-primary" />
+              Are you a Platform Administrator? <span className="underline font-semibold">Admin Login</span>
+            </Link>
+          </div>
+        </Card>
+      </div>
     </main>
-    
   );
 }
