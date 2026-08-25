@@ -39,9 +39,14 @@ export function AppShell({ children, role, name }: { children: React.ReactNode; 
         <nav className="grid gap-1 p-3">
           {nav.map((item) => {
             const Icon = item.icon;
+            // Platform admin only
             if (item.href === "/platform" && role !== "PLATFORM_ADMIN") return null;
-            if (item.href.includes("accounting") && !["WAREHOUSE_OWNER", "ACCOUNTANT", "CLIENT"].includes(role)) return null;
-            if (item.href.includes("clients") && role === "WAREHOUSE_STAFF") return null;
+            // CLIENT: only Dashboard, Orders overview, and Track & Verify
+            if (role === "CLIENT" && !["/dashboard", "/dashboard/orders", "/dashboard/orders/track"].includes(item.href)) return null;
+            // Clients page: hidden from WAREHOUSE_STAFF
+            if (item.href === "/dashboard/clients" && role === "WAREHOUSE_STAFF") return null;
+            // Accounting: hidden from WAREHOUSE_STAFF (CLIENT already blocked above)
+            if (item.href === "/dashboard/accounting" && role === "WAREHOUSE_STAFF") return null;
             return (
               <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
                 <Icon className="h-4 w-4" />

@@ -1,43 +1,199 @@
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { ClientsDirectoryView } from "@/components/clients-directory-view";
 
 export default async function ClientsPage() {
-  const user = await requireUser(["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "ACCOUNTANT", "CLIENT", "PLATFORM_ADMIN"]);
+  const user = await requireUser(["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "ACCOUNTANT", "PLATFORM_ADMIN"]);
+  const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+
   const clients = await prisma.client.findMany({
-    where: user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" },
-    include: { orders: true },
-    orderBy: { companyName: "asc" }
+    where: tenantWhere,
+    include: {
+      orders: {
+        select: {
+          id: true,
+          orderNumber: true,
+          totalAmount: true,
+          status: true,
+        },
+      },
+    },
+    orderBy: { companyName: "asc" },
   });
+
+  async function addClientAction(data: {
+    companyName: string;
+    contactPerson: string;
+    mobile: string;
+    email?: string;
+    gstNumber?: string;
+    billingAddress?: string;
+    shippingAddress?: string;
+  }) {
+    "use server";
+
+    const currentUser = await requireUser(["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "PLATFORM_ADMIN"]);
+    let tenantId = currentUser.tenantId;
+
+    if (!tenantId) {
+      const firstTenant = await prisma.tenant.findFirst();
+      tenantId = firstTenant?.id ?? "";
+    }
+
+    if (!tenantId) {
+      throw new Error("No organization tenant found.");
+    }
+
+    // Check if employee with same mobile already exists under this tenant
+    const existing = await prisma.client.findFirst({
+      where: {
+        tenantId,
+        mobile: data.mobile,
+      },
+    });
+
+    if (existing) {
+      throw new Error(`An employee with mobile ${data.mobile} is already registered under ${existing.companyName}.`);
+    }
+
+    // Check if user already exists with this mobile or email
+    let userId: string | null = null;
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { mobile: data.mobile },
+          ...(data.email ? [{ email: data.email }] : []),
+        ],
+      },
+    });
+
+    if (existingUser) {
+      userId = existingUser.id;
+    } else {
+      const createdUser = await prisma.user.create({
+        data: {
+          tenantId,
+          name: data.contactPerson,
+          mobile: data.mobile,
+          email: data.email || null,
+          role: "CLIENT",
+          status: "ACTIVE",
+        },
+      });
+      userId = createdUser.id;
+    }
+
+    await prisma.client.create({
+      data: {
+        tenantId,
+        userId,
+        companyName: data.companyName,
+        contactPerson: data.contactPerson,
+        mobile: data.mobile,
+        email: data.email || null,
+        gstNumber: data.gstNumber || null,
+        billingAddress: data.billingAddress || data.shippingAddress || "Client Billing Address",
+        shippingAddress: data.shippingAddress || data.billingAddress || "Client Shipping Address",
+      },
+    });
+
+    revalidatePath("/dashboard/clients");
+    revalidatePath("/dashboard/orders/new");
+    revalidatePath("/dashboard/orders/track");
+    revalidatePath("/admin-dashboard");
+  }
+
+  async function updateClientAction(data: {
+    id: string;
+    companyName: string;
+    contactPerson: string;
+    mobile: string;
+    email?: string;
+    gstNumber?: string;
+    billingAddress?: string;
+    shippingAddress?: string;
+    status: string;
+  }) {
+    "use server";
+
+    const currentUser = await requireUser(["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "PLATFORM_ADMIN"]);
+    let tenantId = currentUser.tenantId;
+
+    if (!tenantId) {
+      const firstTenant = await prisma.tenant.findFirst();
+      tenantId = firstTenant?.id ?? "";
+    }
+
+    if (!tenantId) {
+      throw new Error("No organization tenant found.");
+    }
+
+    // Check if mobile already exists for another client
+    const existing = await prisma.client.findFirst({
+      where: {
+        tenantId,
+        mobile: data.mobile,
+        id: { not: data.id },
+      },
+    });
+
+    if (existing) {
+      throw new Error(`An employee with mobile ${data.mobile} is already registered under ${existing.companyName}.`);
+    }
+
+    const updatedClient = await prisma.client.update({
+      where: { id: data.id },
+      data: {
+        companyName: data.companyName,
+        contactPerson: data.contactPerson,
+        mobile: data.mobile,
+        email: data.email || null,
+        gstNumber: data.gstNumber || null,
+        billingAddress: data.billingAddress || data.shippingAddress || "Client Billing Address",
+        shippingAddress: data.shippingAddress || data.billingAddress || "Client Shipping Address",
+        status: data.status as any,
+      },
+    });
+
+    // Also update associated user if linked
+    if (updatedClient.userId) {
+      await prisma.user.update({
+        where: { id: updatedClient.userId },
+        data: {
+          name: data.contactPerson,
+          mobile: data.mobile,
+          email: data.email || null,
+        },
+      });
+    }
+
+    revalidatePath("/dashboard/clients");
+    revalidatePath("/dashboard/orders/new");
+    revalidatePath("/dashboard/orders/track");
+    revalidatePath("/admin-dashboard");
+  }
+
   return (
-    <section className="space-y-5">
+    <section className="space-y-6 pb-12">
       <div>
-        <h1 className="text-2xl font-semibold">Clients</h1>
-        <p className="text-sm text-slate-500">Client records are owner/moderator-created; no self-registration path is exposed.</p>
+        <h1 className="text-2xl font-bold text-slate-900">Client Companies & Employee Directory</h1>
+        <p className="text-sm text-slate-500">
+          Manage corporate client accounts, register multiple employee contacts per company, and track delivery destinations.
+        </p>
       </div>
-      <Card>
-        <div className="mb-4 grid gap-3 md:grid-cols-3">
-          <input className="h-10 rounded border border-border px-3 text-sm" placeholder="Company, contact, mobile" />
-          <select className="h-10 rounded border border-border px-3 text-sm"><option>Status</option></select>
-          <input className="h-10 rounded border border-border px-3 text-sm" placeholder="GST number" />
-        </div>
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase text-slate-500"><tr><th className="py-2">Company</th><th>Contact</th><th>Mobile</th><th>GST</th><th>Status</th><th>Orders</th></tr></thead>
-          <tbody>
-            {clients.map((client) => (
-              <tr key={client.id} className="border-t border-border">
-                <td className="py-3 font-medium">{client.companyName}</td>
-                <td>{client.contactPerson}</td>
-                <td>{client.mobile}</td>
-                <td>{client.gstNumber}</td>
-                <td><Badge tone={client.status === "ACTIVE" ? "green" : "neutral"}>{client.status}</Badge></td>
-                <td>{client.orders.length}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+
+      <ClientsDirectoryView
+        clients={clients.map((c) => ({
+          ...c,
+          orders: c.orders.map((o) => ({
+            ...o,
+            totalAmount: Number(o.totalAmount),
+          })),
+        }))}
+        onAddClient={addClientAction}
+        onUpdateClient={updateClientAction}
+      />
     </section>
   );
 }

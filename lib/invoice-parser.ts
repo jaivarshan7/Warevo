@@ -2,6 +2,7 @@ export interface ExtractedInvoiceData {
   invoiceNumber: string;
   invoiceDate: string;
   clientName: string;
+  contactPerson?: string;
   clientMobile: string;
   clientGstin: string;
   clientAddress: string;
@@ -20,7 +21,8 @@ export interface ExtractedInvoiceData {
 export const samplePureAuraInvoice: ExtractedInvoiceData = {
   invoiceNumber: "2324",
   invoiceDate: "2026-08-17",
-  clientName: "PSS Multiplex - Tenkasi",
+  clientName: "PSS Multiplex",
+  contactPerson: "John Doe (Store Manager)",
   clientMobile: "9344890042",
   clientGstin: "33AAYFP5618B1Z4",
   clientAddress: "510 RAILWAY FEEDER ROAD TENKASI, Tamil Nadu",

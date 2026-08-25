@@ -98,6 +98,7 @@ interface OrderTrackerViewProps {
     invoiceNumber: string;
     clientId: string;
     newClientName?: string;
+    newContactPerson?: string;
     newClientMobile?: string;
     newClientGstin?: string;
     newClientAddress?: string;
@@ -113,13 +114,7 @@ interface OrderTrackerViewProps {
   }) => Promise<void>;
 }
 
-const defaultChecklistItems = [
-  "All products match the invoice specifications and catalog SKUs",
-  "Delivered quantities match the invoice and packing slip (393 items)",
-  "Package seals and containers intact with zero evidence of tampering",
-  "Zero visible structural, leakage, or chemical container damage",
-  "Proof of Delivery (POD) / Tax Invoice copy verified and signed",
-];
+
 
 const timelineSteps = [
   { key: "ISSUED", label: "Order Issued", desc: "Order created from invoice" },
@@ -147,12 +142,13 @@ export function OrderTrackerView({
   // Selected Order for tracking
   const activeOrder = orders.find((o) => o.id === selectedOrderId) ?? orders[0];
 
-  // Checklist State
-  const [checklist, setChecklist] = useState<Array<{ text: string; checked: boolean }>>(
-    defaultChecklistItems.map((text) => ({ text, checked: true }))
-  );
+  // Item confirmed checkboxes (CLIENT role — one checkbox per item)
+  const [itemConfirmed, setItemConfirmed] = useState<Record<string, boolean>>({});
+  const allItemsConfirmed = activeOrder
+    ? activeOrder.items.every((item) => itemConfirmed[item.id])
+    : false;
 
-  // Item Received Quantities State
+  // Item Received Quantities State (warehouse staff)
   const [itemReceipts, setItemReceipts] = useState<Record<string, { received: number; damaged: number }>>({});
   const [verificationDecision, setVerificationDecision] = useState<"VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED">("VERIFIED");
   const [inspectionComments, setInspectionComments] = useState<string>("");
@@ -220,11 +216,6 @@ export function OrderTrackerView({
     });
   };
 
-  const handleChecklistToggle = (index: number) => {
-    const next = [...checklist];
-    next[index].checked = !next[index].checked;
-    setChecklist(next);
-  };
 
   const handleReceiptChange = (itemId: string, field: "received" | "damaged", val: number) => {
     setItemReceipts({
@@ -240,20 +231,42 @@ export function OrderTrackerView({
     e.preventDefault();
     if (!activeOrder) return;
 
+    // CLIENT role: derive status automatically from per-item checkboxes
+    let finalStatus: "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" = verificationDecision;
+    if (userRole === "CLIENT") {
+      const confirmedCount = activeOrder.items.filter((item) => itemConfirmed[item.id]).length;
+      if (confirmedCount === activeOrder.items.length) {
+        finalStatus = "VERIFIED";
+      } else if (confirmedCount > 0) {
+        finalStatus = "PARTIALLY_VERIFIED";
+      } else {
+        finalStatus = "REJECTED";
+      }
+    }
+
+    // Build responses from per-item confirmations for CLIENT
+    const responses =
+      userRole === "CLIENT"
+        ? activeOrder.items.map((item) => ({
+            text: `Received ${item.quantity} × ${item.product.name} (${item.product.sku})`,
+            checked: !!itemConfirmed[item.id],
+          }))
+        : [];
+
     try {
       setIsSubmitting(true);
       setFeedbackMessage(null);
 
       await onVerifyOrder({
         orderId: activeOrder.id,
-        status: verificationDecision,
+        status: finalStatus,
         comments: inspectionComments,
-        responses: checklist,
+        responses,
         itemReceivedMap: itemReceipts,
       });
 
       setFeedbackMessage({
-        text: `Order ${activeOrder.orderNumber} successfully marked as ${verificationDecision}! The invoice is officially stamped verified.`,
+        text: `Order ${activeOrder.orderNumber} successfully marked as ${finalStatus}! The invoice is officially stamped verified.`,
         type: "success",
       });
       setIsSubmitting(false);
@@ -282,6 +295,7 @@ export function OrderTrackerView({
         invoiceNumber: extractedData.invoiceNumber,
         clientId: existingClient ? existingClient.id : "NEW",
         newClientName: extractedData.clientName,
+        newContactPerson: extractedData.contactPerson || extractedData.clientName,
         newClientMobile: extractedData.clientMobile,
         newClientGstin: extractedData.clientGstin,
         newClientAddress: extractedData.clientAddress,
@@ -382,23 +396,26 @@ export function OrderTrackerView({
             }`}
           >
             <Truck className="h-4 w-4" />
-            Track & Verify Orders ({orders.length})
+            {userRole === "CLIENT" ? "My Deliveries" : `Track & Verify Orders (${orders.length})`}
           </button>
 
-          <button
-            onClick={() => {
-              setActiveTab("upload");
-              if (!extractedData) handleLoadSample();
-            }}
-            className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
-              activeTab === "upload"
-                ? "bg-white text-slate-900 shadow-sm"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <Upload className="h-4 w-4 text-primary" />
-            Upload Invoice / Spreadsheet File
-          </button>
+          {/* Upload tab: hidden for CLIENT role — only warehouse staff can import invoices */}
+          {userRole !== "CLIENT" && (
+            <button
+              onClick={() => {
+                setActiveTab("upload");
+                if (!extractedData) handleLoadSample();
+              }}
+              className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "upload"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Upload className="h-4 w-4 text-primary" />
+              Upload Invoice / Spreadsheet File
+            </button>
+          )}
         </div>
 
         {activeTab === "track" && primaryInvoice && (
@@ -444,7 +461,7 @@ export function OrderTrackerView({
                 >
                   {orders.map((o) => (
                     <option key={o.id} value={o.id}>
-                      {o.orderNumber} — {o.client.companyName} ({o.items.length} items · {o.status})
+                      {o.orderNumber} — {o.client.companyName} ({o.client.contactPerson}) · {o.status}
                     </option>
                   ))}
                 </select>
@@ -468,9 +485,12 @@ export function OrderTrackerView({
                       </Badge>
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                      <span className="flex items-center gap-1 font-medium text-slate-700">
-                        <Building2 className="h-3.5 w-3.5 text-slate-400" />
+                      <span className="flex items-center gap-1 font-bold text-slate-900">
+                        <Building2 className="h-3.5 w-3.5 text-slate-500" />
                         {activeOrder.client.companyName}
+                      </span>
+                      <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded font-medium">
+                        Attn: {activeOrder.client.contactPerson} ({activeOrder.client.mobile})
                       </span>
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3.5 w-3.5 text-slate-400" />
@@ -546,180 +566,206 @@ export function OrderTrackerView({
                 </div>
               </Card>
 
-              {/* Delivery Verification Checklist Form */}
+              {/* Delivery Verification Form */}
               <form onSubmit={handleVerifySubmit} className="space-y-6">
-                {/* Item-by-item verification table */}
-                <Card className="p-6">
-                  <h2 className="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
-                    <Package className="h-4 w-4 text-primary" />
-                    1. Product Receiving & Physical Inspection ({activeOrder.items.length} Products)
-                  </h2>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead className="border-b border-border bg-slate-50 text-xs font-semibold uppercase text-slate-500">
-                        <tr>
-                          <th className="px-4 py-2.5">Item Name & SKU</th>
-                          <th className="px-4 py-2.5 text-center">Expected Qty</th>
-                          <th className="px-4 py-2.5 text-center w-36">Received Qty</th>
-                          <th className="px-4 py-2.5 text-center w-36">Damaged / Missing</th>
-                          <th className="px-4 py-2.5 text-right">Verification Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {activeOrder.items.map((item) => {
-                          const received = itemReceipts[item.id]?.received ?? item.quantity;
-                          const damaged = itemReceipts[item.id]?.damaged ?? 0;
-                          const isComplete = received === item.quantity && damaged === 0;
+                {userRole === "CLIENT" ? (
+                  /* ── CLIENT VIEW: per-item checkbox confirmation ── */
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+                        <Package className="h-4 w-4 text-primary" />
+                        Confirm Items Received ({activeOrder.items.length} Products)
+                      </h2>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                        allItemsConfirmed ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                      }`}>
+                        {activeOrder.items.filter((i) => itemConfirmed[i.id]).length} / {activeOrder.items.length} confirmed
+                      </span>
+                    </div>
 
-                          return (
-                            <tr key={item.id} className="hover:bg-slate-50/60 transition">
-                              <td className="px-4 py-3">
-                                <div className="font-semibold text-slate-900">{item.product.name}</div>
-                                <div className="font-mono text-xs text-slate-500">{item.product.sku}</div>
-                              </td>
-                              <td className="px-4 py-3 text-center font-semibold text-slate-800">
-                                {item.quantity} {item.product.unit}
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max={item.quantity * 2}
-                                  value={received}
-                                  onChange={(e) =>
-                                    handleReceiptChange(item.id, "received", parseInt(e.target.value, 10) || 0)
-                                  }
-                                  className="h-8 w-24 rounded border border-border px-2 text-xs text-center font-medium focus:border-primary focus:outline-none"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max={item.quantity}
-                                  value={damaged}
-                                  onChange={(e) =>
-                                    handleReceiptChange(item.id, "damaged", parseInt(e.target.value, 10) || 0)
-                                  }
-                                  className="h-8 w-24 rounded border border-border px-2 text-xs text-center font-medium focus:border-primary focus:outline-none text-red-600"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <Badge tone={isComplete ? "green" : damaged > 0 ? "red" : "amber"}>
-                                  {isComplete ? "MATCHED" : damaged > 0 ? "DAMAGED" : "SHORTAGE"}
-                                </Badge>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
+                    <p className="text-xs text-slate-500 mb-4">
+                      Tick each item once you have physically verified it has been received in good condition.
+                    </p>
 
-                {/* Quality & Receiving Criteria */}
-                <Card className="p-6">
-                  <h2 className="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4 text-primary" />
-                    2. Client Receiving Verification Checklist
-                  </h2>
+                    <div className="space-y-2">
+                      {activeOrder.items.map((item) => (
+                        <label
+                          key={item.id}
+                          className={`flex items-center gap-4 p-3.5 rounded-lg border cursor-pointer transition ${
+                            itemConfirmed[item.id]
+                              ? "border-emerald-400 bg-emerald-50/60 ring-1 ring-emerald-400"
+                              : "border-slate-200 bg-white hover:bg-slate-50"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!itemConfirmed[item.id]}
+                            onChange={(e) =>
+                              setItemConfirmed({ ...itemConfirmed, [item.id]: e.target.checked })
+                            }
+                            className="h-5 w-5 rounded border-slate-300 text-primary focus:ring-primary accent-teal-600"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-slate-900 text-sm">{item.product.name}</div>
+                            <div className="font-mono text-[11px] text-slate-400">{item.product.sku}</div>
+                          </div>
+                          <div className="text-xs font-bold text-slate-700 shrink-0">
+                            {item.quantity} {item.product.unit}
+                          </div>
+                          {itemConfirmed[item.id] && (
+                            <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+                          )}
+                        </label>
+                      ))}
+                    </div>
 
-                  <div className="space-y-3">
-                    {checklist.map((item, idx) => (
-                      <label
-                        key={idx}
-                        className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={item.checked}
-                          onChange={() => handleChecklistToggle(idx)}
-                          className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                        />
-                        <span className="text-xs font-medium text-slate-800">{item.text}</span>
+                    {/* CLIENT sign-off comments */}
+                    <div className="mt-6">
+                      <label htmlFor="clientComments" className="block text-xs font-semibold text-slate-700 mb-1">
+                        Receiving Notes (optional)
                       </label>
-                    ))}
-                  </div>
-                </Card>
+                      <textarea
+                        id="clientComments"
+                        rows={2}
+                        value={inspectionComments}
+                        onChange={(e) => setInspectionComments(e.target.value)}
+                        placeholder="e.g. All items received and verified at store."
+                        className="w-full rounded-md border border-border bg-slate-50 p-3 text-xs focus:border-primary focus:bg-white focus:outline-none"
+                      />
+                    </div>
 
-                {/* Verification Decision & Comments */}
-                <Card className="p-6">
-                  <h2 className="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
-                    <ClipboardCheck className="h-4 w-4 text-primary" />
-                    3. Final Delivery Verification Decision
-                  </h2>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-                    <button
-                      type="button"
-                      onClick={() => setVerificationDecision("VERIFIED")}
-                      className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
-                        verificationDecision === "VERIFIED"
-                          ? "border-emerald-500 bg-emerald-50/60 ring-2 ring-emerald-500 text-emerald-900"
-                          : "border-border bg-white text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <CheckCircle2 className="h-6 w-6 text-emerald-600" />
-                      <div className="text-sm font-bold">VERIFIED</div>
-                      <div className="text-[11px] text-slate-500">Delivery intact & accepted</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setVerificationDecision("PARTIALLY_VERIFIED")}
-                      className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
-                        verificationDecision === "PARTIALLY_VERIFIED"
-                          ? "border-amber-500 bg-amber-50/60 ring-2 ring-amber-500 text-amber-900"
-                          : "border-border bg-white text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <AlertTriangle className="h-6 w-6 text-amber-600" />
-                      <div className="text-sm font-bold">PARTIAL RECEIPT</div>
-                      <div className="text-[11px] text-slate-500">Discrepancy or partial items</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setVerificationDecision("REJECTED")}
-                      className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
-                        verificationDecision === "REJECTED"
-                          ? "border-red-500 bg-red-50/60 ring-2 ring-red-500 text-red-900"
-                          : "border-border bg-white text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <XCircle className="h-6 w-6 text-red-600" />
-                      <div className="text-sm font-bold">REJECTED</div>
-                      <div className="text-[11px] text-slate-500">Damaged or incorrect delivery</div>
-                    </button>
-                  </div>
-
-                  <div>
-                    <label htmlFor="inspectionComments" className="block text-xs font-semibold text-slate-700 mb-1">
-                      Inspector Comments & Sign-off Notes
-                    </label>
-                    <textarea
-                      id="inspectionComments"
-                      rows={3}
-                      value={inspectionComments}
-                      onChange={(e) => setInspectionComments(e.target.value)}
-                      placeholder="e.g. Received at PSS Multiplex receiving dock; all packages verified by receiving officer."
-                      className="w-full rounded-md border border-border bg-slate-50 p-3 text-xs focus:border-primary focus:bg-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-border">
-                    <Link href="/dashboard/orders">
-                      <Button type="button" variant="secondary">
-                        Back to Orders
+                    <div className="flex items-center justify-between mt-6 pt-4 border-t border-border">
+                      <span className="text-xs text-slate-500">
+                        {allItemsConfirmed
+                          ? "✅ All items confirmed — ready to submit verification."
+                          : `${activeOrder.items.length - activeOrder.items.filter((i) => itemConfirmed[i.id]).length} item(s) still pending confirmation.`}
+                      </span>
+                      <Button
+                        type="submit"
+                        disabled={isSubmitting || activeOrder.items.filter((i) => itemConfirmed[i.id]).length === 0}
+                        className="flex items-center gap-2"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        {isSubmitting ? "Submitting..." : "Confirm Delivery & Sign Off"}
                       </Button>
-                    </Link>
-                    <Button type="submit" disabled={isSubmitting} className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4" />
-                      {isSubmitting ? "Submitting..." : "Submit Verification & Stamp Invoice"}
-                    </Button>
-                  </div>
-                </Card>
+                    </div>
+                  </Card>
+                ) : (
+                  /* ── WAREHOUSE STAFF VIEW: qty input + decision ── */
+                  <>
+                    <Card className="p-6">
+                      <h2 className="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                        <Package className="h-4 w-4 text-primary" />
+                        1. Product Receiving & Physical Inspection ({activeOrder.items.length} Products)
+                      </h2>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                          <thead className="border-b border-border bg-slate-50 text-xs font-semibold uppercase text-slate-500">
+                            <tr>
+                              <th className="px-4 py-2.5">Item Name & SKU</th>
+                              <th className="px-4 py-2.5 text-center">Expected Qty</th>
+                              <th className="px-4 py-2.5 text-center w-36">Received Qty</th>
+                              <th className="px-4 py-2.5 text-center w-36">Damaged / Missing</th>
+                              <th className="px-4 py-2.5 text-right">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {activeOrder.items.map((item) => {
+                              const received = itemReceipts[item.id]?.received ?? item.quantity;
+                              const damaged = itemReceipts[item.id]?.damaged ?? 0;
+                              const isComplete = received === item.quantity && damaged === 0;
+                              return (
+                                <tr key={item.id} className="hover:bg-slate-50/60 transition">
+                                  <td className="px-4 py-3">
+                                    <div className="font-semibold text-slate-900">{item.product.name}</div>
+                                    <div className="font-mono text-xs text-slate-500">{item.product.sku}</div>
+                                  </td>
+                                  <td className="px-4 py-3 text-center font-semibold">{item.quantity} {item.product.unit}</td>
+                                  <td className="px-4 py-3 text-center">
+                                    <input type="number" min="0" max={item.quantity * 2} value={received}
+                                      onChange={(e) => handleReceiptChange(item.id, "received", parseInt(e.target.value, 10) || 0)}
+                                      className="h-8 w-24 rounded border border-border px-2 text-xs text-center font-medium focus:border-primary focus:outline-none" />
+                                  </td>
+                                  <td className="px-4 py-3 text-center">
+                                    <input type="number" min="0" max={item.quantity} value={damaged}
+                                      onChange={(e) => handleReceiptChange(item.id, "damaged", parseInt(e.target.value, 10) || 0)}
+                                      className="h-8 w-24 rounded border border-border px-2 text-xs text-center font-medium focus:border-primary focus:outline-none text-red-600" />
+                                  </td>
+                                  <td className="px-4 py-3 text-right">
+                                    <Badge tone={isComplete ? "green" : damaged > 0 ? "red" : "amber"}>
+                                      {isComplete ? "MATCHED" : damaged > 0 ? "DAMAGED" : "SHORTAGE"}
+                                    </Badge>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+
+                    {/* Verification Decision & Comments */}
+                    <Card className="p-6">
+                      <h2 className="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                        <ClipboardCheck className="h-4 w-4 text-primary" />
+                        2. Final Delivery Verification Decision
+                      </h2>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+                        <button type="button" onClick={() => setVerificationDecision("VERIFIED")}
+                          className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
+                            verificationDecision === "VERIFIED"
+                              ? "border-emerald-500 bg-emerald-50/60 ring-2 ring-emerald-500 text-emerald-900"
+                              : "border-border bg-white text-slate-700 hover:bg-slate-50"}`}>
+                          <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+                          <div className="text-sm font-bold">VERIFIED</div>
+                          <div className="text-[11px] text-slate-500">Delivery intact & accepted</div>
+                        </button>
+                        <button type="button" onClick={() => setVerificationDecision("PARTIALLY_VERIFIED")}
+                          className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
+                            verificationDecision === "PARTIALLY_VERIFIED"
+                              ? "border-amber-500 bg-amber-50/60 ring-2 ring-amber-500 text-amber-900"
+                              : "border-border bg-white text-slate-700 hover:bg-slate-50"}`}>
+                          <AlertTriangle className="h-6 w-6 text-amber-600" />
+                          <div className="text-sm font-bold">PARTIAL RECEIPT</div>
+                          <div className="text-[11px] text-slate-500">Discrepancy or shortage</div>
+                        </button>
+                        <button type="button" onClick={() => setVerificationDecision("REJECTED")}
+                          className={`p-4 rounded-lg border text-center transition flex flex-col items-center gap-2 ${
+                            verificationDecision === "REJECTED"
+                              ? "border-red-500 bg-red-50/60 ring-2 ring-red-500 text-red-900"
+                              : "border-border bg-white text-slate-700 hover:bg-slate-50"}`}>
+                          <XCircle className="h-6 w-6 text-red-600" />
+                          <div className="text-sm font-bold">REJECTED</div>
+                          <div className="text-[11px] text-slate-500">Damaged or incorrect</div>
+                        </button>
+                      </div>
+
+                      <div>
+                        <label htmlFor="inspectionComments" className="block text-xs font-semibold text-slate-700 mb-1">
+                          Inspector Comments & Sign-off Notes
+                        </label>
+                        <textarea id="inspectionComments" rows={3} value={inspectionComments}
+                          onChange={(e) => setInspectionComments(e.target.value)}
+                          placeholder="e.g. Received at dock; all packages verified by receiving officer."
+                          className="w-full rounded-md border border-border bg-slate-50 p-3 text-xs focus:border-primary focus:bg-white focus:outline-none" />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-border">
+                        <Link href="/dashboard/orders">
+                          <Button type="button" variant="secondary">Back to Orders</Button>
+                        </Link>
+                        <Button type="submit" disabled={isSubmitting} className="flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4" />
+                          {isSubmitting ? "Submitting..." : "Submit Verification & Stamp Invoice"}
+                        </Button>
+                      </div>
+                    </Card>
+                  </>
+                )}
+
               </form>
             </>
           )}
@@ -826,6 +872,16 @@ export function OrderTrackerView({
                   </div>
 
                   <div>
+                    <label className="font-semibold text-slate-600 block mb-1">Employee / Contact Person</label>
+                    <input
+                      type="text"
+                      value={extractedData.contactPerson || extractedData.clientName}
+                      onChange={(e) => setExtractedData({ ...extractedData, contactPerson: e.target.value })}
+                      className="h-9 w-full rounded border border-border bg-slate-50 px-2.5 font-medium text-slate-800 focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
                     <label className="font-semibold text-slate-600 block mb-1">Client Contact Phone</label>
                     <input
                       type="text"
@@ -835,7 +891,7 @@ export function OrderTrackerView({
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div>
                     <label className="font-semibold text-slate-600 block mb-1">Client GSTIN</label>
                     <input
                       type="text"

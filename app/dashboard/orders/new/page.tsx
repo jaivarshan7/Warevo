@@ -20,6 +20,9 @@ export default async function NewOrderPage() {
         companyName: true,
         contactPerson: true,
         mobile: true,
+        email: true,
+        gstNumber: true,
+        shippingAddress: true,
       },
       orderBy: { companyName: "asc" },
     }),
@@ -39,6 +42,11 @@ export default async function NewOrderPage() {
 
   async function createOrderAction(data: {
     clientId: string;
+    newCompany?: string;
+    newContactPerson?: string;
+    newMobile?: string;
+    newGstNumber?: string;
+    newShippingAddress?: string;
     expectedDelivery: string;
     notes: string;
     generateInvoice: boolean;
@@ -68,15 +76,66 @@ export default async function NewOrderPage() {
       throw new Error("Tenant context is required.");
     }
 
-    if (!data.clientId) {
-      throw new Error("Please select a client.");
-    }
-
     if (!data.items || data.items.length === 0) {
       throw new Error("At least one order item is required.");
     }
 
-    // Calculate totals
+    // 1. Resolve or Create Client / Employee
+    let resolvedClientId = data.clientId;
+    if (resolvedClientId === "NEW" || !resolvedClientId) {
+      if (!data.newCompany || !data.newContactPerson || !data.newMobile) {
+        throw new Error("Company Name, Employee Name, and Mobile are required.");
+      }
+
+      // Check if employee with same mobile exists under this company
+      const existingClient = await prisma.client.findFirst({
+        where: {
+          tenantId: targetTenantId,
+          mobile: data.newMobile,
+        },
+      });
+
+      if (existingClient) {
+        resolvedClientId = existingClient.id;
+      } else {
+        // Create user account for client
+        let userId: string | null = null;
+        const existingUser = await prisma.user.findFirst({
+          where: { mobile: data.newMobile },
+        });
+
+        if (existingUser) {
+          userId = existingUser.id;
+        } else {
+          const createdUser = await prisma.user.create({
+            data: {
+              tenantId: targetTenantId,
+              name: data.newContactPerson,
+              mobile: data.newMobile,
+              role: "CLIENT",
+              status: "ACTIVE",
+            },
+          });
+          userId = createdUser.id;
+        }
+
+        const createdClient = await prisma.client.create({
+          data: {
+            tenantId: targetTenantId,
+            userId,
+            companyName: data.newCompany,
+            contactPerson: data.newContactPerson,
+            mobile: data.newMobile,
+            gstNumber: data.newGstNumber || null,
+            billingAddress: data.newShippingAddress || "Client Billing Address",
+            shippingAddress: data.newShippingAddress || "Client Shipping Address",
+          },
+        });
+        resolvedClientId = createdClient.id;
+      }
+    }
+
+    // 2. Calculate totals
     let subtotal = 0;
     let taxTotal = 0;
     let discountTotal = 0;
@@ -111,7 +170,7 @@ export default async function NewOrderPage() {
       const createdOrder = await tx.order.create({
         data: {
           tenantId: targetTenantId,
-          clientId: data.clientId,
+          clientId: resolvedClientId,
           orderNumber,
           expectedDelivery: data.expectedDelivery ? new Date(data.expectedDelivery) : null,
           status: OrderStatus.ISSUED,
@@ -147,7 +206,7 @@ export default async function NewOrderPage() {
           data: {
             tenantId: targetTenantId,
             orderId: createdOrder.id,
-            clientId: data.clientId,
+            clientId: resolvedClientId,
             invoiceNumber,
             status: InvoiceStatus.DRAFT,
             paymentStatus: PaymentStatus.UNPAID,
@@ -185,13 +244,15 @@ export default async function NewOrderPage() {
           action: "Created new commercial order",
           entity: "Order",
           entityId: createdOrder.id,
-          newValue: { orderNumber, totalAmount, clientId: data.clientId },
+          newValue: { orderNumber, totalAmount, clientId: resolvedClientId },
         },
       });
     });
 
     revalidatePath("/dashboard/orders");
+    revalidatePath("/dashboard/clients");
     revalidatePath("/dashboard/accounting");
+    revalidatePath("/admin-dashboard");
     redirect("/dashboard/orders");
   }
 
@@ -209,7 +270,7 @@ export default async function NewOrderPage() {
       <div className="mb-2">
         <h1 className="text-2xl font-bold text-slate-900">Create New Order</h1>
         <p className="text-sm text-slate-500">
-          Draft a commercial customer order, configure product line items, and issue invoices.
+          Select client company and designated employee, configure product line items, and issue invoices.
         </p>
       </div>
 

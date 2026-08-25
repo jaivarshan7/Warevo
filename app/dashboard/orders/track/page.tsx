@@ -164,6 +164,7 @@ export default async function OrderTrackAndVerifyPage() {
     invoiceNumber: string;
     clientId: string;
     newClientName?: string;
+    newContactPerson?: string;
     newClientMobile?: string;
     newClientGstin?: string;
     newClientAddress?: string;
@@ -206,11 +207,33 @@ export default async function OrderTrackAndVerifyPage() {
       if (existingByMobile) {
         clientId = existingByMobile.id;
       } else {
+        // Create user account for client
+        let userId: string | null = null;
+        const existingUser = await prisma.user.findFirst({
+          where: { mobile: data.newClientMobile },
+        });
+
+        if (existingUser) {
+          userId = existingUser.id;
+        } else {
+          const createdUser = await prisma.user.create({
+            data: {
+              tenantId,
+              name: data.newContactPerson || data.newClientName,
+              mobile: data.newClientMobile,
+              role: "CLIENT",
+              status: "ACTIVE",
+            },
+          });
+          userId = createdUser.id;
+        }
+
         const client = await prisma.client.create({
           data: {
             tenantId,
+            userId,
             companyName: data.newClientName,
-            contactPerson: data.newClientName,
+            contactPerson: data.newContactPerson || data.newClientName,
             mobile: data.newClientMobile,
             gstNumber: data.newClientGstin ?? null,
             billingAddress: data.newClientAddress ?? "Client Billing Address",

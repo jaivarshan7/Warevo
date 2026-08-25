@@ -52,6 +52,27 @@ export default async function AdminDashboardPage() {
     orderBy: { createdAt: "desc" },
   });
 
+  // Fetch all client accounts with tenant info and orders
+  const clients = await prisma.client.findMany({
+    include: {
+      tenant: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+      orders: {
+        select: {
+          id: true,
+          orderNumber: true,
+          status: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
   // Fetch all tenants
   const tenants = await prisma.tenant.findMany({
     select: {
@@ -63,6 +84,7 @@ export default async function AdminDashboardPage() {
         select: {
           warehouses: true,
           users: true,
+          clients: true,
         },
       },
     },
@@ -141,6 +163,7 @@ export default async function AdminDashboardPage() {
           warehouses={warehouses}
           users={users}
           tenants={tenants}
+          clients={clients}
         />
       </main>
     </div>
