@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { canAccessTenant } from "@/lib/rbac";
 
-export type AppSession = Pick<User, "id" | "tenantId" | "role" | "name" | "email" | "mobile">;
+export type AppSession = Pick<User, "id" | "tenantId" | "role" | "name" | "email" | "mobile" | "avatarUrl">;
 
 export async function getCurrentUser(): Promise<AppSession | null> {
   const supabase = await createSupabaseServerClient();

@@ -417,17 +417,49 @@ export default async function OrderTrackAndVerifyPage() {
 
       <OrderTrackerView
         orders={orders.map((o) => ({
-          ...o,
+          id: o.id,
+          orderNumber: o.orderNumber,
+          status: o.status,
+          verificationStatus: o.verificationStatus,
+          orderDate: o.orderDate.toISOString(),
+          expectedDelivery: o.expectedDelivery?.toISOString() ?? null,
           totalAmount: Number(o.totalAmount),
+          notes: o.notes,
+          client: {
+            id: o.client.id,
+            companyName: o.client.companyName,
+            contactPerson: o.client.contactPerson,
+            mobile: o.client.mobile,
+            shippingAddress: o.client.shippingAddress,
+          },
           items: o.items.map((i) => ({
-            ...i,
+            id: i.id,
+            productId: i.productId,
+            quantity: i.quantity,
             unitPrice: Number(i.unitPrice),
             total: Number(i.total),
+            product: {
+              id: i.product.id,
+              sku: i.product.sku,
+              name: i.product.name,
+              unit: i.product.unit,
+            },
           })),
           invoices: o.invoices.map((inv) => ({
-            ...inv,
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            status: inv.status,
+            paymentStatus: inv.paymentStatus,
             total: Number(inv.total),
           })),
+          verification: o.verification
+            ? {
+                id: o.verification.id,
+                status: o.verification.status,
+                comments: o.verification.comments,
+                responses: o.verification.responses,
+              }
+            : null,
         }))}
         clients={clients}
         userRole={user.role}

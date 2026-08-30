@@ -207,6 +207,7 @@ model User {
   name           String
   email          String?        @unique
   mobile         String?
+  avatarUrl      String?
   status         UserStatus     @default(ACTIVE)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -502,20 +503,27 @@ model Payment {
 }
 
 model Notification {
-  id        String           @id @default(cuid())
-  tenantId  String
-  userId    String?
-  orderId   String?
-  type      NotificationType
-  title     String
-  message   String
-  read      Boolean          @default(false)
-  createdAt DateTime         @default(now())
-  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user      User?            @relation(fields: [userId], references: [id])
-  order     Order?           @relation(fields: [orderId], references: [id])
+  id          String           @id @default(cuid())
+  tenantId    String
+  userId      String?
+  orderId     String?
+  warehouseId String?
+  type        NotificationType
+  title       String
+  message     String
+  priority    String           @default("normal")
+  actionUrl   String?
+  metadata    Json             @default("{}")
+  read        Boolean          @default(false)
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User?            @relation(fields: [userId], references: [id])
+  order       Order?           @relation(fields: [orderId], references: [id])
 
   @@index([tenantId, userId, read])
+  @@index([tenantId, warehouseId, read])
+  @@index([tenantId, createdAt])
 }
 
 model Document {

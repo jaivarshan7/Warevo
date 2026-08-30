@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { OwnerChangeLog } from "@/components/owner-change-log";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { statusTone } from "@/lib/utils";
@@ -31,17 +32,15 @@ export default async function PlatformPage() {
           </tbody>
         </table>
       </Card>
-      <Card>
-        <h2 className="mb-4 font-semibold">Recent audit log</h2>
-        <div className="space-y-3">
-          {auditLogs.map((log) => (
-            <div key={log.id} className="rounded border border-border p-3 text-sm">
-              <div className="font-medium">{log.action}</div>
-              <div className="text-slate-500">{log.userRole} · {log.entity} · {log.createdAt.toLocaleString()}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
+      <OwnerChangeLog logs={auditLogs.map((log) => ({
+        id: log.id,
+        action: log.action,
+        entity: log.entity,
+        userRole: String(log.userRole),
+        createdAt: log.createdAt,
+        previousValue: (log.previousValue as Record<string, unknown>) ?? null,
+        newValue: (log.newValue as Record<string, unknown>) ?? null
+      }))} />
     </section>
   );
 }

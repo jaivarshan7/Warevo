@@ -141,6 +141,8 @@ export function OrderTrackerView({
 
   // Selected Order for tracking
   const activeOrder = orders.find((o) => o.id === selectedOrderId) ?? orders[0];
+  const isVerified = activeOrder?.status === "VERIFIED" || activeOrder?.verificationStatus === "VERIFIED";
+  const isWarehouseReadOnly = userRole === "WAREHOUSE_OWNER" || userRole === "WAREHOUSE_STAFF";
 
   // Item confirmed checkboxes (CLIENT role — one checkbox per item)
   const [itemConfirmed, setItemConfirmed] = useState<Record<string, boolean>>({});
@@ -569,7 +571,7 @@ export function OrderTrackerView({
               {/* Delivery Verification Form */}
               <form onSubmit={handleVerifySubmit} className="space-y-6">
 
-                {userRole === "CLIENT" ? (
+                {userRole === "CLIENT" && !isVerified ? (
                   /* ── CLIENT VIEW: per-item checkbox confirmation ── */
                   <Card className="p-6">
                     <div className="flex items-center justify-between mb-4">
@@ -649,6 +651,43 @@ export function OrderTrackerView({
                         <CheckCircle2 className="h-4 w-4" />
                         {isSubmitting ? "Submitting..." : "Confirm Delivery & Sign Off"}
                       </Button>
+                    </div>
+                  </Card>
+                ) : isWarehouseReadOnly || isVerified ? (
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between border-b border-border pb-4">
+                      <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+                        <ClipboardCheck className="h-4 w-4 text-primary" />
+                        Order Report
+                      </h2>
+                      <Badge tone={statusTone(activeOrder.status)}>{activeOrder.status}</Badge>
+                    </div>
+
+                    <div className="mt-5 grid gap-5 md:grid-cols-2">
+                      <div>
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Order Notes</h3>
+                        <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                          {activeOrder.notes || "No order notes available."}
+                        </p>
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Verification Report</h3>
+                        <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                          {activeOrder.verification?.comments || "No verification notes available."}
+                        </p>
+                        {Array.isArray(activeOrder.verification?.responses) && activeOrder.verification.responses.length > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {activeOrder.verification.responses.map((response: { text?: string; checked?: boolean }, index: number) => (
+                              <div key={`${response.text ?? "response"}-${index}`} className="flex items-start gap-2 text-xs text-slate-600">
+                                <span className={response.checked ? "text-emerald-600" : "text-red-600"}>
+                                  {response.checked ? "✓" : "✕"}
+                                </span>
+                                <span>{response.text || "Unlabeled response"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </Card>
                 ) : (
