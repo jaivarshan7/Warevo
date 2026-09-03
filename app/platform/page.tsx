@@ -8,7 +8,17 @@ import { statusTone } from "@/lib/utils";
 export default async function PlatformPage() {
   await requireUser(["PLATFORM_ADMIN"]);
   const tenants = await prisma.tenant.findMany({ include: { _count: { select: { users: true, clients: true, orders: true, invoices: true } } }, orderBy: { createdAt: "desc" } });
-  const auditLogs = await prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 8 });
+  const auditLogs = await prisma.auditLog.findMany({
+    include: {
+      user: {
+        select: {
+          name: true
+        }
+      }
+    },
+    orderBy: { createdAt: "desc" },
+    take: 8
+  });
   return (
     <section className="space-y-5">
       <div>
@@ -37,6 +47,7 @@ export default async function PlatformPage() {
         action: log.action,
         entity: log.entity,
         userRole: String(log.userRole),
+        userName: log.user?.name ?? "System",
         createdAt: log.createdAt,
         previousValue: (log.previousValue as Record<string, unknown>) ?? null,
         newValue: (log.newValue as Record<string, unknown>) ?? null

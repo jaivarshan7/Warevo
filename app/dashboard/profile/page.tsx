@@ -1,13 +1,18 @@
 import { Camera, Check, Pencil, ShieldCheck } from "lucide-react";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildInitials } from "@/lib/notifications";
 import { Card } from "@/components/ui/card";
 import { AvatarUploadForm } from "@/components/avatar-upload-form";
 
 export default async function ProfilePage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/profile");
   const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+  const clientProfile = await prisma.client.findFirst({
+    where: { userId: user.id },
+    select: { employeeRole: true },
+  });
+  const displayRole = clientProfile?.employeeRole ?? dbUser?.role ?? user.role;
   const initials = buildInitials(dbUser?.name ?? user.name);
 
   return (
@@ -25,7 +30,7 @@ export default async function ProfilePage() {
             </div>
             <div className="mt-4 text-xl font-semibold">{dbUser?.name ?? user.name}</div>
             <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-600">
-              <ShieldCheck className="h-3 w-3" /> {dbUser?.role ?? user.role}
+              <ShieldCheck className="h-3 w-3" /> {displayRole}
             </div>
             <div className="mt-4 w-full">
               <AvatarUploadForm currentAvatarUrl={dbUser?.avatarUrl ?? null} />
@@ -43,7 +48,7 @@ export default async function ProfilePage() {
 
           <div className="grid gap-4 md:grid-cols-2">
             <InfoRow label="Full name" value={dbUser?.name ?? user.name} />
-            <InfoRow label="Role" value={dbUser?.role ?? user.role} />
+            <InfoRow label="Role" value={displayRole} />
             <InfoRow label="Email" value={dbUser?.email ?? user.email ?? "Not available"} />
             <InfoRow label="Mobile" value={dbUser?.mobile ?? user.mobile ?? "Not available"} />
           </div>

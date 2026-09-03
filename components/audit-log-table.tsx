@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { filterAuditLogs, summarizeAuditChange } from "@/lib/audit-log";
 
-export function AuditLogTable({ logs }: { logs: Array<{ id: string; action: string; entity: string; userRole: string; createdAt: Date; previousValue?: Record<string, unknown> | null; newValue?: Record<string, unknown> | null }> }) {
+export function AuditLogTable({ logs }: { logs: Array<{ id: string; action: string; entity: string; userRole: string; userName?: string | null; createdAt: Date; previousValue?: Record<string, unknown> | null; newValue?: Record<string, unknown> | null }> }) {
   const [query, setQuery] = useState("");
   const [entity, setEntity] = useState("all");
   const [role, setRole] = useState("all");
@@ -47,6 +47,7 @@ export function AuditLogTable({ logs }: { logs: Array<{ id: string; action: stri
             <tr>
               <th className="px-3 py-2">Action</th>
               <th className="px-3 py-2">Entity</th>
+              <th className="px-3 py-2">Person</th>
               <th className="px-3 py-2">Role</th>
               <th className="px-3 py-2">Time</th>
             </tr>
@@ -54,7 +55,7 @@ export function AuditLogTable({ logs }: { logs: Array<{ id: string; action: stri
           <tbody>
             {filteredLogs.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-slate-500">No matching change log entries found.</td>
+                <td colSpan={5} className="px-3 py-6 text-center text-slate-500">No matching change log entries found.</td>
               </tr>
             ) : (
               filteredLogs.map((log) => (
@@ -64,6 +65,7 @@ export function AuditLogTable({ logs }: { logs: Array<{ id: string; action: stri
                     <div className="mt-1 text-xs text-slate-500">{summarizeAuditChange({ action: log.action, entity: log.entity, previousValue: log.previousValue ?? null, newValue: log.newValue ?? null })}</div>
                   </td>
                   <td className="px-3 py-3 text-slate-600">{log.entity}</td>
+                  <td className="px-3 py-3 text-slate-700">{log.userName ? `${log.userName} (${log.userRole})` : `System (${log.userRole})`}</td>
                   <td className="px-3 py-3 text-slate-600">{log.userRole}</td>
                   <td className="px-3 py-3 text-slate-500">{log.createdAt.toLocaleString()}</td>
                 </tr>

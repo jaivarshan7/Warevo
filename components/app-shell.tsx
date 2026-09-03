@@ -5,7 +5,9 @@ import { Activity, Boxes, Building2, ClipboardCheck, FileText, LayoutDashboard, 
 import { Badge } from "@/components/ui/badge";
 import { NotificationCenter } from "@/components/notification-center";
 import { UserProfileMenu } from "@/components/user-profile-menu";
+import { canAccessDashboardRoute } from "@/lib/rbac";
 import { getUnreadNotificationCount, getUserNotifications } from "@/lib/notifications-server";
+import { prisma } from "@/lib/prisma";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -29,6 +31,10 @@ async function signOut() {
 }
 
 export async function AppShell({ children, user }: { children: React.ReactNode; user: { id: string; role: string; name: string; email?: string | null; mobile?: string | null; tenantId?: string | null; avatarUrl?: string | null } }) {
+  const clientProfile = user.role === "CLIENT"
+    ? await prisma.client.findFirst({ where: { userId: user.id }, select: { employeeRole: true } })
+    : null;
+  const displayRole = clientProfile?.employeeRole ?? user.role;
   const notifications = await getUserNotifications({ id: user.id, role: user.role as any, tenantId: user.tenantId ?? null });
   const unreadCount = await getUnreadNotificationCount({ id: user.id, role: user.role as any, tenantId: user.tenantId ?? null });
 
@@ -48,9 +54,7 @@ export async function AppShell({ children, user }: { children: React.ReactNode; 
             {nav.map((item) => {
               const Icon = item.icon;
               if (item.href === "/platform" && user.role !== "PLATFORM_ADMIN") return null;
-              if (user.role === "CLIENT" && !["/dashboard", "/dashboard/orders", "/dashboard/orders/track"].includes(item.href)) return null;
-              if (item.href === "/dashboard/clients" && user.role === "WAREHOUSE_STAFF") return null;
-              if (item.href === "/dashboard/accounting" && user.role === "WAREHOUSE_STAFF") return null;
+              if (!canAccessDashboardRoute(user.role as any, item.href, clientProfile?.employeeRole)) return null;
               return (
                 <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded px-3 py-2.5 text-sm text-slate-700 transition hover:bg-slate-100">
                   <Icon className="h-4 w-4" />
@@ -71,7 +75,7 @@ export async function AppShell({ children, user }: { children: React.ReactNode; 
               </div>
 
               <div className="flex items-center gap-2 sm:gap-3">
-                <Badge>{user.role}</Badge>
+                <Badge>{displayRole}</Badge>
                 <NotificationCenter
                   userId={user.id}
                   initialNotifications={notifications.map((notification) => ({
@@ -90,7 +94,7 @@ export async function AppShell({ children, user }: { children: React.ReactNode; 
                   id: user.id,
                   name: user.name,
                   email: user.email,
-                  role: user.role,
+                  role: displayRole,
                   avatarUrl: user.avatarUrl ?? null
                 }} />
               </div>
@@ -117,10 +121,6 @@ export async function AppShell({ children, user }: { children: React.ReactNode; 
             if (sidebar?.classList.contains('-translate-x-full')) open(); else close();
           }));
           backdrop?.addEventListener('click', close);
-          if (window.matchMedia('(min-width: 1024px)').matches) {
-            sidebar?.classList.remove('-translate-x-full');
-            backdrop?.classList.add('hidden');
-          }
         })();
       ` }} />
     </div>

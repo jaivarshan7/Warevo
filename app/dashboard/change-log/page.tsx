@@ -1,10 +1,10 @@
 import { Activity } from "lucide-react";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { AuditLogTable } from "@/components/audit-log-table";
 
 export default async function ChangeLogPage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/change-log");
 
   if (!user.tenantId && user.role !== "PLATFORM_ADMIN") {
     throw new Error("Tenant context required.");
@@ -12,6 +12,13 @@ export default async function ChangeLogPage() {
 
   const logs = await prisma.auditLog.findMany({
     where: user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? null },
+    include: {
+      user: {
+        select: {
+          name: true
+        }
+      }
+    },
     orderBy: { createdAt: "desc" },
     take: 30
   });
@@ -32,6 +39,7 @@ export default async function ChangeLogPage() {
           action: log.action,
           entity: log.entity,
           userRole: String(log.userRole),
+          userName: log.user?.name ?? "System",
           createdAt: log.createdAt,
           previousValue: (log.previousValue as Record<string, unknown>) ?? null,
           newValue: (log.newValue as Record<string, unknown>) ?? null

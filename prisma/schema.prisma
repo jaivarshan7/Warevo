@@ -9,11 +9,25 @@ datasource db {
 
 enum Role {
   PLATFORM_ADMIN
+  MANAGER
+  GM
   WAREHOUSE_OWNER
   WAREHOUSE_MODERATOR
-  ACCOUNTANT
+  ACCOUNTS_TEAM
   WAREHOUSE_STAFF
+  PRODUCT_RECEIVER
+  ACCOUNTANT
   CLIENT
+  CLIENT_ACCOUNTANT
+}
+
+enum ClientEmployeeRole {
+  RECEIVER
+  STORE
+  ACCOUNT
+  MANAGER
+  GM
+  MD
 }
 
 enum TenantStatus {
@@ -170,6 +184,7 @@ model Tenant {
   categories      Category[]
   products        Product[]
   orders          Order[]
+  orderContacts   OrderContact[]
   invoices        Invoice[]
   payments        Payment[]
   notifications   Notification[]
@@ -180,6 +195,21 @@ model Tenant {
   importedInvoices ImportedInvoice[]
   eWayBills       EWayBill[]
   deliveryVerifications DeliveryVerification[]
+  companyGroups   CompanyGroup[]
+}
+
+model CompanyGroup {
+  id          String    @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  clients     Client[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
 }
 
 model Warehouse {
@@ -223,9 +253,10 @@ model User {
 }
 
 model Client {
-  id             String       @id @default(cuid())
+  id             String            @id @default(cuid())
   tenantId       String
-  userId         String?      @unique
+  userId         String?           @unique
+  companyGroupId String?
   companyName    String
   contactPerson  String
   mobile         String
@@ -233,18 +264,22 @@ model Client {
   gstNumber      String?
   billingAddress String
   shippingAddress String
-  status         ClientStatus @default(ACTIVE)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user           User?        @relation(fields: [userId], references: [id])
+  employeeRole   ClientEmployeeRole?
+  status         ClientStatus      @default(ACTIVE)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  companyGroup   CompanyGroup?     @relation(fields: [companyGroupId], references: [id], onDelete: SetNull)
+  user           User?             @relation(fields: [userId], references: [id])
   orders         Order[]
+  orderContacts  OrderContact[]
   invoices       Invoice[]
   importedInvoices ImportedInvoice[]
   deliveryVerifications DeliveryVerification[]
 
   @@unique([tenantId, mobile])
   @@index([tenantId])
+  @@index([companyGroupId])
 }
 
 model Category {
@@ -365,6 +400,7 @@ model Order {
   client             Client                @relation(fields: [clientId], references: [id])
   createdBy          User                  @relation("OrderCreatedBy", fields: [createdById], references: [id])
   assignedStaff      User?                 @relation("OrderAssignedStaff", fields: [assignedStaffId], references: [id])
+  contacts           OrderContact[]
   items              OrderItem[]
   statusHistory      OrderStatusHistory[]
   verification       VerificationResponse?
@@ -377,6 +413,21 @@ model Order {
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status])
+  @@index([clientId])
+}
+
+model OrderContact {
+  id        String   @id @default(cuid())
+  tenantId  String
+  orderId   String
+  clientId  String
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, clientId])
+  @@index([tenantId, orderId])
   @@index([clientId])
 }
 
@@ -494,6 +545,7 @@ model Payment {
   status      PaymentStatus
   method      String
   reference   String?
+  proofUrl    String?
   paidAt      DateTime?
   createdAt   DateTime      @default(now())
   tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)

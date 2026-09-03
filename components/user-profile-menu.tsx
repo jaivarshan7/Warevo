@@ -2,16 +2,33 @@
 
 import Link from "next/link";
 import { LogOut, Settings, User, ChevronDown, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { buildInitials } from "@/lib/notifications";
 
 export function UserProfileMenu({ user }: { user: { id: string; name: string; email?: string | null; role: string; avatarUrl?: string | null } }) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const initials = buildInitials(user.name);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current && !menuRef.current.contains(target) && buttonRef.current && !buttonRef.current.contains(target)) {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [open]);
 
   return (
     <div className="relative">
       <button
+        ref={buttonRef}
         type="button"
         aria-label="Open profile menu"
         onClick={() => setOpen((value) => !value)}
@@ -28,7 +45,7 @@ export function UserProfileMenu({ user }: { user: { id: string; name: string; em
       </button>
 
       {open && (
-        <div className="absolute right-0 top-12 z-50 w-[min(90vw,20rem)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+        <div ref={menuRef} className="absolute right-0 top-12 z-50 w-[min(90vw,20rem)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
           <div className="flex items-center gap-3 border-b border-slate-200 p-4">
             <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-teal-100 to-sky-100 text-sm font-semibold text-primary">
               {user.avatarUrl ? <img src={user.avatarUrl} alt={user.name} className="h-full w-full object-cover" /> : initials}

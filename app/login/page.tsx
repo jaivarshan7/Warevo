@@ -1,11 +1,10 @@
-import { Building2, Lock, Shield, UserCheck, ArrowRight, Sparkles } from "lucide-react";
+import { Building2, Lock, Shield } from "lucide-react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 
 async function signIn(formData: FormData): Promise<void> {
   "use server";
@@ -58,45 +57,6 @@ async function signIn(formData: FormData): Promise<void> {
   redirect("/dashboard");
 }
 
-async function quickRoleSignIn(formData: FormData): Promise<void> {
-  "use server";
-  const userId = String(formData.get("userId") ?? "").trim();
-  if (!userId) {
-    redirect("/login");
-  }
-
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) {
-    redirect("/login?error=user_not_found");
-  }
-
-  const cookieStore = await cookies();
-  cookieStore.set("demo-user-id", user.id, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 8,
-  });
-  if (user.email) {
-    cookieStore.set("demo-user-email", user.email, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 8,
-    });
-  }
-  if (user.mobile) {
-    cookieStore.set("demo-user-mobile", user.mobile, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 8,
-    });
-  }
-
-  redirect("/dashboard");
-}
-
 export default async function LoginPage({
   searchParams,
 }: {
@@ -110,32 +70,6 @@ export default async function LoginPage({
       : params?.error === "user_not_found"
       ? "No user account was found with that email or mobile number."
       : "An error occurred during sign-in. Please try again.";
-
-  // Fetch sample demo accounts across roles for 1-click test login
-  const demoUsers = await prisma.user.findMany({
-    where: {
-      role: {
-        in: ["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "ACCOUNTANT", "CLIENT"],
-      },
-    },
-    include: {
-      tenant: {
-        select: {
-          name: true,
-        },
-      },
-    },
-    take: 6,
-    orderBy: { createdAt: "asc" },
-  });
-
-  const roleBadgeTones: Record<string, "neutral" | "green" | "amber" | "red" | "blue"> = {
-    WAREHOUSE_OWNER: "blue",
-    WAREHOUSE_MODERATOR: "amber",
-    WAREHOUSE_STAFF: "green",
-    ACCOUNTANT: "neutral",
-    CLIENT: "neutral",
-  };
 
   return (
     <main className="grid min-h-screen place-items-center bg-slate-100 p-4 md:p-8">
@@ -180,45 +114,6 @@ export default async function LoginPage({
               Sign in to Dashboard
             </Button>
           </form>
-
-          {/* Divider */}
-          <div className="my-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-slate-200" />
-            <span className="text-xs font-medium uppercase text-slate-400">Or Quick Demo Sign-in</span>
-            <div className="h-px flex-1 bg-slate-200" />
-          </div>
-
-          {/* Quick Demo Role Switcher */}
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-              1-Click role preview for testing & evaluation:
-            </p>
-            
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {demoUsers.map((user) => (
-                <form key={user.id} action={quickRoleSignIn}>
-                  <input type="hidden" name="userId" value={user.id} />
-                  <button
-                    type="submit"
-                    className="w-full flex flex-col items-start p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 hover:bg-teal-50/50 hover:border-teal-300 transition text-left group"
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="text-xs font-semibold text-slate-800 group-hover:text-primary transition truncate max-w-[130px]">
-                        {user.name}
-                      </span>
-                      <Badge tone={roleBadgeTones[user.role] ?? "neutral"}>
-                        {user.role.replace("WAREHOUSE_", "")}
-                      </Badge>
-                    </div>
-                    <span className="text-[11px] text-slate-500 truncate max-w-[180px] mt-0.5">
-                      {user.tenant?.name ? user.tenant.name : user.email ?? user.mobile}
-                    </span>
-                  </button>
-                </form>
-              ))}
-            </div>
-          </div>
 
           {/* Admin Login Link */}
           <div className="mt-8 border-t border-border pt-4 text-center">

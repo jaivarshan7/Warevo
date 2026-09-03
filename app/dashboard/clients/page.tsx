@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ClientsDirectoryView } from "@/components/clients-directory-view";
+import { ClientEmployeeRole, Role } from "@prisma/client";
 
 export default async function ClientsPage() {
   const user = await requireUser(["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "ACCOUNTANT", "PLATFORM_ADMIN"]);
@@ -30,6 +31,7 @@ export default async function ClientsPage() {
     gstNumber?: string;
     billingAddress?: string;
     shippingAddress?: string;
+    employeeRole?: string;
   }) {
     "use server";
 
@@ -77,7 +79,7 @@ export default async function ClientsPage() {
           name: data.contactPerson,
           mobile: data.mobile,
           email: data.email || null,
-          role: "CLIENT",
+          role: data.employeeRole === "ACCOUNT" ? Role.CLIENT_ACCOUNTANT : Role.CLIENT,
           status: "ACTIVE",
         },
       });
@@ -95,6 +97,7 @@ export default async function ClientsPage() {
         gstNumber: data.gstNumber || null,
         billingAddress: data.billingAddress || data.shippingAddress || "Client Billing Address",
         shippingAddress: data.shippingAddress || data.billingAddress || "Client Shipping Address",
+        employeeRole: (data.employeeRole || "RECEIVER") as ClientEmployeeRole,
       },
     });
 
@@ -113,6 +116,7 @@ export default async function ClientsPage() {
     gstNumber?: string;
     billingAddress?: string;
     shippingAddress?: string;
+    employeeRole?: string;
     status: string;
   }) {
     "use server";
@@ -164,6 +168,7 @@ export default async function ClientsPage() {
           name: data.contactPerson,
           mobile: data.mobile,
           email: data.email || null,
+          role: data.employeeRole === "ACCOUNT" ? Role.CLIENT_ACCOUNTANT : Role.CLIENT,
         },
       });
     }

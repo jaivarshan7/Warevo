@@ -3,12 +3,12 @@ import { Boxes, Plus, AlertTriangle, CheckCircle2, MapPin, Tag, RefreshCw } from
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { money } from "@/lib/utils";
 
 export default async function InventoryPage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/inventory");
   const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
 
   const inventory = await prisma.inventory.findMany({

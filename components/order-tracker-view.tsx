@@ -104,6 +104,9 @@ interface OrderTrackerViewProps {
     newClientAddress?: string;
     expectedDelivery: string;
     notes: string;
+    uploadedInvoiceDocumentId?: string;
+    uploadedInvoiceUrl?: string;
+    uploadedInvoiceName?: string;
     rows: Array<{
       name: string;
       sku: string;
@@ -158,34 +161,63 @@ export function OrderTrackerView({
   // Extracted Invoice & Spreadsheet Data State
   const [extractedData, setExtractedData] = useState<ExtractedInvoiceData | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [uploadedInvoiceUrl, setUploadedInvoiceUrl] = useState<string | null>(null);
+  const [uploadedInvoiceDocumentId, setUploadedInvoiceDocumentId] = useState<string | null>(null);
 
   // Handle File Upload
-  const handleFileUpload = (file: File) => {
+  const handleFileUpload = async (file: File) => {
     setUploadedFileName(file.name);
-    const reader = new FileReader();
+    const formData = new FormData();
+    formData.append("invoice", file);
+    let parsedData: ExtractedInvoiceData | null = null;
+    let extractionWarning: string | null = null;
 
-    reader.onload = (e) => {
-      const textContent = (e.target?.result as string) || "";
-      const parsed = parseInvoiceText(textContent, file.name);
-      setExtractedData(parsed);
-      setFeedbackMessage({
-        text: `Successfully parsed invoice file "${file.name}"! Extracted ${parsed.items.length} line items for ${parsed.clientName}.`,
-        type: "success",
+    try {
+      const response = await fetch("/dashboard/invoice-import/extract", {
+        method: "POST",
+        body: formData,
       });
-    };
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || "Failed to extract invoice data.");
+      }
+      parsedData = result.parsed;
+      extractionWarning = result.warning ?? null;
+    } catch (error) {
+      console.error("Invoice extraction failed", error);
+    }
 
-    reader.onerror = () => {
-      // If binary PDF parsing directly, use smart sample extractor
-      const parsed = samplePureAuraInvoice;
-      setExtractedData(parsed);
-      setFeedbackMessage({
-        text: `Extracted ${parsed.items.length} items from ${file.name} (Pure Aura Invoice #2324).`,
-        type: "success",
+    try {
+      const uploadResponse = await fetch("/dashboard/invoice-import/upload", {
+        method: "POST",
+        body: formData,
       });
-    };
+      const uploadResult = await uploadResponse.json();
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult?.error || "Failed to store invoice file.");
+      }
+      setUploadedInvoiceUrl(uploadResult.url ?? null);
+      setUploadedInvoiceDocumentId(uploadResult.documentId ?? null);
+    } catch (error) {
+      console.error("Invoice upload failed", error);
+      setUploadedInvoiceUrl(null);
+      setUploadedInvoiceDocumentId(null);
+    }
 
-    // Read as text or trigger handler
-    reader.readAsText(file);
+    if (!parsedData) {
+      const textContent = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+        ? ""
+        : await file.text();
+      parsedData = parseInvoiceText(textContent, file.name);
+    }
+
+    setExtractedData(parsedData);
+    setFeedbackMessage({
+      text: extractionWarning
+        ? extractionWarning
+        : `Successfully parsed "${file.name}" and extracted ${parsedData.items.length} line item${parsedData.items.length === 1 ? "" : "s"}${parsedData.clientName ? ` for ${parsedData.clientName}` : ""}.`,
+      type: parsedData.items.length === 0 ? "error" : "success",
+    });
   };
 
   const handleLoadSample = () => {
@@ -303,6 +335,9 @@ export function OrderTrackerView({
         newClientAddress: extractedData.clientAddress,
         expectedDelivery: extractedData.invoiceDate,
         notes: extractedData.notes,
+        uploadedInvoiceDocumentId: uploadedInvoiceDocumentId ?? undefined,
+        uploadedInvoiceUrl: uploadedInvoiceUrl ?? undefined,
+        uploadedInvoiceName: uploadedFileName ?? undefined,
         rows: extractedData.items.map((i) => ({
           name: i.name,
           sku: i.sku,
@@ -408,36 +443,17 @@ export function OrderTrackerView({
                 setActiveTab("upload");
                 if (!extractedData) handleLoadSample();
               }}
-              className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition ${
+              className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
                 activeTab === "upload"
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
+                  ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
+                  : "text-slate-500 hover:text-slate-800"
               }`}
             >
-              <Upload className="h-4 w-4 text-primary" />
               Upload Invoice / Spreadsheet File
             </button>
           )}
         </div>
 
-        {activeTab === "track" && primaryInvoice && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleCopyInvoiceLink}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition shadow-sm"
-            >
-              {copiedLink ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Share2 className="h-3.5 w-3.5" />}
-              {copiedLink ? "Link Copied!" : "Share Invoice Link"}
-            </button>
-
-            <Link href={`/dashboard/invoices/${primaryInvoice.id}`}>
-              <Button className="text-xs h-9 flex items-center gap-1.5 shadow-sm">
-                <Printer className="h-3.5 w-3.5" />
-                View & Print Invoice
-              </Button>
-            </Link>
-          </div>
-        )}
       </div>
 
       {activeTab === "track" ? (
@@ -858,9 +874,22 @@ export function OrderTrackerView({
               </div>
 
               {uploadedFileName && (
-                <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Uploaded: {uploadedFileName}
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Uploaded: {uploadedFileName}
+                  </div>
+                  {uploadedInvoiceUrl && (
+                    <a
+                      href={uploadedInvoiceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 border border-border hover:bg-slate-50"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      Open stored invoice
+                    </a>
+                  )}
                 </div>
               )}
             </div>
@@ -1100,7 +1129,7 @@ export function OrderTrackerView({
                   </Button>
                   <Button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || extractedData.items.length === 0}
                     onClick={handleCreateOrderFromExtracted}
                     className="flex items-center gap-2"
                   >

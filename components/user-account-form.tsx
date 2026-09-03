@@ -132,6 +132,7 @@ export function UserAccountForm({
           <option value="WAREHOUSE_OWNER">Warehouse Owner (Full Warehouse Admin)</option>
           <option value="WAREHOUSE_MODERATOR">Warehouse Moderator (Supervision & Orders)</option>
           <option value="ACCOUNTANT">Accountant (Invoices & Payments)</option>
+          <option value="CLIENT_ACCOUNTANT">Client Accountant (Accounting only)</option>
           <option value="CLIENT">Client (Order Tracking, Delivery Verification & Invoices)</option>
           <option value="PLATFORM_ADMIN">Platform Admin (System Superuser)</option>
         </select>

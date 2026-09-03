@@ -1,9 +1,8 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
+import { revalidatePath } from "next/cache";
 import { 
   Building2, 
-  Printer, 
-  Share2, 
   ArrowLeft, 
   CheckCircle2, 
   Clock, 
@@ -16,9 +15,104 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { requireUser } from "@/lib/auth";
+import { InvoiceActions } from "@/components/invoice-actions";
+import { requireDashboardRoute, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { ensureStorageBucket, storageBuckets, validateFileUpload } from "@/lib/storage";
+import { notifyOrderAudience } from "@/lib/notifications-server";
 import { money, statusTone } from "@/lib/utils";
+import { InvoiceStatus, PaymentStatus } from "@prisma/client";
+
+async function markInvoicePaid(formData: FormData) {
+  "use server";
+
+  const invoiceId = String(formData.get("invoiceId") ?? "");
+  const proofUrl = String(formData.get("proofUrl") ?? "").trim();
+  const proofFile = formData.get("proofFile");
+  const user = await requireUser(["ACCOUNTANT", "CLIENT_ACCOUNTANT", "WAREHOUSE_OWNER", "PLATFORM_ADMIN"]);
+
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      payments: true,
+      client: { select: { companyName: true, companyGroupId: true } },
+    },
+  });
+
+  const linkedClient = user.role === "CLIENT_ACCOUNTANT"
+    ? await prisma.client.findFirst({
+        where: { userId: user.id, tenantId: user.tenantId ?? "" },
+        select: { companyName: true, companyGroupId: true },
+      })
+    : null;
+  const canPayInvoice = user.role !== "CLIENT_ACCOUNTANT"
+    ? true
+    : Boolean(
+        linkedClient &&
+        (invoice?.client.companyName === linkedClient.companyName ||
+          (linkedClient.companyGroupId && invoice?.client.companyGroupId === linkedClient.companyGroupId)),
+      );
+
+  if (!invoice || (user.role !== "PLATFORM_ADMIN" && invoice.tenantId !== user.tenantId) || !canPayInvoice) {
+    throw new Error("Invoice not found or unauthorized.");
+  }
+
+  let finalProofUrl = proofUrl;
+  if (proofFile instanceof File && proofFile.size > 0) {
+    validateFileUpload(proofFile, ["application/pdf", "image/jpeg", "image/png", "image/webp"]);
+    const supabase = await ensureStorageBucket(storageBuckets.invoices);
+    const extension = proofFile.name.split(".").pop() ?? "bin";
+    const fileName = `payment-proofs/${invoice.id}-${Date.now()}.${extension}`;
+    const { error } = await supabase.storage.from(storageBuckets.invoices).upload(fileName, proofFile, {
+      upsert: false,
+      contentType: proofFile.type,
+    });
+    if (error) throw error;
+    finalProofUrl = supabase.storage.from(storageBuckets.invoices).getPublicUrl(fileName).data.publicUrl;
+  }
+
+  if (!finalProofUrl) {
+    throw new Error("Upload payment proof or enter a payment proof URL before marking this invoice as paid.");
+  }
+
+  await prisma.payment.create({
+    data: {
+      tenantId: invoice.tenantId,
+      invoiceId: invoice.id,
+      amount: invoice.total,
+      status: PaymentStatus.PAID,
+      method: "BANK_TRANSFER",
+      reference: `CLIENT-PAID-${invoice.invoiceNumber}`,
+      proofUrl: finalProofUrl,
+      paidAt: new Date(),
+    },
+  });
+
+  await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: {
+      paymentStatus: PaymentStatus.PAID,
+      status: InvoiceStatus.FINAL,
+      finalizedAt: new Date(),
+    },
+  });
+
+  await notifyOrderAudience({
+    tenantId: invoice.tenantId,
+    clientId: invoice.clientId,
+    orderId: invoice.orderId,
+    type: "PAYMENT_RECEIVED",
+    title: "Invoice payment received",
+    message: `${invoice.invoiceNumber} was marked as paid with payment proof uploaded.`,
+    priority: "high",
+    actionUrl: `/dashboard/invoices/${invoice.id}`,
+    excludeUserId: user.id,
+  });
+
+  revalidatePath("/dashboard/accounting");
+  revalidatePath(`/dashboard/invoices/${invoice.id}`);
+  redirect(`/dashboard/invoices/${invoice.id}`);
+}
 
 export default async function InvoiceDetailPage({
   params,
@@ -26,7 +120,13 @@ export default async function InvoiceDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/orders");
+  const linkedClient = user.role === "CLIENT_ACCOUNTANT"
+    ? await prisma.client.findFirst({
+        where: { userId: user.id, tenantId: user.tenantId ?? "" },
+        select: { companyName: true, companyGroupId: true },
+      })
+    : null;
 
   const invoice = await prisma.invoice.findUnique({
     where: { id },
@@ -48,7 +148,15 @@ export default async function InvoiceDetailPage({
     },
   });
 
-  if (!invoice || (user.role !== "PLATFORM_ADMIN" && invoice.tenantId !== user.tenantId)) {
+  const canViewInvoice = user.role !== "CLIENT_ACCOUNTANT"
+    ? true
+    : Boolean(
+        linkedClient &&
+        (invoice?.client.companyName === linkedClient.companyName ||
+          (linkedClient.companyGroupId && invoice?.client.companyGroupId === linkedClient.companyGroupId)),
+      );
+
+  if (!invoice || (user.role !== "PLATFORM_ADMIN" && invoice.tenantId !== user.tenantId) || !canViewInvoice) {
     notFound();
   }
 
@@ -72,22 +180,57 @@ export default async function InvoiceDetailPage({
               Track & Verify Order
             </Button>
           </Link>
-          <button
-            onClick={() => {}}
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            Share Link
-          </button>
-          <button
-            // Native window.print via client action or print stylesheet
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 shadow-sm"
-          >
-            <Printer className="h-3.5 w-3.5" />
-            Print / Save PDF
-          </button>
+          <InvoiceActions />
         </div>
       </div>
+
+      {invoice.paymentStatus !== "PAID" && ["ACCOUNTANT", "CLIENT_ACCOUNTANT", "WAREHOUSE_OWNER", "PLATFORM_ADMIN"].includes(user.role) && (
+        <Card className="p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">Mark as paid</h2>
+              <p className="text-sm text-slate-500">Enter the payment proof URL and confirm the invoice is settled.</p>
+            </div>
+            <form action={markInvoicePaid} encType="multipart/form-data" className="flex w-full max-w-xl flex-col gap-2 sm:flex-row sm:items-end">
+              <input type="hidden" name="invoiceId" value={invoice.id} />
+              <div className="flex-1">
+                <label htmlFor="proofFile" className="mb-1 block text-xs font-semibold text-slate-700">Upload payment proof</label>
+                <input id="proofFile" name="proofFile" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" className="h-10 w-full rounded border border-border bg-slate-50 px-3 py-2 text-xs focus:border-primary focus:bg-white focus:outline-none" />
+                <label htmlFor="proofUrl" className="sr-only">Payment proof URL</label>
+                <input
+                  id="proofUrl"
+                  name="proofUrl"
+                  type="url"
+                  placeholder="Or paste proof URL"
+                  className="mt-2 h-9 w-full rounded border border-border bg-slate-50 px-3 text-xs focus:border-primary focus:bg-white focus:outline-none"
+                />
+              </div>
+              <Button type="submit" className="h-10 whitespace-nowrap">Paid</Button>
+            </form>
+          </div>
+        </Card>
+      )}
+
+      {invoice.paymentStatus === "PAID" && (
+        <Card className="p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Payment proof</div>
+              <div className="text-sm text-slate-600">This invoice has been marked as paid.</div>
+            </div>
+            <div className="flex-1 sm:max-w-xl">
+              <a
+                href={invoice.payments.at(-1)?.proofUrl || "#"}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex break-all text-sm font-medium text-primary underline underline-offset-2"
+              >
+                {invoice.payments.at(-1)?.proofUrl || "No payment proof URL recorded"}
+              </a>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Printable Invoice Sheet */}
       <div className="rounded-xl border border-border bg-white p-8 md:p-12 shadow-sm text-slate-900 print:border-none print:shadow-none print:p-0">

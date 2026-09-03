@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 import { Card } from "@/components/ui/card";
 import { OrderForm } from "@/components/order-form";
-import { OrderStatus, VerificationStatus, Prisma, InvoiceStatus, PaymentStatus } from "@prisma/client";
+import { OrderStatus, VerificationStatus, Prisma, InvoiceStatus, PaymentStatus, InventoryMovementType } from "@prisma/client";
 
 export default async function NewOrderPage() {
   const user = await requireUser(["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]);
@@ -42,6 +42,7 @@ export default async function NewOrderPage() {
 
   async function createOrderAction(data: {
     clientId: string;
+    selectedContactIds?: string[];
     newCompany?: string;
     newContactPerson?: string;
     newMobile?: string;
@@ -81,13 +82,14 @@ export default async function NewOrderPage() {
     }
 
     // 1. Resolve or Create Client / Employee
+    const selectedContactIds = Array.from(new Set((data.selectedContactIds ?? []).filter(Boolean))).filter((id) => id !== "NEW");
+
     let resolvedClientId = data.clientId;
     if (resolvedClientId === "NEW" || !resolvedClientId) {
       if (!data.newCompany || !data.newContactPerson || !data.newMobile) {
         throw new Error("Company Name, Employee Name, and Mobile are required.");
       }
 
-      // Check if employee with same mobile exists under this company
       const existingClient = await prisma.client.findFirst({
         where: {
           tenantId: targetTenantId,
@@ -98,7 +100,6 @@ export default async function NewOrderPage() {
       if (existingClient) {
         resolvedClientId = existingClient.id;
       } else {
-        // Create user account for client
         let userId: string | null = null;
         const existingUser = await prisma.user.findFirst({
           where: { mobile: data.newMobile },
@@ -134,6 +135,10 @@ export default async function NewOrderPage() {
         resolvedClientId = createdClient.id;
       }
     }
+
+    const finalContactIds = selectedContactIds.length > 0
+      ? selectedContactIds
+      : [resolvedClientId].filter(Boolean);
 
     // 2. Calculate totals
     let subtotal = 0;
@@ -181,6 +186,9 @@ export default async function NewOrderPage() {
           totalAmount: new Prisma.Decimal(totalAmount),
           notes: data.notes || null,
           createdById: currentUser.id,
+          contacts: {
+            create: finalContactIds.map((clientId) => ({ tenantId: targetTenantId, clientId })),
+          },
           items: {
             create: lineItemsData,
           },
@@ -197,10 +205,64 @@ export default async function NewOrderPage() {
         },
       });
 
+      // Deduct stock for each product in the newly issued order.
+      const quantitiesByProduct = new Map<string, number>();
+      for (const item of data.items) {
+        quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) ?? 0) + item.quantity);
+      }
+
+      for (const [productId, quantity] of quantitiesByProduct) {
+        const inventory = await tx.inventory.findFirst({
+          where: { tenantId: targetTenantId, productId },
+          orderBy: { updatedAt: "asc" },
+        });
+
+        if (!inventory) {
+          throw new Error(`No inventory record found for product ${productId}.`);
+        }
+
+        const updatedInventory = await tx.inventory.updateMany({
+          where: {
+            id: inventory.id,
+            tenantId: targetTenantId,
+            availableQuantity: { gte: quantity },
+          },
+          data: {
+            availableQuantity: { decrement: quantity },
+            totalQuantity: { decrement: quantity },
+          },
+        });
+
+        if (updatedInventory.count !== 1) {
+          throw new Error(`Insufficient stock for product ${productId}. Requested ${quantity}.`);
+        }
+
+        const newAvailableQuantity = inventory.availableQuantity - quantity;
+        await tx.inventoryMovement.create({
+          data: {
+            tenantId: targetTenantId,
+            inventoryId: inventory.id,
+            productId,
+            orderId: createdOrder.id,
+            type: InventoryMovementType.ORDER_ISSUE,
+            quantity,
+            previousQuantity: inventory.availableQuantity,
+            newQuantity: newAvailableQuantity,
+            notes: `Stock deducted for order ${orderNumber}`,
+            createdById: currentUser.id,
+          },
+        });
+      }
+
       // 2. Generate Invoice if requested
       if (data.generateInvoice) {
-        const invoiceCount = await tx.invoice.count({ where: { tenantId: targetTenantId } });
-        const invoiceNumber = `INV-2026-${String(invoiceCount + 1).padStart(6, "0")}`;
+        const latestInvoice = await tx.invoice.findFirst({
+          where: { tenantId: targetTenantId, invoiceNumber: { startsWith: "INV-2026-" } },
+          orderBy: { invoiceNumber: "desc" },
+          select: { invoiceNumber: true },
+        });
+        const latestInvoiceNumber = Number(latestInvoice?.invoiceNumber.replace("INV-2026-", "")) || 0;
+        const invoiceNumber = `INV-2026-${String(latestInvoiceNumber + 1).padStart(6, "0")}`;
 
         await tx.invoice.create({
           data: {

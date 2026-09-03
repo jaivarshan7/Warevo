@@ -5,7 +5,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ClientStatus } from "@prisma/client";
+import { ClientEmployeeRole, ClientStatus, Role } from "@prisma/client";
 
 async function addClient(formData: FormData) {
   "use server";
@@ -16,6 +16,8 @@ async function addClient(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const gstNumber = String(formData.get("gstNumber") ?? "").trim();
   const tenantId = String(formData.get("tenantId") ?? "").trim();
+  const companyGroupId = String(formData.get("companyGroupId") ?? "").trim();
+  const employeeRole = (String(formData.get("employeeRole") ?? "RECEIVER") as ClientEmployeeRole) || ClientEmployeeRole.RECEIVER;
   const billingAddress = String(formData.get("billingAddress") ?? "").trim();
   const shippingAddress = String(formData.get("shippingAddress") ?? "").trim();
   const status = (String(formData.get("status") ?? "ACTIVE") as ClientStatus) || ClientStatus.ACTIVE;
@@ -68,7 +70,7 @@ async function addClient(formData: FormData) {
         name: contactPerson,
         mobile,
         email: email || null,
-        role: "CLIENT",
+        role: employeeRole === "ACCOUNT" ? Role.CLIENT_ACCOUNTANT : Role.CLIENT,
         status: "ACTIVE",
       },
     });
@@ -79,6 +81,7 @@ async function addClient(formData: FormData) {
     data: {
       tenantId,
       userId,
+      companyGroupId: companyGroupId || null,
       companyName,
       contactPerson,
       mobile,
@@ -86,6 +89,7 @@ async function addClient(formData: FormData) {
       gstNumber: gstNumber || null,
       billingAddress: billingAddress || shippingAddress || "Client Billing Address",
       shippingAddress: shippingAddress || billingAddress || "Client Shipping Address",
+      employeeRole,
       status,
     },
   });
@@ -97,14 +101,24 @@ async function addClient(formData: FormData) {
 }
 
 export default async function AddClientPage() {
-  const tenants = await prisma.tenant.findMany({
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-    },
-    orderBy: { name: "asc" },
-  });
+  const [tenants, companyGroups] = await Promise.all([
+    prisma.tenant.findMany({
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+      },
+      orderBy: { name: "asc" },
+    }),
+    prisma.companyGroup.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        tenantId: true,
+      },
+    }),
+  ]);
 
   return (
     <div className="min-h-screen bg-slate-50 py-8">
@@ -147,7 +161,6 @@ export default async function AddClientPage() {
               </select>
             </div>
 
-            {/* Company Name & GSTIN */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label htmlFor="companyName" className="block text-xs font-semibold text-slate-700 mb-1">
@@ -164,6 +177,25 @@ export default async function AddClientPage() {
               </div>
 
               <div>
+                <label htmlFor="companyGroupId" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Company Group
+                </label>
+                <select
+                  id="companyGroupId"
+                  name="companyGroupId"
+                  defaultValue=""
+                  className="h-10 w-full rounded border border-border bg-slate-50 px-3 text-sm focus:border-primary focus:bg-white focus:outline-none"
+                >
+                  <option value="">No group assigned</option>
+                  {companyGroups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
                 <label htmlFor="gstNumber" className="block text-xs font-semibold text-slate-700 mb-1">
                   Company GSTIN
                 </label>
@@ -174,6 +206,24 @@ export default async function AddClientPage() {
                   placeholder="e.g. 33AAYFP5618B1Z4"
                   className="h-10 w-full rounded border border-border bg-slate-50 px-3 font-mono text-sm uppercase focus:border-primary focus:bg-white focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="employeeRole" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Employee Role
+                </label>
+                <select
+                  id="employeeRole"
+                  name="employeeRole"
+                  defaultValue="RECEIVER"
+                  className="h-10 w-full rounded border border-border bg-slate-50 px-3 text-sm focus:border-primary focus:bg-white focus:outline-none"
+                >
+                  <option value="RECEIVER">Receiver</option>
+                  <option value="STORE">Store</option>
+                  <option value="MANAGER">Manager</option>
+                  <option value="GM">GM</option>
+                  <option value="MD">MD</option>
+                </select>
               </div>
             </div>
 

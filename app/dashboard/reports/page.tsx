@@ -1,12 +1,12 @@
 import { Card } from "@/components/ui/card";
 import { OrderStatusChart } from "@/components/order-status-chart";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildReportSummary } from "@/lib/reporting";
 import { money } from "@/lib/utils";
 
 export default async function ReportsPage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/reports");
   const where = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
 
   const [orders, invoices, products] = await Promise.all([

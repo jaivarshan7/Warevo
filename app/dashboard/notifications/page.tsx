@@ -4,17 +4,16 @@ import { redirect } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { buildNotificationActionUrl } from "@/lib/notifications";
-import { markAllNotificationsAsRead, markNotificationAsRead } from "@/lib/notifications-server";
-import { prisma } from "@/lib/prisma";
+import { getUserNotifications, markAllNotificationsAsRead, markNotificationAsRead } from "@/lib/notifications-server";
 
 export default async function NotificationsPage({
   searchParams,
 }: {
   searchParams: Promise<{ markAll?: string; markId?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/notifications");
   const params = await searchParams;
 
   if (params.markAll === "1") {
@@ -27,10 +26,7 @@ export default async function NotificationsPage({
     redirect("/dashboard/notifications");
   }
 
-  const notifications = await prisma.notification.findMany({
-    where: user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" },
-    orderBy: { createdAt: "desc" }
-  });
+  const notifications = await getUserNotifications(user);
 
   return (
     <section className="space-y-5">

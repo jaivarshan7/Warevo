@@ -4,7 +4,8 @@ import { ClipboardCheck, Plus, ReceiptText, ArrowRight, CheckCircle2, Clock, Tru
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { requireUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { getClientOrderVisibility, requireDashboardRoute, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { money, statusTone } from "@/lib/utils";
 import { InvoiceStatus, PaymentStatus, Prisma } from "@prisma/client";
@@ -23,8 +24,13 @@ async function quickGenerateInvoice(formData: FormData) {
     throw new Error("Order not found or unauthorized.");
   }
 
-  const invoiceCount = await prisma.invoice.count({ where: { tenantId: order.tenantId } });
-  const invoiceNumber = `INV-2026-${String(invoiceCount + 1).padStart(6, "0")}`;
+  const latestInvoice = await prisma.invoice.findFirst({
+    where: { tenantId: order.tenantId, invoiceNumber: { startsWith: "INV-2026-" } },
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+  const latestInvoiceNumber = Number(latestInvoice?.invoiceNumber.replace("INV-2026-", "")) || 0;
+  const invoiceNumber = `INV-2026-${String(latestInvoiceNumber + 1).padStart(6, "0")}`;
 
   await prisma.invoice.create({
     data: {
@@ -65,10 +71,13 @@ async function quickGenerateInvoice(formData: FormData) {
 
 export default async function OrdersPage() {
   const user = await requireUser();
+  if (user.role === "PRODUCT_RECEIVER") redirect("/dashboard/orders/track");
+  if (user.role === "CLIENT") await requireDashboardRoute("/dashboard/orders");
   const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+  const orderWhere = user.role === "CLIENT" ? await getClientOrderVisibility(user) : tenantWhere;
 
   const orders = await prisma.order.findMany({
-    where: tenantWhere,
+    where: orderWhere,
     include: {
       client: true,
       assignedStaff: true,

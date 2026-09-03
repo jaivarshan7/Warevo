@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { 
   ClipboardCheck, 
@@ -14,11 +14,13 @@ import {
   UserCheck,
   UserPlus,
   MapPin,
-  Phone
+  Phone,
+  Users
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { money } from "@/lib/utils";
+import { normalizeSelectedContactIds } from "@/lib/order-contacts";
 
 export type ClientOption = {
   id: string;
@@ -53,6 +55,7 @@ interface OrderFormProps {
   tenantId?: string;
   action: (data: {
     clientId: string;
+    selectedContactIds?: string[];
     newCompany?: string;
     newContactPerson?: string;
     newMobile?: string;
@@ -76,8 +79,8 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
   
   // Filter employees for the chosen company
   const companyEmployees = clients.filter((c) => c.companyName === selectedCompany);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(
-    companyEmployees[0]?.id ?? "NEW"
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>(
+    companyEmployees.length ? [companyEmployees[0].id] : []
   );
 
   // New Client / Employee inline state
@@ -109,11 +112,21 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
   const handleCompanyChange = (company: string) => {
     setSelectedCompany(company);
     if (company === "NEW") {
-      setSelectedEmployeeId("NEW");
+      setSelectedEmployeeIds([]);
     } else {
       const emps = clients.filter((c) => c.companyName === company);
-      setSelectedEmployeeId(emps[0]?.id ?? "NEW");
+      setSelectedEmployeeIds(emps.length ? [emps[0].id] : []);
     }
+  };
+
+  const toggleEmployeeSelection = (employeeId: string) => {
+    setSelectedEmployeeIds((current) => {
+      if (current.includes(employeeId)) {
+        return current.filter((id) => id !== employeeId);
+      }
+
+      return [...current, employeeId];
+    });
   };
 
   const handleProductChange = (index: number, productId: string) => {
@@ -176,13 +189,17 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
   const totalAmount = subtotal + totalTax;
 
   // Selected client object for preview
-  const currentEmployee = clients.find((c) => c.id === selectedEmployeeId);
+  const normalizedSelectedEmployeeIds = useMemo(
+    () => normalizeSelectedContactIds(selectedEmployeeIds),
+    [selectedEmployeeIds]
+  );
+  const currentEmployee = clients.find((c) => c.id === normalizedSelectedEmployeeIds[0]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    const isNew = selectedCompany === "NEW" || selectedEmployeeId === "NEW";
+    const isNew = selectedCompany === "NEW" || selectedEmployeeIds.length === 0;
     if (isNew) {
       const compName = selectedCompany === "NEW" ? newCompanyName.trim() : selectedCompany;
       if (!compName) {
@@ -195,6 +212,11 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
       }
     }
 
+    if (!isNew && normalizedSelectedEmployeeIds.length === 0) {
+      setErrorMsg("Please select at least one client contact for this order.");
+      return;
+    }
+
     if (items.length === 0 || items.some((i) => !i.productId || i.quantity <= 0)) {
       setErrorMsg("Please ensure all order line items have valid products and quantities.");
       return;
@@ -203,7 +225,8 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
     try {
       setIsSubmitting(true);
       await action({
-        clientId: isNew ? "NEW" : selectedEmployeeId,
+        clientId: isNew ? "NEW" : normalizedSelectedEmployeeIds[0] ?? "NEW",
+        selectedContactIds: normalizedSelectedEmployeeIds,
         newCompany: selectedCompany === "NEW" ? newCompanyName.trim() : selectedCompany,
         newContactPerson: newContactPerson.trim(),
         newMobile: newMobile.trim(),
@@ -260,25 +283,43 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
             </select>
           </div>
 
-          {/* Step 2: Employee Dropdown (if company exists) */}
+          {/* Step 2: Multi-select employee contacts (if company exists) */}
           {selectedCompany !== "NEW" && (
             <div>
-              <label htmlFor="employeeSelect" className="block text-xs font-semibold text-slate-700 mb-1">
-                Designated Employee / Contact Person <span className="text-red-500">*</span>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Client Contacts for this Order <span className="text-red-500">*</span>
               </label>
-              <select
-                id="employeeSelect"
-                value={selectedEmployeeId}
-                onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                className="h-10 w-full rounded border border-border bg-slate-50 px-3 text-sm font-medium focus:border-primary focus:bg-white focus:outline-none"
-              >
-                {companyEmployees.map((emp) => (
-                  <option key={emp.id} value={emp.id}>
-                    👤 {emp.contactPerson} · {emp.mobile}
-                  </option>
-                ))}
-                <option value="NEW">+ Add New Employee to {selectedCompany}</option>
-              </select>
+              <div className="rounded border border-border bg-slate-50 p-2">
+                <div className="space-y-2">
+                  {companyEmployees.map((emp) => {
+                    const checked = selectedEmployeeIds.includes(emp.id);
+                    return (
+                      <label key={emp.id} className="flex cursor-pointer items-center justify-between gap-2 rounded border border-transparent bg-white px-2 py-1.5 text-sm text-slate-700 hover:border-primary/30">
+                        <span className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleEmployeeSelection(emp.id)}
+                            className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                          <span className="flex items-center gap-2">
+                            <UserCheck className="h-3.5 w-3.5 text-slate-500" />
+                            {emp.contactPerson}
+                          </span>
+                        </span>
+                        <span className="text-[11px] text-slate-500">{emp.mobile}</span>
+                      </label>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEmployeeIds([])}
+                    className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-primary"
+                  >
+                    <Users className="h-3.5 w-3.5" /> Clear selection
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -317,7 +358,7 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
           )}
 
           {/* Inline Form when adding a new Employee */}
-          {(selectedCompany === "NEW" || selectedEmployeeId === "NEW") && (
+          {(selectedCompany === "NEW" || selectedEmployeeIds.length === 0) && (
             <>
               <div>
                 <label htmlFor="newContactPerson" className="block text-xs font-semibold text-slate-700 mb-1">
@@ -366,12 +407,12 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
           )}
 
           {/* Selected Employee Preview Summary */}
-          {selectedCompany !== "NEW" && selectedEmployeeId !== "NEW" && currentEmployee && (
+          {selectedCompany !== "NEW" && normalizedSelectedEmployeeIds.length > 0 && currentEmployee && (
             <div className="sm:col-span-2 rounded-lg bg-teal-50/60 p-3.5 border border-teal-200 text-xs flex flex-wrap items-center justify-between gap-3">
               <div>
                 <span className="font-semibold text-teal-900 flex items-center gap-1.5">
                   <UserCheck className="h-4 w-4 text-teal-700" />
-                  Order Assigned To: <span className="font-bold">{currentEmployee.contactPerson}</span> ({currentEmployee.companyName})
+                  Primary Contact: <span className="font-bold">{currentEmployee.contactPerson}</span> ({currentEmployee.companyName})
                 </span>
                 <div className="mt-0.5 text-slate-600 flex items-center gap-3">
                   <span className="flex items-center gap-1"><Phone className="h-3 w-3" /> {currentEmployee.mobile}</span>
@@ -381,7 +422,7 @@ export function OrderForm({ clients, products, tenantId, action }: OrderFormProp
                 </div>
               </div>
               <span className="text-[11px] font-mono bg-white px-2 py-1 rounded border border-teal-200 text-teal-800 font-semibold">
-                Client ID: {currentEmployee.id.slice(-6)}
+                {normalizedSelectedEmployeeIds.length} contacts selected
               </span>
             </div>
           )}

@@ -5,7 +5,7 @@ import { Store, Save, ArrowLeft } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ClientStatus } from "@prisma/client";
+import { ClientEmployeeRole, ClientStatus, Role } from "@prisma/client";
 
 export default async function EditClientPage({
   params,
@@ -14,13 +14,17 @@ export default async function EditClientPage({
 }) {
   const { id } = await params;
 
-  const [client, tenants] = await Promise.all([
+  const [client, tenants, companyGroups] = await Promise.all([
     prisma.client.findUnique({
       where: { id },
       include: { tenant: true },
     }),
     prisma.tenant.findMany({
       select: { id: true, name: true, slug: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.companyGroup.findMany({
+      select: { id: true, name: true, tenantId: true },
       orderBy: { name: "asc" },
     }),
   ]);
@@ -38,6 +42,8 @@ export default async function EditClientPage({
     const email = String(formData.get("email") ?? "").trim();
     const gstNumber = String(formData.get("gstNumber") ?? "").trim();
     const tenantId = String(formData.get("tenantId") ?? "").trim();
+    const companyGroupId = String(formData.get("companyGroupId") ?? "").trim();
+    const employeeRole = (String(formData.get("employeeRole") ?? "RECEIVER") as ClientEmployeeRole) || ClientEmployeeRole.RECEIVER;
     const billingAddress = String(formData.get("billingAddress") ?? "").trim();
     const shippingAddress = String(formData.get("shippingAddress") ?? "").trim();
     const status = (String(formData.get("status") ?? "ACTIVE") as ClientStatus) || ClientStatus.ACTIVE;
@@ -68,11 +74,21 @@ export default async function EditClientPage({
         email: email || null,
         gstNumber: gstNumber || null,
         tenantId,
+        companyGroupId: companyGroupId || null,
         billingAddress: billingAddress || shippingAddress || "Client Billing Address",
         shippingAddress: shippingAddress || billingAddress || "Client Shipping Address",
+        employeeRole,
         status,
       },
     });
+
+    const linkedUser = await prisma.client.findUnique({ where: { id }, select: { userId: true } });
+    if (linkedUser?.userId) {
+      await prisma.user.update({
+        where: { id: linkedUser.userId },
+        data: { role: employeeRole === ClientEmployeeRole.ACCOUNT ? Role.CLIENT_ACCOUNTANT : Role.CLIENT },
+      });
+    }
 
     revalidatePath("/admin-dashboard");
     revalidatePath("/dashboard/clients");
@@ -125,7 +141,6 @@ export default async function EditClientPage({
               </select>
             </div>
 
-            {/* Company Name & GSTIN */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label htmlFor="companyName" className="block text-xs font-semibold text-slate-700 mb-1">
@@ -143,6 +158,25 @@ export default async function EditClientPage({
               </div>
 
               <div>
+                <label htmlFor="companyGroupId" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Company Group
+                </label>
+                <select
+                  id="companyGroupId"
+                  name="companyGroupId"
+                  defaultValue={client.companyGroupId ?? ""}
+                  className="h-10 w-full rounded border border-border bg-slate-50 px-3 text-sm focus:border-primary focus:bg-white focus:outline-none"
+                >
+                  <option value="">No group assigned</option>
+                  {companyGroups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
                 <label htmlFor="gstNumber" className="block text-xs font-semibold text-slate-700 mb-1">
                   Company GSTIN
                 </label>
@@ -154,6 +188,25 @@ export default async function EditClientPage({
                   placeholder="e.g. 33AAYFP5618B1Z4"
                   className="h-10 w-full rounded border border-border bg-slate-50 px-3 font-mono text-sm uppercase focus:border-primary focus:bg-white focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="employeeRole" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Employee Role
+                </label>
+                <select
+                  id="employeeRole"
+                  name="employeeRole"
+                  defaultValue={client.employeeRole ?? "RECEIVER"}
+                  className="h-10 w-full rounded border border-border bg-slate-50 px-3 text-sm focus:border-primary focus:bg-white focus:outline-none"
+                >
+                  <option value="RECEIVER">Receiver</option>
+                  <option value="STORE">Store</option>
+                  <option value="ACCOUNT">Account</option>
+                  <option value="MANAGER">Manager</option>
+                  <option value="GM">GM</option>
+                  <option value="MD">MD</option>
+                </select>
               </div>
             </div>
 

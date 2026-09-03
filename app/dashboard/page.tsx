@@ -1,4 +1,4 @@
-import { AlertTriangle, ClipboardCheck, FileText, IndianRupee, Package, Users } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardCheck, FileText, IndianRupee, Package, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { listDashboardData } from "@/lib/services";
@@ -6,10 +6,13 @@ import { money, statusTone } from "@/lib/utils";
 
 export default async function DashboardPage() {
   const { user, orders, clients, invoices, products, notifications } = await listDashboardData();
-  const activeOrders = orders.filter((order) => !["COMPLETED", "CANCELLED"].includes(order.status)).length;
+  const totalOrders = orders.length;
+  const pendingOrders = orders.filter((order) => !["COMPLETED", "CANCELLED"].includes(order.status)).length;
+  const completedOrders = orders.filter((order) => order.status === "COMPLETED").length;
+  const receivables = invoices
+    .filter((invoice) => invoice.paymentStatus !== "PAID")
+    .reduce((sum, invoice) => sum + Number(invoice.total), 0);
   const pendingVerification = orders.filter((order) => order.verificationStatus !== "VERIFIED").length;
-  const receivables = invoices.reduce((sum, invoice) => sum + Number(invoice.total), 0);
-  const lowStock = products.filter((product) => product.inventory.some((item) => item.availableQuantity <= product.reorderLevel)).length;
 
   return (
     <section className="space-y-6">
@@ -18,10 +21,10 @@ export default async function DashboardPage() {
         <p className="text-sm text-slate-500">{user.role === "PLATFORM_ADMIN" ? "Platform-wide operating view." : "Tenant-isolated operating view."}</p>
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Metric icon={<ClipboardCheck />} label="Active orders" value={activeOrders} />
-        <Metric icon={<Users />} label="Clients" value={clients} />
+        <Metric icon={<ClipboardCheck />} label="Total Orders" value={totalOrders} />
+        <Metric icon={<AlertTriangle />} label="Pending Orders" value={pendingOrders} />
+        <Metric icon={<CheckCircle2 />} label="Completed Orders" value={completedOrders} />
         <Metric icon={<FileText />} label="Receivables" value={money(receivables)} />
-        <Metric icon={<AlertTriangle />} label="Low stock" value={lowStock} />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
         <Card>

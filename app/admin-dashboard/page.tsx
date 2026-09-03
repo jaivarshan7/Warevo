@@ -1,6 +1,7 @@
 import { Building2, Shield, ArrowRight, LogOut, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,37 @@ async function adminSignOut() {
   const cookieStore = await cookies();
   cookieStore.delete("admin-user-email");
   redirect("/admin-login");
+}
+
+async function createCompanyGroup(formData: FormData) {
+  "use server";
+
+  const tenantId = String(formData.get("tenantId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+
+  if (!tenantId || !name) {
+    throw new Error("Organization and group name are required.");
+  }
+
+  const existingGroup = await prisma.companyGroup.findUnique({
+    where: { tenantId_name: { tenantId, name } },
+  });
+
+  if (existingGroup) {
+    throw new Error(`A group named '${name}' already exists in this organization.`);
+  }
+
+  await prisma.companyGroup.create({
+    data: {
+      tenantId,
+      name,
+      description: description || null,
+    },
+  });
+
+  revalidatePath("/admin-dashboard");
+  revalidatePath("/admin-dashboard/add-client");
 }
 
 export default async function AdminDashboardPage() {
@@ -71,6 +103,26 @@ export default async function AdminDashboardPage() {
       },
     },
     orderBy: { createdAt: "desc" },
+  });
+
+  const companyGroups = await prisma.companyGroup.findMany({
+    orderBy: { name: "asc" },
+    include: {
+      clients: {
+        include: {
+          orders: {
+            select: {
+              id: true,
+              orderNumber: true,
+              status: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: { clients: true },
+      },
+    },
   });
 
   // Fetch all tenants
@@ -164,6 +216,8 @@ export default async function AdminDashboardPage() {
           users={users}
           tenants={tenants}
           clients={clients}
+          companyGroups={companyGroups}
+          createCompanyGroup={createCompanyGroup}
         />
       </main>
     </div>

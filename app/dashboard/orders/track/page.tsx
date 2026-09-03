@@ -1,18 +1,27 @@
 import { Truck, ClipboardCheck, ArrowLeft } from "lucide-react";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth";
+import { getClientOrderVisibility, requireDashboardRoute, requireUser } from "@/lib/auth";
 import { OrderTrackerView } from "@/components/order-tracker-view";
 import { OrderStatus, VerificationStatus, NotificationType, InvoiceStatus, PaymentStatus, Prisma } from "@prisma/client";
+import { notifyOrderAudience } from "@/lib/notifications-server";
 
 export default async function OrderTrackAndVerifyPage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/orders/track");
+  if (!(["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT"].includes(user.role))) {
+    redirect("/dashboard");
+  }
   const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+  const orderWhere = user.role === "CLIENT" ? await getClientOrderVisibility(user) : tenantWhere;
 
   const [orders, clients] = await Promise.all([
     prisma.order.findMany({
-      where: tenantWhere,
+      where: {
+        ...orderWhere,
+        ...(user.role === "PRODUCT_RECEIVER" ? { verificationStatus: { not: "VERIFIED" } } : {}),
+      },
       include: {
         client: true,
         items: {
@@ -62,7 +71,7 @@ export default async function OrderTrackAndVerifyPage() {
   }) {
     "use server";
 
-    const currentUser = await requireUser();
+    const currentUser = await requireUser(["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT"]);
     const order = await prisma.order.findUnique({
       where: { id: data.orderId },
       include: { client: true },
@@ -128,18 +137,7 @@ export default async function OrderTrackAndVerifyPage() {
         },
       });
 
-      // 4. Notification
-      await tx.notification.create({
-        data: {
-          tenantId: order.tenantId,
-          orderId: order.id,
-          type: NotificationType.CLIENT_COMPLETED_VERIFICATION,
-          title: "Delivery Inspection Completed",
-          message: `Order ${order.orderNumber} was verified as ${data.status} by ${currentUser.name}.`,
-        },
-      });
-
-      // 5. Audit Log
+      // 4. Audit Log
       await tx.auditLog.create({
         data: {
           tenantId: order.tenantId,
@@ -152,6 +150,17 @@ export default async function OrderTrackAndVerifyPage() {
           newValue: { verificationStatus: nextVerificationStatus, status: nextOrderStatus },
         },
       });
+    });
+
+    await notifyOrderAudience({
+      tenantId: order.tenantId,
+      clientId: order.clientId,
+      orderId: order.id,
+      type: NotificationType.CLIENT_COMPLETED_VERIFICATION,
+      title: "Delivery Received and Verified",
+      message: `Order ${order.orderNumber} was received and verified by ${currentUser.name}.`,
+      actionUrl: `/dashboard/orders/${order.id}`,
+      excludeUserId: currentUser.id,
     });
 
     revalidatePath("/dashboard/orders");
@@ -170,6 +179,9 @@ export default async function OrderTrackAndVerifyPage() {
     newClientAddress?: string;
     expectedDelivery: string;
     notes: string;
+    uploadedInvoiceDocumentId?: string;
+    uploadedInvoiceUrl?: string;
+    uploadedInvoiceName?: string;
     rows: Array<{
       name: string;
       sku: string;
@@ -180,7 +192,7 @@ export default async function OrderTrackAndVerifyPage() {
   }) {
     "use server";
 
-    const currentUser = await requireUser();
+    const currentUser = await requireUser(["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]);
     let tenantId = currentUser.tenantId;
 
     if (!tenantId) {
@@ -345,7 +357,7 @@ export default async function OrderTrackAndVerifyPage() {
       });
 
       // Create Commercial Invoice
-      await tx.invoice.create({
+      const createdInvoice = await tx.invoice.create({
         data: {
           tenantId,
           orderId: createdOrder.id,
@@ -359,6 +371,7 @@ export default async function OrderTrackAndVerifyPage() {
           igst: new Prisma.Decimal(0),
           discountTotal: new Prisma.Decimal(0),
           total: new Prisma.Decimal(totalAmount),
+          pdfUrl: data.uploadedInvoiceUrl ?? null,
           items: {
             create: lineItemsData.map((item) => {
               const divisor = new Prisma.Decimal(200).add(item.taxRate.mul(2));
@@ -377,6 +390,33 @@ export default async function OrderTrackAndVerifyPage() {
           },
         },
       });
+
+      if (data.uploadedInvoiceDocumentId) {
+        const attachedDocument = await tx.document.updateMany({
+          where: {
+            id: data.uploadedInvoiceDocumentId,
+            tenantId,
+            orderId: null,
+            type: "INVOICE_PDF",
+          },
+          data: { orderId: createdOrder.id },
+        });
+        if (attachedDocument.count !== 1) {
+          throw new Error("Uploaded invoice document could not be attached to the order.");
+        }
+      } else if (data.uploadedInvoiceUrl) {
+        await tx.document.create({
+          data: {
+            tenantId,
+            orderId: createdOrder.id,
+            type: "INVOICE_PDF",
+            name: data.uploadedInvoiceName || `${invoiceNumber}.pdf`,
+            url: data.uploadedInvoiceUrl,
+            mimeType: "application/pdf",
+            sizeBytes: 0,
+          },
+        });
+      }
 
       // Audit Log
       await tx.auditLog.create({

@@ -2,19 +2,21 @@ import { InvoiceStatus, InventoryMovementType, OrderStatus, Prisma, Role } from 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { assertPermission } from "@/lib/rbac";
-import { requireUser } from "@/lib/auth";
+import { getClientOrderVisibility, requireUser } from "@/lib/auth";
 import { assertValidTransition, verificationStatusForOrderStatus } from "@/lib/order-workflow";
 import { createClientSchema, invoiceSchema, transitionOrderSchema, verificationSchema } from "@/lib/validation";
+import { getUserNotifications, notifyOrderAudience } from "@/lib/notifications-server";
 
 export async function listDashboardData() {
   const user = await requireUser();
   const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+  const clientScope = user.role === "CLIENT" ? await getClientOrderVisibility(user) : tenantWhere;
   const [orders, clients, invoices, products, notifications] = await Promise.all([
-    prisma.order.findMany({ where: tenantWhere, include: { client: true }, orderBy: { updatedAt: "desc" }, take: 8 }),
+    prisma.order.findMany({ where: clientScope, include: { client: true }, orderBy: { updatedAt: "desc" }, take: 8 }),
     prisma.client.count({ where: tenantWhere }),
     prisma.invoice.findMany({ where: tenantWhere, orderBy: { createdAt: "desc" }, take: 8 }),
     prisma.product.findMany({ where: tenantWhere, include: { inventory: true }, take: 8 }),
-    prisma.notification.findMany({ where: tenantWhere, orderBy: { createdAt: "desc" }, take: 8 })
+    getUserNotifications(user)
   ]);
   return { user, orders, clients, invoices, products, notifications };
 }
@@ -120,9 +122,18 @@ export async function submitVerification(input: unknown) {
     });
     await tx.order.update({ where: { id: order.id }, data: { verificationStatus: data.status, status: data.status as OrderStatus } });
     await tx.orderStatusHistory.create({ data: { tenantId: order.tenantId, orderId: order.id, previousStatus: order.status, newStatus: data.status as OrderStatus, changedById: user.id, notes: data.comments } });
-    await tx.notification.create({ data: { tenantId: order.tenantId, orderId: order.id, type: "CLIENT_COMPLETED_VERIFICATION", title: "Client verification completed", message: `${order.orderNumber} was marked ${data.status}.` } });
     await tx.auditLog.create({ data: { tenantId: order.tenantId, userId: user.id, userRole: user.role, action: "Submitted verification", entity: "Order", entityId: order.id, previousValue: { verificationStatus: order.verificationStatus }, newValue: { verificationStatus: data.status } } });
     return response;
+  });
+  await notifyOrderAudience({
+    tenantId: order.tenantId,
+    clientId: order.clientId,
+    orderId: order.id,
+    type: "CLIENT_COMPLETED_VERIFICATION",
+    title: "Client verification completed",
+    message: `${order.orderNumber} was marked ${data.status}.`,
+    actionUrl: `/dashboard/orders/${order.id}`,
+    excludeUserId: user.id,
   });
   revalidatePath(`/dashboard/orders/${order.id}`);
   return result;
@@ -138,7 +149,12 @@ export async function generateInvoice(input: unknown) {
     await audit(user, "Blocked final invoice before verification", "Order", order.id, { verificationStatus: order.verificationStatus }, { requestedFinal: true });
     throw new Error("Final invoice generation is blocked until client verification is VERIFIED.");
   }
-  const invoiceCount = await prisma.invoice.count({ where: { tenantId: order.tenantId } });
+  const latestInvoice = await prisma.invoice.findFirst({
+    where: { tenantId: order.tenantId, invoiceNumber: { startsWith: "INV-2026-" } },
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+  const latestInvoiceNumber = Number(latestInvoice?.invoiceNumber.replace("INV-2026-", "")) || 0;
   const status: InvoiceStatus = data.final ? "FINAL" : "DRAFT";
   const invoice = await prisma.$transaction(async (tx) => {
     const created = await tx.invoice.create({
@@ -146,7 +162,7 @@ export async function generateInvoice(input: unknown) {
         tenantId: order.tenantId,
         orderId: order.id,
         clientId: order.clientId,
-        invoiceNumber: `INV-2026-${String(invoiceCount + 1).padStart(6, "0")}`,
+        invoiceNumber: `INV-2026-${String(latestInvoiceNumber + 1).padStart(6, "0")}`,
         status,
         subtotal: order.subtotal,
         cgst: new Prisma.Decimal(order.taxTotal).div(2),
@@ -188,10 +204,14 @@ async function audit(user: { id: string; tenantId: string | null; role: Role }, 
 function permissionAllowed(role: Role, permission: string) {
   const roleMap: Record<Role, string[]> = {
     PLATFORM_ADMIN: ["*"],
+    MANAGER: ["inventory:manage", "inventory:operate"],
+    GM: ["inventory:manage", "inventory:operate"],
     WAREHOUSE_OWNER: ["inventory:manage", "inventory:operate"],
     WAREHOUSE_MODERATOR: ["inventory:operate"],
-    ACCOUNTANT: [],
+    ACCOUNTS_TEAM: [],
     WAREHOUSE_STAFF: ["inventory:operate"],
+    PRODUCT_RECEIVER: ["inventory:operate"],
+    ACCOUNTANT: [],
     CLIENT: []
   };
   return roleMap[role].includes("*") || roleMap[role].includes(permission);

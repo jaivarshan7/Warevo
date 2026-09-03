@@ -7,6 +7,7 @@ export async function POST(request: Request) {
   const user = await requireUser();
   const formData = await request.formData();
   const file = formData.get("invoice") as File | null;
+  const orderId = String(formData.get("orderId") ?? "").trim() || undefined;
 
   if (!file) {
     return NextResponse.json({ error: "No invoice file provided." }, { status: 400 });
@@ -31,6 +32,7 @@ export async function POST(request: Request) {
     const metadata = await prisma.document.create({
       data: {
         tenantId: user.tenantId ?? "",
+        orderId,
         type: "INVOICE_PDF",
         name: file.name,
         url: data.publicUrl,
@@ -39,7 +41,7 @@ export async function POST(request: Request) {
       }
     });
 
-    return NextResponse.json({ success: true, documentId: metadata.id, url: data.publicUrl });
+    return NextResponse.json({ success: true, documentId: metadata.id, url: data.publicUrl, orderId: metadata.orderId });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invoice upload failed.";
     return NextResponse.json({ error: message }, { status: 400 });

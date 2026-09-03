@@ -44,6 +44,7 @@ interface ClientsDirectoryViewProps {
     gstNumber?: string;
     billingAddress?: string;
     shippingAddress?: string;
+    employeeRole?: string;
   }) => Promise<void>;
   onUpdateClient?: (data: {
     id: string;
@@ -100,6 +101,7 @@ export function ClientsDirectoryView({ clients, onAddClient, onUpdateClient }: C
   const [formGst, setFormGst] = useState("");
   const [formBilling, setFormBilling] = useState("");
   const [formShipping, setFormShipping] = useState("");
+  const [formEmployeeRole, setFormEmployeeRole] = useState("RECEIVER");
 
   // Edit Modal Form State
   const [editCompany, setEditCompany] = useState("");
@@ -147,6 +149,7 @@ export function ClientsDirectoryView({ clients, onAddClient, onUpdateClient }: C
         gstNumber: formGst.trim() || undefined,
         billingAddress: formBilling.trim() || undefined,
         shippingAddress: formShipping.trim() || undefined,
+        employeeRole: formEmployeeRole,
       });
 
       setFeedback({ text: `Employee "${formContact}" added under ${finalCompany}!`, type: "success" });
@@ -156,6 +159,7 @@ export function ClientsDirectoryView({ clients, onAddClient, onUpdateClient }: C
       setFormContact("");
       setFormMobile("");
       setFormEmail("");
+      setFormEmployeeRole("RECEIVER");
     } catch (err: any) {
       setIsSubmitting(false);
       setFeedback({ text: err?.message || "Failed to add client.", type: "error" });
@@ -497,6 +501,25 @@ export function ClientsDirectoryView({ clients, onAddClient, onUpdateClient }: C
                   placeholder="e.g. sarah@company.com"
                   className="h-9 w-full rounded border border-border bg-slate-50 px-2.5 focus:border-primary focus:bg-white focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="employeeRole" className="block font-semibold text-slate-700 mb-1">
+                  Employee Role
+                </label>
+                <select
+                  id="employeeRole"
+                  value={formEmployeeRole}
+                  onChange={(e) => setFormEmployeeRole(e.target.value)}
+                  className="h-9 w-full rounded border border-border bg-slate-50 px-2.5 focus:border-primary focus:bg-white focus:outline-none"
+                >
+                  <option value="RECEIVER">Receiver</option>
+                  <option value="STORE">Store</option>
+                  <option value="ACCOUNT">Account</option>
+                  <option value="MANAGER">Manager</option>
+                  <option value="GM">GM</option>
+                  <option value="MD">MD</option>
+                </select>
               </div>
 
               <div>

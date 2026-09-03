@@ -1,11 +1,11 @@
 import { ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireDashboardRoute } from "@/lib/auth";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 export default async function SettingsPage() {
-  const user = await requireUser();
+  const user = await requireDashboardRoute("/dashboard/settings");
 
   const sections = [
     { title: "Account settings", visible: true },

@@ -4,6 +4,7 @@ import { FileText, Plus, ReceiptText, CheckCircle2, IndianRupee, ArrowRight } fr
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { AccountingInvoiceTable } from "@/components/accounting-invoice-table";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { money, statusTone } from "@/lib/utils";
@@ -23,8 +24,13 @@ async function createInvoiceAction(formData: FormData) {
     throw new Error("Order not found or unauthorized.");
   }
 
-  const invoiceCount = await prisma.invoice.count({ where: { tenantId: order.tenantId } });
-  const invoiceNumber = `INV-2026-${String(invoiceCount + 1).padStart(6, "0")}`;
+  const latestInvoice = await prisma.invoice.findFirst({
+    where: { tenantId: order.tenantId, invoiceNumber: { startsWith: "INV-2026-" } },
+    orderBy: { invoiceNumber: "desc" },
+    select: { invoiceNumber: true },
+  });
+  const latestInvoiceNumber = Number(latestInvoice?.invoiceNumber.replace("INV-2026-", "")) || 0;
+  const invoiceNumber = `INV-2026-${String(latestInvoiceNumber + 1).padStart(6, "0")}`;
 
   await prisma.invoice.create({
     data: {
@@ -64,13 +70,33 @@ async function createInvoiceAction(formData: FormData) {
 }
 
 export default async function AccountingPage() {
-  const user = await requireUser(["WAREHOUSE_OWNER", "ACCOUNTANT", "CLIENT", "PLATFORM_ADMIN"]);
+  const user = await requireUser(["MANAGER", "GM", "WAREHOUSE_OWNER", "ACCOUNTS_TEAM", "ACCOUNTANT", "CLIENT_ACCOUNTANT", "PLATFORM_ADMIN"]);
   const tenantWhere = user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+  const linkedClient = user.role === "CLIENT_ACCOUNTANT"
+    ? await prisma.client.findFirst({
+        where: { userId: user.id, tenantId: user.tenantId ?? "" },
+        select: { companyName: true, companyGroupId: true },
+      })
+    : null;
+  const invoiceWhere = user.role === "CLIENT_ACCOUNTANT"
+    ? {
+        ...tenantWhere,
+        client: linkedClient
+          ? {
+              OR: [
+                { companyName: linkedClient.companyName },
+                ...(linkedClient.companyGroupId ? [{ companyGroupId: linkedClient.companyGroupId }] : []),
+              ],
+            }
+          : { id: "__no_matching_client__" },
+      }
+    : tenantWhere;
+  const canGenerateInvoices = ["MANAGER", "GM", "WAREHOUSE_OWNER", "ACCOUNTS_TEAM", "ACCOUNTANT", "PLATFORM_ADMIN"].includes(user.role);
 
   const [invoices, unInvoicedOrders] = await Promise.all([
     prisma.invoice.findMany({
-      where: tenantWhere,
-      include: { client: true, order: true, payments: true },
+      where: invoiceWhere,
+      include: { client: { include: { companyGroup: true } }, order: true, payments: true },
       orderBy: { createdAt: "desc" },
     }),
     prisma.order.findMany({
@@ -92,6 +118,18 @@ export default async function AccountingPage() {
   const paidTotal = invoices
     .filter((invoice) => invoice.paymentStatus === "PAID")
     .reduce((sum, invoice) => sum + Number(invoice.total), 0);
+
+  const invoiceRows = invoices.map((invoice) => ({
+    id: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    orderId: invoice.order.id,
+    orderNumber: invoice.order.orderNumber,
+    companyName: invoice.client.companyName,
+    groupName: invoice.client.companyGroup?.name ?? null,
+    invoiceStatus: invoice.status,
+    paymentStatus: invoice.paymentStatus,
+    total: Number(invoice.total),
+  }));
 
   return (
     <section className="space-y-6">
@@ -160,7 +198,7 @@ export default async function AccountingPage() {
       </div>
 
       {/* Un-invoiced Orders Quick Generator */}
-      {unInvoicedOrders.length > 0 && ["WAREHOUSE_OWNER", "ACCOUNTANT", "PLATFORM_ADMIN"].includes(user.role) && (
+      {unInvoicedOrders.length > 0 && canGenerateInvoices && (
         <Card className="p-5 bg-teal-50/40 border-teal-200">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -194,84 +232,7 @@ export default async function AccountingPage() {
         </Card>
       )}
 
-      {/* Invoices Table */}
-      <Card className="overflow-hidden p-0 shadow-sm">
-        <div className="border-b border-border bg-slate-50/70 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-semibold text-slate-900">Commercial Invoices</h2>
-              <p className="text-xs text-slate-500">Tax invoices with itemized CGST/SGST breakdown.</p>
-            </div>
-            <Badge tone="neutral">{invoices.length} invoices</Badge>
-          </div>
-        </div>
-
-        {invoices.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <FileText className="h-12 w-12 text-slate-300" />
-            <p className="mt-3 font-medium text-slate-600">No invoices issued yet</p>
-            <p className="text-sm text-slate-400">Generate an invoice from an order or create a new order.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-border bg-slate-50 text-xs font-semibold uppercase text-slate-500">
-                <tr>
-                  <th className="px-6 py-3">Invoice Number</th>
-                  <th className="px-6 py-3">Related Order</th>
-                  <th className="px-6 py-3">Client</th>
-                  <th className="px-6 py-3">Invoice Status</th>
-                  <th className="px-6 py-3">Payment Status</th>
-                  <th className="px-6 py-3 text-right">Invoice Total</th>
-                  <th className="px-6 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {invoices.map((invoice) => (
-                  <tr key={invoice.id} className="hover:bg-slate-50/60 transition">
-                    <td className="px-6 py-4 font-mono font-semibold">
-                      <Link
-                        href={`/dashboard/invoices/${invoice.id}`}
-                        className="text-primary hover:underline"
-                      >
-                        {invoice.invoiceNumber}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4">
-                      <Link
-                        href={`/dashboard/orders/${invoice.order.id}`}
-                        className="font-mono text-xs hover:underline text-slate-700 font-medium"
-                      >
-                        {invoice.order.orderNumber}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 font-medium text-slate-800">
-                      {invoice.client.companyName}
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge tone={statusTone(invoice.status)}>{invoice.status}</Badge>
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge tone={statusTone(invoice.paymentStatus)}>{invoice.paymentStatus}</Badge>
-                    </td>
-                    <td className="px-6 py-4 text-right font-bold text-slate-900">
-                      {money(invoice.total)}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <Link href={`/dashboard/invoices/${invoice.id}`}>
-                        <Button variant="secondary" className="h-8 px-2.5 text-xs flex items-center gap-1.5 ml-auto">
-                          <FileText className="h-3.5 w-3.5" />
-                          View & Print
-                        </Button>
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      <AccountingInvoiceTable invoices={invoiceRows} />
     </section>
   );
 }

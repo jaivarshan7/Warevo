@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { canAccessTenant } from "@/lib/rbac";
+import { canAccessDashboardRoute } from "@/lib/rbac";
 
 export type AppSession = Pick<User, "id" | "tenantId" | "role" | "name" | "email" | "mobile" | "avatarUrl">;
 
@@ -61,6 +62,57 @@ export async function requireUser(allowedRoles?: Role[]) {
   if (!user) redirect("/login");
   if (allowedRoles && !allowedRoles.includes(user.role)) throw new Error("Unauthorized role.");
   return user;
+}
+
+export async function requireDashboardRoute(route: string) {
+  const user = await requireUser();
+  const clientProfile = user.role === "CLIENT"
+    ? await prisma.client.findFirst({ where: { userId: user.id, tenantId: user.tenantId ?? "" }, select: { employeeRole: true } })
+    : null;
+
+  if (!canAccessDashboardRoute(user.role, route, clientProfile?.employeeRole)) {
+    redirect("/dashboard");
+  }
+
+  return user;
+}
+
+export async function getClientOrderVisibility(user: AppSession) {
+  if (user.role !== "CLIENT") {
+    return user.role === "PLATFORM_ADMIN" ? {} : { tenantId: user.tenantId ?? "" };
+  }
+
+  const linkedClient = await prisma.client.findFirst({
+    where: {
+      userId: user.id,
+      tenantId: user.tenantId ?? "",
+    },
+    select: {
+      id: true,
+      companyName: true,
+      companyGroupId: true,
+    },
+  });
+
+  if (!linkedClient) {
+    return { tenantId: user.tenantId ?? "", clientId: { in: [] } };
+  }
+
+  const companyMatches = await prisma.client.findMany({
+    where: {
+      tenantId: user.tenantId ?? "",
+      OR: [
+        { companyName: linkedClient.companyName },
+        ...(linkedClient.companyGroupId ? [{ companyGroupId: linkedClient.companyGroupId }] : []),
+      ],
+    },
+    select: { id: true },
+  });
+
+  return {
+    tenantId: user.tenantId ?? "",
+    clientId: { in: companyMatches.map((client) => client.id) },
+  };
 }
 
 export async function assertTenantAccess(resourceTenantId: string) {

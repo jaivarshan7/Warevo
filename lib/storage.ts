@@ -18,6 +18,19 @@ export async function createSupabaseAdminClient() {
   );
 }
 
+export async function ensureStorageBucket(bucket: string) {
+  const supabase = await createSupabaseAdminClient();
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) throw listError;
+
+  if (!buckets.some((item) => item.name === bucket)) {
+    const { error } = await supabase.storage.createBucket(bucket, { public: true });
+    if (error && !error.message.toLowerCase().includes("already exists")) throw error;
+  }
+
+  return supabase;
+}
+
 export async function createSupabaseBrowserClient() {
   const { createBrowserClient } = await import("@supabase/ssr");
   return createBrowserClient(
