@@ -1,60 +1,68 @@
 # Multi-Tenant WMS Architecture
 
+This is the short architecture reference. See [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md) for the complete route, schema, API, setup, deployment, and risk inventory.
+
+## Runtime Shape
+
+The system is a Next.js 15 App Router application. Pages and server actions run against Prisma/PostgreSQL. Supabase supplies Auth and Storage. React components and hooks provide client-side interaction where needed. There is no middleware file; pages and service functions perform authentication and authorization checks directly.
+
+```text
+Browser
+	-> Next.js App Router pages and route handlers
+		-> lib/auth.ts, lib/rbac.ts, lib/services.ts
+			-> Prisma -> PostgreSQL
+			-> Supabase Auth / Storage
+```
+
 ## Tenant Model
 
-`Tenant` represents an independent warehouse company. Every operational model includes `tenantId`, including clients, products, inventory, orders, invoices, payments, notifications, documents, settings, and audit logs. `PLATFORM_ADMIN` can query across tenants; every other role must match the resource tenant.
+`Tenant` represents an independent warehouse company. Tenant-owned operational records carry `tenantId`, and non-platform users must match the resource tenant. `PLATFORM_ADMIN` is the cross-tenant exception.
 
 Physical warehouse support is modeled as:
 
-`Tenant -> Warehouse -> WarehouseLocation -> Inventory`
+`Tenant -> Warehouse -> WarehouseLocation -> Inventory -> Product`
 
-This allows the first UI to show a single main warehouse while the database already supports multiple physical locations per company.
+Business relationships continue through:
 
-## Authentication
+`Tenant -> Client -> Order -> OrderItem -> Invoice -> Payment`
 
-Staff and platform roles use Supabase Auth email/password. Client access uses mobile OTP only through tenant-aware API routes:
+## Authentication and Authorization
+
+`getCurrentUser()` first maps the Supabase Auth identity to the local `User`, then supports explicit local/demo headers, cookies, and `DEMO_USER_EMAIL`. `requireUser()` redirects unauthenticated users to `/login` and can restrict allowed roles.
+
+Client access uses tenant-aware mobile OTP endpoints:
 
 - `POST /api/client-otp/request`
 - `POST /api/client-otp/verify`
 
-The OTP request route first checks that the mobile number exists for the tenant and calls Supabase with `shouldCreateUser: false`.
+The request path checks that the tenant and client are active and asks Supabase not to create unknown users. The verification path links the verified Supabase user to the local client user.
 
-## Authorization
+Authorization has three practical layers:
 
-Server-side authorization happens in three layers:
+1. Session resolution through `lib/auth.ts`.
+2. Role permissions and dashboard-route checks through `lib/rbac.ts`.
+3. Tenant ownership checks in services and resource operations.
 
-1. `requireUser` resolves the Supabase user to the local `User`.
-2. RBAC checks validate role permissions.
-3. Tenant checks constrain resource access unless the role is `PLATFORM_ADMIN`.
+Navigation restrictions are not a security boundary. Server-side checks must remain on every protected mutation.
 
-The UI hides irrelevant navigation, but this is convenience only. Backend services enforce the actual rules.
+## Order and Invoice Invariants
 
-## Core Business Rule
+Order transitions are centralized in `lib/order-workflow.ts`. `assertValidTransition()` prevents arbitrary jumps. `transitionOrder()` records `OrderStatusHistory` and `AuditLog` entries in the same transaction.
 
-Final invoice generation is blocked in `generateInvoice` unless:
+Client verification updates the order verification state and creates a `VerificationResponse`. Final invoice generation is blocked unless:
 
 `order.verificationStatus === VERIFIED`
 
-Draft invoices can be created earlier, but a final invoice cannot be generated from an unverified, partially verified, or rejected order.
+Draft invoices can be created earlier; final invoices cannot be generated from pending, partially verified, or rejected orders.
 
-## State Machine
+## Inventory Invariant
 
-Order transitions are centralized in `lib/order-workflow.ts`. Server actions call `assertValidTransition` and record every change in both `OrderStatusHistory` and `AuditLog`.
+Inventory changes should use `receiveOrAdjustStock()`. The service checks tenant ownership, rejects non-positive quantities and negative available stock, updates inventory, creates `InventoryMovement`, and writes an audit record transactionally.
 
-## Inventory
+## Storage Boundary
 
-Inventory changes must go through service functions that update stock and create an `InventoryMovement`. The current implementation rejects stock movements that would create negative available stock.
+Documents store Supabase Storage URLs and metadata in `Document`. The current helper names the buckets `invoices`, `eway-bills`, `product-images`, `user-avatars`, and `warehouse-documents`. The helper can create public buckets, so production policies must be reviewed carefully and must prevent cross-tenant access.
 
-## Storage
+## Deployment Boundary
 
-Documents store Supabase Storage URLs and metadata. Buckets should be separated by purpose or prefixed by tenant:
-
-- company-logos
-- product-images
-- client-documents
-- delivery-documents
-- verification-photos
-- damage-evidence
-- invoice-pdfs
-
-Bucket policies must deny cross-tenant reads and writes.
+Vercel runs `npm run build`, which generates Prisma Client and builds Next.js. `vercel.json` points to `.next` and does not rewrite every request to `/index`. Runtime environment variables, especially `DATABASE_URL` and Supabase credentials, must be configured in the Vercel environment independently of local `.env`.

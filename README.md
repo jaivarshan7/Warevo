@@ -1,89 +1,53 @@
 # WarehouseOS
 
-Production-shaped multi-tenant Warehouse Management System built with Next.js, TypeScript, Prisma, PostgreSQL, Supabase Auth/Storage, Zod, Tailwind CSS, and Recharts.
+WarehouseOS is a multi-tenant warehouse management system built with Next.js, TypeScript, Prisma, PostgreSQL, Supabase Auth/Storage, Zod, Tailwind CSS, and Recharts.
 
-## What Is Included
+## Documentation
 
-- Strict tenant data model with `tenantId` on operational records
-- Final roles: `PLATFORM_ADMIN`, `WAREHOUSE_OWNER`, `WAREHOUSE_MODERATOR`, `ACCOUNTANT`, `WAREHOUSE_STAFF`, `CLIENT`
-- Server-side RBAC and tenant checks
-- Order state machine and status history
-- Client mobile OTP login endpoints without client self-registration
-- Client verification model and backend invoice restriction
-- Inventory quantities, locations, and stock movement audit trail
-- Invoices, GST fields, payments, receivables, notifications, reports, audit logs, settings, and documents
-- Realistic seed data for 3 tenants and all roles
+- [Complete Project Documentation](docs/PROJECT_DOCUMENTATION.md) - authoritative setup, routes, APIs, schema, workflows, deployment, tests, and known risks.
+- [Architecture Overview](docs/ARCHITECTURE.md) - short explanation of the main boundaries and business rules.
 
-## Architecture
-
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the tenant model, authorization flow, invoice guard, order state machine, and storage plan.
-
-## Setup
-
-1. Install dependencies:
+## Quick Start
 
 ```bash
 npm install
-```
-
-2. Copy environment variables:
-
-```bash
-cp .env.example .env
-```
-
-3. Set `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
-
-4. Create and seed the database:
-
-```bash
+Copy-Item .env.example .env
 npm run prisma:migrate
 npm run prisma:seed
-```
-
-5. Run the app:
-
-```bash
 npm run dev
 ```
 
-## Supabase Setup
+On macOS/Linux, replace `Copy-Item .env.example .env` with `cp .env.example .env`.
 
-- Enable email/password auth for platform and warehouse staff roles.
-- Enable phone OTP auth for clients.
-- Disable automatic user creation for the client OTP flow by keeping the application-side existence check and using `shouldCreateUser: false`.
-- Create storage buckets for logos, product images, client documents, delivery documents, verification photos, damage evidence, invoice PDFs, and other documents.
-- Configure storage policies so tenant users only access objects belonging to their tenant.
+Before running the app, set the database, Supabase, application URL, and admin credential variables described in [.env.example](.env.example) and the [environment variable reference](docs/PROJECT_DOCUMENTATION.md#5-environment-variables).
 
-## Test Accounts
+## Main Capabilities
 
-Seeded demo records use safe fictional addresses and `example.test` emails:
-
-- `platform-admin@example.test`
-- `owner-apex@example.test`
-- `moderator-apex@example.test`
-- `accountant-apex@example.test`
-- `staff-apex@example.test`
-- Client mobile: `+919800000001`
-
-Set `DEMO_USER_EMAIL=owner-apex@example.test` in `.env` to run the seeded UI locally before wiring real Supabase sessions.
+- Tenant-isolated warehouses, clients, products, inventory, orders, invoices, payments, notifications, documents, and audit logs.
+- Server-side RBAC for platform administrators, warehouse roles, accounting roles, and client roles.
+- Controlled order lifecycle with status history and audit records.
+- Client delivery verification and final-invoice gating.
+- Inventory movement tracking with negative-stock protection.
+- Invoice PDF upload, text extraction, parsing, and review state.
+- Supabase SMS OTP integration for existing client contacts.
 
 ## Commands
 
 ```bash
 npm run dev
 npm run build
+npm run start
 npm run test
+npm run lint
 npm run prisma:generate
 npm run prisma:migrate
 npm run prisma:seed
 ```
 
-## Production Notes
+The seed command is destructive and is for development/demo databases only. It deletes existing application records before creating sample tenants and users.
 
-- Never expose Supabase service-role keys to browser code.
-- Every protected mutation should call server-side RBAC and tenant checks.
-- Every inventory mutation should create an `InventoryMovement`.
-- Every order status mutation should create `OrderStatusHistory` and `AuditLog`.
-- Final invoice generation must remain blocked unless client verification is `VERIFIED`.
-- Add rate limiting to OTP routes at the edge or API gateway before production launch.
+## Deployment
+
+The project is configured for Vercel. Add `DATABASE_URL`, Supabase variables, `NEXT_PUBLIC_APP_URL`, and admin credentials to the Vercel environment used by the deployment. `vercel.json` points to the Next.js `.next` output and intentionally contains no catch-all rewrite.
+
+Never expose `SUPABASE_SERVICE_ROLE_KEY` to browser code. Review the documented production risks, especially OTP rate limiting, admin-session hardening, storage policies, and missing integration/e2e coverage, before treating the deployment as production-ready.
