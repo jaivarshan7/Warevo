@@ -212,7 +212,8 @@ function permissionAllowed(role: Role, permission: string) {
     WAREHOUSE_STAFF: ["inventory:operate"],
     PRODUCT_RECEIVER: ["inventory:operate"],
     ACCOUNTANT: [],
-    CLIENT: []
+    CLIENT: [],
+    CLIENT_ACCOUNTANT: []
   };
   return roleMap[role].includes("*") || roleMap[role].includes(permission);
 }
