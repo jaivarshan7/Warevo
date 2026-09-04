@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
+export const dynamic = "force-dynamic";
+
 async function addEmployee(formData: FormData) {
   "use server";
 
