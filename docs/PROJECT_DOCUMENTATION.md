@@ -29,19 +29,19 @@ The project is production-shaped, but it is not a complete production hardening 
 
 | Area | Technology |
 | --- | --- |
-| Web framework | Next.js 15 App Router |
+| Web framework & bundler | React 19 + Vite 6 (Single Page Application) |
+| Routing | React Router 7 (`react-router-dom`) |
 | Language | TypeScript 5 |
-| UI | React 19, Tailwind CSS 3, Lucide React, Recharts |
-| Forms and validation | React Hook Form, Zod |
-| Database | PostgreSQL |
-| ORM | Prisma 6 |
-| Authentication | Supabase Auth plus application demo/local fallback cookies |
+| UI & Styling | Tailwind CSS 3, Lucide React, Recharts |
+| Database | Supabase PostgreSQL 15 |
+| Client Data Access | `@supabase/supabase-js` Client |
+| Transaction Business Rules | PostgreSQL Atomic RPC Functions (`rpc_transition_order`, `rpc_receive_or_adjust_stock`, `rpc_submit_verification`, `rpc_generate_invoice`, `rpc_record_payment`) |
+| Security | Supabase Row-Level Security (RLS) & Tenant Isolation |
+| Authentication | Supabase Auth + Multi-role Session Context |
 | File storage | Supabase Storage |
-| PDF processing | `pdfkit` and local PDF text extraction helpers |
 | Tests | Vitest |
-| Deployment | Vercel |
 
-All application pages are server components unless a nested component or hook supplies client-side behavior. There is no `middleware.ts` file.
+The frontend runs as a unified responsive Single Page Application with dynamic permission-based navigation, desktop sidebar, and mobile bottom navigation.
 
 ## 3. Repository Map
 
