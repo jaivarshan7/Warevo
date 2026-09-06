@@ -52,7 +52,7 @@ export const Modal: React.FC<ModalProps> = ({
 
       {/* Dialog content */}
       <div
-        className={`relative w-full ${widthClasses[maxWidth]} bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-10 overflow-hidden my-8`}
+        className={`relative w-full ${widthClasses[maxWidth]} bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-10 my-8`}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
           <div>

@@ -869,6 +869,9 @@ export const AdminDashboardPage: React.FC = () => {
                   required
                   className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 >
+                  {tenants.length === 0 && (
+                    <option value="" disabled>No organizations found</option>
+                  )}
                   {tenants.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
@@ -974,6 +977,9 @@ export const AdminDashboardPage: React.FC = () => {
               required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             >
+              {tenants.length === 0 && (
+                <option value="" disabled>No organizations found</option>
+              )}
               {tenants.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
@@ -1175,6 +1181,9 @@ export const AdminDashboardPage: React.FC = () => {
                 required
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
+                {tenants.length === 0 && (
+                  <option value="" disabled>No organizations found</option>
+                )}
                 {tenants.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
