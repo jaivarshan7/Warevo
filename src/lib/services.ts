@@ -746,3 +746,40 @@ export async function createAdminCompanyGroup(payload: {
   if (error) throw error;
   return data;
 }
+
+export async function createAdminTenant(payload: {
+  name: string;
+  slug?: string;
+  gstNumber?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+}) {
+  const slug =
+    payload.slug?.trim() ||
+    payload.name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+
+  const { data, error } = await supabase
+    .from("Tenant")
+    .insert([
+      {
+        name: payload.name.trim(),
+        slug,
+        gstNumber: payload.gstNumber?.trim() || null,
+        email: payload.email?.trim() || null,
+        phone: payload.phone?.trim() || null,
+        address: payload.address?.trim() || null,
+        status: "ACTIVE"
+      }
+    ])
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+

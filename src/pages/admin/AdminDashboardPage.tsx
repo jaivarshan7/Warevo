@@ -27,6 +27,7 @@ import {
   createAdminUser,
   createAdminClient,
   createAdminCompanyGroup,
+  createAdminTenant,
   AdminWarehouseItem,
   AdminUserItem,
   AdminClientItem,
@@ -45,7 +46,7 @@ export const AdminDashboardPage: React.FC = () => {
   const [tenants, setTenants] = useState<AdminTenantItem[]>([]);
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<"warehouses" | "users" | "clients" | "groups">("warehouses");
+  const [activeTab, setActiveTab] = useState<"warehouses" | "users" | "clients" | "groups" | "tenants">("warehouses");
   const [searchQuery, setSearchQuery] = useState("");
   const [tenantFilter, setTenantFilter] = useState("ALL");
   const [roleFilter, setRoleFilter] = useState("ALL");
@@ -56,8 +57,18 @@ export const AdminDashboardPage: React.FC = () => {
   const [showAddUser, setShowAddUser] = useState(false);
   const [showAddClient, setShowAddClient] = useState(false);
   const [showAddEmployee, setShowAddEmployee] = useState(false);
+  const [showAddTenant, setShowAddTenant] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const [tenantForm, setTenantForm] = useState({
+    name: "",
+    slug: "",
+    gstNumber: "",
+    email: "",
+    phone: "",
+    address: ""
+  });
 
   // Form states
   const [warehouseForm, setWarehouseForm] = useState({
@@ -319,6 +330,25 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
+  const handleCreateTenant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tenantForm.name.trim()) return;
+    setSubmitting(true);
+    try {
+      await createAdminTenant(tenantForm);
+      const createdName = tenantForm.name;
+      setTenantForm({ name: "", slug: "", gstNumber: "", email: "", phone: "", address: "" });
+      setShowAddTenant(false);
+      setActionMessage({ type: "success", text: `Organization "${createdName}" created successfully!` });
+      await loadData();
+    } catch (err: any) {
+      console.error("Failed to create tenant:", err);
+      setActionMessage({ type: "error", text: err.message || "Failed to create organization." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="py-20 flex justify-center">
@@ -415,12 +445,28 @@ export const AdminDashboardPage: React.FC = () => {
               </Button>
             </div>
           )}
+          {activeTab === "tenants" && (
+            <Button size="sm" onClick={() => setShowAddTenant(true)} className="flex items-center gap-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white">
+              <Plus className="w-3.5 h-3.5" /> Add Organization
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowAddTenant(true)}
+            className="hidden sm:flex items-center gap-1.5 text-xs text-purple-300 border-purple-800/60 hover:bg-purple-950/40 hover:text-white"
+          >
+            <Plus className="w-3.5 h-3.5" /> Organization
+          </Button>
         </div>
       </div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800">
+        <Card
+          onClick={() => setActiveTab("warehouses")}
+          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+        >
           <div className="w-12 h-12 rounded-xl bg-teal-950/60 border border-teal-800/60 flex items-center justify-center text-teal-400">
             <Building2 className="w-6 h-6" />
           </div>
@@ -430,7 +476,10 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
         </Card>
 
-        <Card className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800">
+        <Card
+          onClick={() => setActiveTab("users")}
+          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+        >
           <div className="w-12 h-12 rounded-xl bg-indigo-950/60 border border-indigo-800/60 flex items-center justify-center text-indigo-400">
             <Users className="w-6 h-6" />
           </div>
@@ -440,7 +489,10 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
         </Card>
 
-        <Card className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800">
+        <Card
+          onClick={() => setActiveTab("clients")}
+          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+        >
           <div className="w-12 h-12 rounded-xl bg-amber-950/60 border border-amber-800/60 flex items-center justify-center text-amber-400">
             <Store className="w-6 h-6" />
           </div>
@@ -451,13 +503,17 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
         </Card>
 
-        <Card className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800">
-          <div className="w-12 h-12 rounded-xl bg-purple-950/60 border border-purple-800/60 flex items-center justify-center text-purple-400">
+        <Card
+          onClick={() => setActiveTab("tenants")}
+          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-purple-600/50 hover:bg-slate-900/80 transition-all group"
+        >
+          <div className="w-12 h-12 rounded-xl bg-purple-950/60 border border-purple-800/60 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
             <Briefcase className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-xs font-medium text-slate-400">Organizations / Tenants</p>
+            <p className="text-xs font-medium text-slate-400 group-hover:text-purple-300 transition-colors">Organizations / Tenants</p>
             <p className="text-2xl font-bold text-white mt-0.5">{tenants.length}</p>
+            <span className="text-[10px] text-purple-400/80 font-medium">Click to manage →</span>
           </div>
         </Card>
       </div>
@@ -510,6 +566,18 @@ export const AdminDashboardPage: React.FC = () => {
         >
           <Layers className="w-3.5 h-3.5" />
           Corporate Groups ({companyGroups.length})
+        </button>
+
+        <button
+          onClick={() => setActiveTab("tenants")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            activeTab === "tenants"
+              ? "bg-indigo-600 text-white shadow-lg shadow-indigo-950/50"
+              : "bg-slate-800/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+          }`}
+        >
+          <Briefcase className="w-3.5 h-3.5" />
+          Organizations ({tenants.length})
         </button>
       </div>
 
@@ -959,6 +1027,196 @@ export const AdminDashboardPage: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* TAB 5: ORGANIZATIONS / TENANTS */}
+      {activeTab === "tenants" && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/40 p-4 rounded-2xl border border-slate-800">
+            <div>
+              <h3 className="text-sm font-semibold text-white">All Tenant Organizations</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Multi-tenant organizations host warehouses, staff accounts, products, and clients.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setShowAddTenant(true)}
+              className="flex items-center gap-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-950/50"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Organization
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {tenants.map((t) => (
+              <Card key={t.id} className="p-5 bg-slate-900/60 border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-colors">
+                <div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-white tracking-tight">{t.name}</h4>
+                      <p className="text-[11px] font-mono text-purple-400 mt-0.5">slug: {t.slug}</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-800/80">
+                      {t.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-800/80 text-center">
+                    <div className="bg-slate-800/50 rounded-lg p-2">
+                      <p className="text-[10px] text-slate-400">Warehouses</p>
+                      <p className="text-sm font-bold text-white mt-0.5">{t.warehousesCount}</p>
+                    </div>
+                    <div className="bg-slate-800/50 rounded-lg p-2">
+                      <p className="text-[10px] text-slate-400">Users</p>
+                      <p className="text-sm font-bold text-white mt-0.5">{t.usersCount}</p>
+                    </div>
+                    <div className="bg-slate-800/50 rounded-lg p-2">
+                      <p className="text-[10px] text-slate-400">Clients</p>
+                      <p className="text-sm font-bold text-white mt-0.5">{t.clientsCount}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
+                  <span className="font-mono text-[10px] truncate max-w-[160px]">ID: {t.id}</span>
+                  <button
+                    onClick={() => {
+                      setTenantFilter(t.id);
+                      setActiveTab("warehouses");
+                    }}
+                    className="text-indigo-400 hover:text-indigo-300 font-medium"
+                  >
+                    View Warehouses →
+                  </button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADD TENANT / ORGANIZATION */}
+      <Modal
+        isOpen={showAddTenant}
+        onClose={() => setShowAddTenant(false)}
+        title="Add New Organization / Tenant"
+        description="Create an organization to isolate warehouses, staff, and inventory data."
+      >
+        <form onSubmit={handleCreateTenant} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              Organization Name *
+            </label>
+            <input
+              type="text"
+              value={tenantForm.name}
+              onChange={(e) => {
+                const name = e.target.value;
+                const autoSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+                setTenantForm({
+                  ...tenantForm,
+                  name,
+                  slug: !tenantForm.slug || tenantForm.slug === autoSlug.slice(0, -1) ? autoSlug : tenantForm.slug
+                });
+              }}
+              placeholder="e.g. Apex Logistics Global"
+              required
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              Organization Slug / Identifier *
+            </label>
+            <input
+              type="text"
+              value={tenantForm.slug}
+              onChange={(e) => setTenantForm({ ...tenantForm, slug: e.target.value })}
+              placeholder="e.g. apex-logistics-global"
+              required
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-purple-300 font-mono focus:outline-none focus:ring-1 focus:ring-purple-500"
+            />
+            <span className="text-[10px] text-slate-500 mt-1 block">Unique URL/system identifier for this tenant.</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                GST / Tax Number
+              </label>
+              <input
+                type="text"
+                value={tenantForm.gstNumber}
+                onChange={(e) => setTenantForm({ ...tenantForm, gstNumber: e.target.value })}
+                placeholder="29ABCDE1234F1Z5"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono uppercase focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Official Email
+              </label>
+              <input
+                type="email"
+                value={tenantForm.email}
+                onChange={(e) => setTenantForm({ ...tenantForm, email: e.target.value })}
+                placeholder="ops@apex.test"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Contact Phone
+              </label>
+              <input
+                type="tel"
+                value={tenantForm.phone}
+                onChange={(e) => setTenantForm({ ...tenantForm, phone: e.target.value })}
+                placeholder="+91 98765 43210"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Address
+              </label>
+              <input
+                type="text"
+                value={tenantForm.address}
+                onChange={(e) => setTenantForm({ ...tenantForm, address: e.target.value })}
+                placeholder="City, State"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAddTenant(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              isLoading={submitting}
+              className="bg-purple-600 hover:bg-purple-500 text-white"
+            >
+              Create Organization
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       {/* MODAL: ADD WAREHOUSE */}
       <Modal
