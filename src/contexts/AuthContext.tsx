@@ -109,15 +109,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signInWithEmail = async (email: string) => {
     setIsLoading(true);
     try {
+      const identifier = email.trim();
+      const normalizedMobile = identifier.replace(/\D/g, "");
       const matchingUser = allUsers.find(
-        (u) => u.email?.toLowerCase() === email.toLowerCase()
+        (u) =>
+          u.email?.toLowerCase() === identifier.toLowerCase() ||
+          (normalizedMobile.length >= 7 && (() => {
+            const storedMobile = (u.mobile ?? "").replace(/\D/g, "");
+            return storedMobile === normalizedMobile ||
+              (storedMobile.length >= 10 && normalizedMobile.length >= 10 && storedMobile.slice(-10) === normalizedMobile.slice(-10));
+          })())
       );
       if (matchingUser) {
         localStorage.removeItem("warehouse_os_logged_out");
         await switchUser(matchingUser.id);
         return { error: null };
       }
-      return { error: new Error(`No user found with email ${email}`) };
+      return { error: new Error(`No user found with email or mobile number ${identifier}`) };
     } catch (err) {
       return { error: err as Error };
     } finally {

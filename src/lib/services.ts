@@ -783,3 +783,53 @@ export async function createAdminTenant(payload: {
   return data;
 }
 
+// ─── UPDATE / DELETE ─────────────────────────────────────────────────
+
+export async function updateAdminWarehouse(id: string, payload: Partial<{ name: string; code: string; address: string; status: string; tenantId: string }>) {
+  const { data, error } = await supabase.from("Warehouse").update(payload).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminWarehouse(id: string) {
+  const { error } = await supabase.from("Warehouse").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateAdminUser(id: string, payload: Partial<{ name: string; email: string; mobile: string; role: string; status: string; tenantId: string }>) {
+  const { data, error } = await supabase.from("User").update(payload).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminUser(id: string) {
+  const { error } = await supabase.from("User").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateAdminClient(id: string, payload: Partial<{ companyName: string; contactPerson: string; mobile: string; email: string; gstNumber: string; billingAddress: string; shippingAddress: string; status: string; employeeRole: string; tenantId: string; companyGroupId: string }>) {
+  const { data, error } = await supabase.from("Client").update(payload).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminClient(id: string) {
+  const { error } = await supabase.from("Client").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function updateAdminTenant(id: string, payload: Partial<{ name: string; slug: string; gstNumber: string; email: string; phone: string; address: string; status: string }>) {
+  const { data, error } = await supabase.from("Tenant").update(payload).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminTenant(id: string) {
+  const { error } = await supabase.from("Tenant").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteAdminCompanyGroup(id: string) {
+  const { error } = await supabase.from("CompanyGroup").delete().eq("id", id);
+  if (error) throw error;
+}

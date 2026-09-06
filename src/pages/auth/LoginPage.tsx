@@ -8,7 +8,7 @@ import { ShieldCheck, ArrowRight, Building2, User } from "lucide-react";
 export const LoginPage: React.FC = () => {
   const { allUsers, switchUser, signInWithEmail } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -16,7 +16,7 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
-    const res = await signInWithEmail(email);
+    const res = await signInWithEmail(identifier);
     setIsLoading(false);
     if (res.error) {
       setError(res.error.message);
@@ -71,20 +71,20 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Email Address
+                Email or Mobile Number
               </label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="owner-apex@example.test"
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="owner-apex@example.test or +91 98765 43210"
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 required
               />
             </div>
 
             <Button type="submit" className="w-full" isLoading={isLoading}>
-              Sign In with Email
+              Sign In
             </Button>
           </form>
 

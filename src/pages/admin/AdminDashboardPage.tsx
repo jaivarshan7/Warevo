@@ -14,7 +14,9 @@ import {
   Store,
   RefreshCw,
   X,
-  Filter
+  Filter,
+  Pencil,
+  Trash2
 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -28,6 +30,15 @@ import {
   createAdminClient,
   createAdminCompanyGroup,
   createAdminTenant,
+  updateAdminWarehouse,
+  deleteAdminWarehouse,
+  updateAdminUser,
+  deleteAdminUser,
+  updateAdminClient,
+  deleteAdminClient,
+  updateAdminTenant,
+  deleteAdminTenant,
+  deleteAdminCompanyGroup,
   AdminWarehouseItem,
   AdminUserItem,
   AdminClientItem,
@@ -60,6 +71,13 @@ export const AdminDashboardPage: React.FC = () => {
   const [showAddTenant, setShowAddTenant] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Edit modal states
+  const [editingWarehouse, setEditingWarehouse] = useState<AdminWarehouseItem | null>(null);
+  const [editingUser, setEditingUser] = useState<AdminUserItem | null>(null);
+  const [editingClient, setEditingClient] = useState<AdminClientItem | null>(null);
+  const [editingTenant, setEditingTenant] = useState<AdminTenantItem | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, string>>({});
 
   const [tenantForm, setTenantForm] = useState({
     name: "",
@@ -344,6 +362,29 @@ export const AdminDashboardPage: React.FC = () => {
     } catch (err: any) {
       console.error("Failed to create tenant:", err);
       setActionMessage({ type: "error", text: err.message || "Failed to create organization." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpdateRecord = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const record = editingWarehouse || editingUser || editingClient || editingTenant;
+    if (!record) return;
+    setSubmitting(true);
+    try {
+      if (editingWarehouse) await updateAdminWarehouse(editingWarehouse.id, editForm);
+      if (editingUser) await updateAdminUser(editingUser.id, editForm);
+      if (editingClient) await updateAdminClient(editingClient.id, editForm);
+      if (editingTenant) await updateAdminTenant(editingTenant.id, editForm);
+      setEditingWarehouse(null);
+      setEditingUser(null);
+      setEditingClient(null);
+      setEditingTenant(null);
+      setActionMessage({ type: "success", text: "Record updated successfully." });
+      await loadData();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to update record." });
     } finally {
       setSubmitting(false);
     }
@@ -676,6 +717,7 @@ export const AdminDashboardPage: React.FC = () => {
                     <th className="px-4 py-3 text-center">Stock Items</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Created</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
@@ -709,6 +751,36 @@ export const AdminDashboardPage: React.FC = () => {
                       </td>
                       <td className="px-4 py-3 text-slate-400 text-[11px]">
                         {new Date(wh.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => {
+                              setEditingWarehouse(wh);
+                              setEditForm({ name: wh.name, code: wh.code, address: wh.address, status: wh.status, tenantId: wh.tenantId });
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300 transition-colors"
+                            title="Edit"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Delete warehouse "${wh.name}"?`)) return;
+                              try {
+                                await deleteAdminWarehouse(wh.id);
+                                setActionMessage({ type: "success", text: `Warehouse "${wh.name}" deleted.` });
+                                await loadData();
+                              } catch (err: any) {
+                                setActionMessage({ type: "error", text: err.message });
+                              }
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -744,6 +816,7 @@ export const AdminDashboardPage: React.FC = () => {
                     <th className="px-4 py-3">Organization</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Joined</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
@@ -797,6 +870,18 @@ export const AdminDashboardPage: React.FC = () => {
                       </td>
                       <td className="px-4 py-3 text-slate-400 text-[11px]">
                         {new Date(u.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => {
+                            setEditingUser(u);
+                            setEditForm({ name: u.name, email: u.email || "", mobile: u.mobile || "", role: u.role, status: u.status, tenantId: u.tenantId || "" });
+                          }}
+                          className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                          title="Edit user"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -874,6 +959,7 @@ export const AdminDashboardPage: React.FC = () => {
                           <th className="px-4 py-2.5">Shipping / Store Address</th>
                           <th className="px-4 py-2.5 text-center">Orders</th>
                           <th className="px-4 py-2.5">Status</th>
+                          <th className="px-4 py-2.5 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
@@ -904,6 +990,18 @@ export const AdminDashboardPage: React.FC = () => {
                               <Badge variant={emp.status === "ACTIVE" ? "success" : "default"}>
                                 {emp.status}
                               </Badge>
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <button
+                                onClick={() => {
+                                  setEditingClient(emp);
+                                  setEditForm({ companyName: emp.companyName, contactPerson: emp.contactPerson, mobile: emp.mobile, email: emp.email || "", status: emp.status, shippingAddress: emp.shippingAddress });
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                                title="Edit client"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -1057,9 +1155,21 @@ export const AdminDashboardPage: React.FC = () => {
                       <h4 className="text-sm font-bold text-white tracking-tight">{t.name}</h4>
                       <p className="text-[11px] font-mono text-purple-400 mt-0.5">slug: {t.slug}</p>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-800/80">
-                      {t.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-800/80">
+                        {t.status}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setEditingTenant(t);
+                          setEditForm({ name: t.name, slug: t.slug, status: t.status });
+                        }}
+                        className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                        title="Edit organization"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-800/80 text-center">
@@ -1669,6 +1779,81 @@ export const AdminDashboardPage: React.FC = () => {
             <Button type="submit" size="sm" isLoading={submitting}>
               Add Employee
             </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(editingWarehouse || editingUser || editingClient || editingTenant)}
+        onClose={() => {
+          setEditingWarehouse(null);
+          setEditingUser(null);
+          setEditingClient(null);
+          setEditingTenant(null);
+        }}
+        title={`Edit ${editingWarehouse ? "Warehouse" : editingUser ? "User" : editingClient ? "Client" : "Organization"}`}
+        description="Update the record and save the changes."
+      >
+        <form onSubmit={handleUpdateRecord} className="space-y-4">
+          {(editingWarehouse || editingUser || editingTenant) && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Name</label>
+              <input
+                value={editForm.name || ""}
+                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                required
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+              />
+            </div>
+          )}
+          {editingClient && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Company Name</label>
+                <input value={editForm.companyName || ""} onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Contact Person</label>
+                <input value={editForm.contactPerson || ""} onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+              </div>
+            </>
+          )}
+          {(editingWarehouse || editingUser) && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">{editingWarehouse ? "Code" : "Email"}</label>
+              <input value={editForm[editingWarehouse ? "code" : "email"] || ""} onChange={(e) => setEditForm({ ...editForm, [editingWarehouse ? "code" : "email"]: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+            </div>
+          )}
+          {(editingWarehouse || editingClient) && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">{editingWarehouse ? "Address" : "Mobile Number"}</label>
+              <input value={editForm[editingWarehouse ? "address" : "mobile"] || ""} onChange={(e) => setEditForm({ ...editForm, [editingWarehouse ? "address" : "mobile"]: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+            </div>
+          )}
+          {editingUser && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Mobile Number</label>
+              <input value={editForm.mobile || ""} onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+            </div>
+          )}
+          {editingClient && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Email</label>
+              <input type="email" value={editForm.email || ""} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Status</label>
+            <select value={editForm.status || "ACTIVE"} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="INACTIVE">INACTIVE</option>
+              <option value="SUSPENDED">SUSPENDED</option>
+              <option value="DEACTIVATED">DEACTIVATED</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button type="button" variant="outline" size="sm" onClick={() => { setEditingWarehouse(null); setEditingUser(null); setEditingClient(null); setEditingTenant(null); }}>Cancel</Button>
+            <Button type="submit" size="sm" isLoading={submitting}>Save Changes</Button>
           </div>
         </form>
       </Modal>
