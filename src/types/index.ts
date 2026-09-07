@@ -330,6 +330,7 @@ export interface Invoice {
   updatedAt: string;
   order?: Order | null;
   client?: Client | null;
+  tenant?: Tenant | null;
   items?: InvoiceItem[];
   payments?: Payment[];
 }

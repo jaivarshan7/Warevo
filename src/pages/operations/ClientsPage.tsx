@@ -1,21 +1,36 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchClients, createClientRecord } from "@/lib/services";
+import { fetchClients, createClientRecord, updateClientRecord } from "@/lib/services";
 import { Client } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Users, Plus, Phone, Mail, MapPin, Building, CheckCircle2 } from "lucide-react";
+import {
+  Building2,
+  Users,
+  Plus,
+  Search,
+  Phone,
+  Mail,
+  MapPin,
+  Building,
+  CheckCircle2,
+  UserCheck,
+  Pencil
+} from "lucide-react";
 
 export const ClientsPage: React.FC = () => {
   const { tenant, role } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
 
-  // Add Client Modal
+  // Add Client / Employee Modal
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [companyMode, setCompanyMode] = useState<"EXISTING" | "NEW">("NEW");
+  const [selectedCompany, setSelectedCompany] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [contactPerson, setContactPerson] = useState("");
   const [mobile, setMobile] = useState("+91");
@@ -26,6 +41,18 @@ export const ClientsPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Edit Client Modal
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const [editCompany, setEditCompany] = useState("");
+  const [editContact, setEditContact] = useState("");
+  const [editMobile, setEditMobile] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editGst, setEditGst] = useState("");
+  const [editBilling, setEditBilling] = useState("");
+  const [editShipping, setEditShipping] = useState("");
+  const [editStatus, setEditStatus] = useState("ACTIVE");
 
   const loadClients = async () => {
     try {
@@ -43,25 +70,55 @@ export const ClientsPage: React.FC = () => {
     loadClients();
   }, [tenant?.id]);
 
+  // Group clients by company
+  const companyMap: Record<string, Client[]> = {};
+  for (const client of clients) {
+    const cName = client.companyName || "Unnamed Company";
+    if (!companyMap[cName]) {
+      companyMap[cName] = [];
+    }
+    companyMap[cName].push(client);
+  }
+  const companies = Object.keys(companyMap);
+
+  const filteredCompanies = companies.filter((company) => {
+    const term = searchTerm.toLowerCase();
+    const matchesCompany = company.toLowerCase().includes(term);
+    const emps = companyMap[company] || [];
+    const matchesEmployee = emps.some(
+      (e) =>
+        e.contactPerson.toLowerCase().includes(term) ||
+        e.mobile.includes(term) ||
+        (e.gstNumber && e.gstNumber.toLowerCase().includes(term))
+    );
+    return matchesCompany || matchesEmployee;
+  });
+
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!tenant?.id) return;
+    const finalCompany = companyMode === "EXISTING" ? selectedCompany : companyName.trim();
+    if (!finalCompany) {
+      setFormError("Please provide a company name.");
+      return;
+    }
+
     setIsSubmitting(true);
     setFormError(null);
 
     try {
       await createClientRecord({
         tenantId: tenant.id,
-        companyName,
-        contactPerson,
-        mobile,
-        email: email || undefined,
-        gstNumber: gstNumber || undefined,
-        billingAddress,
-        shippingAddress: shippingAddress || billingAddress
+        companyName: finalCompany,
+        contactPerson: contactPerson.trim(),
+        mobile: mobile.trim(),
+        email: email.trim() || undefined,
+        gstNumber: gstNumber.trim() || undefined,
+        billingAddress: billingAddress.trim(),
+        shippingAddress: (shippingAddress.trim() || billingAddress.trim())
       });
       setIsAddOpen(false);
-      setSuccessMsg(`Client ${companyName} added successfully!`);
+      setSuccessMsg(`Contact ${contactPerson} under ${finalCompany} added successfully!`);
       // Reset form
       setCompanyName("");
       setContactPerson("");
@@ -78,19 +135,69 @@ export const ClientsPage: React.FC = () => {
     }
   };
 
+  const startEdit = (client: Client) => {
+    setEditingClient(client);
+    setEditCompany(client.companyName);
+    setEditContact(client.contactPerson);
+    setEditMobile(client.mobile);
+    setEditEmail(client.email || "");
+    setEditGst(client.gstNumber || "");
+    setEditBilling(client.billingAddress);
+    setEditShipping(client.shippingAddress || client.billingAddress);
+    setEditStatus(client.status);
+    setIsEditOpen(true);
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingClient) return;
+
+    try {
+      setIsSubmitting(true);
+      setFormError(null);
+      await updateClientRecord({
+        id: editingClient.id,
+        companyName: editCompany.trim(),
+        contactPerson: editContact.trim(),
+        mobile: editMobile.trim(),
+        email: editEmail.trim() || undefined,
+        gstNumber: editGst.trim() || undefined,
+        billingAddress: editBilling.trim(),
+        shippingAddress: editShipping.trim(),
+        status: editStatus
+      });
+
+      setSuccessMsg(`Updated ${editContact} (${editCompany}) successfully!`);
+      setIsEditOpen(false);
+      setEditingClient(null);
+      await loadClients();
+    } catch (err: any) {
+      setFormError(err?.message || "Failed to update client");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Client Companies</h1>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Client Companies & Directory</h1>
           <p className="text-sm text-slate-400">
-            Client directory, billing profiles, and delivery destinations.
+            2-tier organizational structure: Client companies and their designated authorized employees.
           </p>
         </div>
 
         {role !== "CLIENT" && (
-          <Button onClick={() => setIsAddOpen(true)} className="gap-1.5 self-start sm:self-auto">
-            <Plus className="w-4 h-4" /> Add New Client
+          <Button
+            onClick={() => {
+              setCompanyMode(companies.length > 0 ? "EXISTING" : "NEW");
+              setSelectedCompany(companies[0] || "");
+              setIsAddOpen(true);
+            }}
+            className="gap-1.5 self-start sm:self-auto"
+          >
+            <Plus className="w-4 h-4" /> Add Company / Employee
           </Button>
         )}
       </div>
@@ -102,8 +209,55 @@ export const ClientsPage: React.FC = () => {
         </div>
       )}
 
+      {/* Summary KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card className="flex items-center gap-4 p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-950 text-indigo-400 border border-indigo-800">
+            <Building2 className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-400">Client Companies</p>
+            <h3 className="text-2xl font-bold text-white">{companies.length}</h3>
+          </div>
+        </Card>
+
+        <Card className="flex items-center gap-4 p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-950 text-teal-400 border border-teal-800">
+            <Users className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-400">Authorized Personnel</p>
+            <h3 className="text-2xl font-bold text-white">{clients.length}</h3>
+          </div>
+        </Card>
+
+        <Card className="flex items-center gap-4 p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-950 text-emerald-400 border border-emerald-800">
+            <UserCheck className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-400">Active Status</p>
+            <h3 className="text-2xl font-bold text-emerald-400">
+              {clients.filter((c) => c.status === "ACTIVE").length}
+            </h3>
+          </div>
+        </Card>
+      </div>
+
+      {/* Search Bar */}
+      <div className="relative max-w-md">
+        <Search className="absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
+        <input
+          type="text"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          placeholder="Search by company, employee name, phone, or GST..."
+          className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
+        />
+      </div>
+
       {loading ? (
-        <LoadingSpinner message="Loading clients..." />
+        <LoadingSpinner message="Loading client companies..." />
       ) : clients.length === 0 ? (
         <EmptyState
           title="No clients found"
@@ -111,60 +265,119 @@ export const ClientsPage: React.FC = () => {
           actionLabel="Add Client"
           onAction={() => setIsAddOpen(true)}
         />
+      ) : filteredCompanies.length === 0 ? (
+        <Card className="p-8 text-center text-slate-400 text-sm">
+          No client companies or contacts match "{searchTerm}".
+        </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {clients.map((c) => (
-            <Card key={c.id} hoverEffect className="flex flex-col justify-between">
-              <div>
-                <div className="flex items-start justify-between gap-2 mb-3">
-                  <div>
-                    <h3 className="text-base font-bold text-white leading-tight">
-                      {c.companyName}
-                    </h3>
-                    <p className="text-xs text-indigo-400 mt-0.5">{c.contactPerson}</p>
+        <div className="space-y-4">
+          {filteredCompanies.map((cName) => {
+            const employees = companyMap[cName] || [];
+            const firstEmp = employees[0];
+
+            return (
+              <Card key={cName} className="p-0 overflow-hidden border border-slate-800 bg-slate-900/60">
+                {/* Company Header Row */}
+                <div className="bg-slate-900/90 px-5 py-3.5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-950 text-indigo-400 border border-indigo-800 font-bold text-sm">
+                      <Building2 className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h2 className="font-bold text-base text-white">{cName}</h2>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-0.5">
+                        {firstEmp?.gstNumber && (
+                          <span className="font-mono bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 text-slate-300 text-[11px]">
+                            GSTIN: {firstEmp.gstNumber}
+                          </span>
+                        )}
+                        <span>{employees.length} contact person(s)</span>
+                      </div>
+                    </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-300 border border-emerald-800">
-                    {c.status}
-                  </span>
+
+                  {role !== "CLIENT" && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setCompanyMode("EXISTING");
+                        setSelectedCompany(cName);
+                        setIsAddOpen(true);
+                      }}
+                      className="text-xs h-8 flex items-center gap-1.5 self-start sm:self-auto"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add Employee
+                    </Button>
+                  )}
                 </div>
 
-                <div className="space-y-2 text-xs text-slate-300">
-                  <div className="flex items-center gap-2">
-                    <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span>{c.mobile}</span>
-                  </div>
-                  {c.email && (
-                    <div className="flex items-center gap-2">
-                      <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="truncate">{c.email}</span>
-                    </div>
-                  )}
-                  {c.gstNumber && (
-                    <div className="flex items-center gap-2">
-                      <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="font-mono text-slate-400">{c.gstNumber}</span>
-                    </div>
-                  )}
-                  <div className="flex items-start gap-2 pt-1 border-t border-slate-800/80">
-                    <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                    <span className="text-slate-400 text-[11px] line-clamp-2">
-                      {c.billingAddress}
-                    </span>
-                  </div>
+                {/* Employees Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-slate-800 bg-slate-950/40 text-[11px] font-semibold uppercase text-slate-400">
+                      <tr>
+                        <th className="px-5 py-2.5">Authorized Contact</th>
+                        <th className="px-5 py-2.5">Mobile Phone</th>
+                        <th className="px-5 py-2.5">Email</th>
+                        <th className="px-5 py-2.5">Delivery / Billing Address</th>
+                        <th className="px-5 py-2.5 text-center">Status</th>
+                        {role !== "CLIENT" && (
+                          <th className="px-5 py-2.5 text-right">Action</th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {employees.map((emp) => (
+                        <tr key={emp.id} className="hover:bg-slate-800/40 transition">
+                          <td className="px-5 py-3 font-semibold text-white flex items-center gap-2">
+                            <UserCheck className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                            {emp.contactPerson}
+                          </td>
+                          <td className="px-5 py-3 font-mono text-slate-300">{emp.mobile}</td>
+                          <td className="px-5 py-3 text-slate-400">{emp.email || "—"}</td>
+                          <td className="px-5 py-3 text-slate-400 max-w-xs truncate">
+                            {emp.shippingAddress || emp.billingAddress}
+                          </td>
+                          <td className="px-5 py-3 text-center">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                emp.status === "ACTIVE"
+                                  ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                  : "bg-slate-800 text-slate-400 border border-slate-700"
+                              }`}
+                            >
+                              {emp.status}
+                            </span>
+                          </td>
+                          {role !== "CLIENT" && (
+                            <td className="px-5 py-3 text-right">
+                              <button
+                                onClick={() => startEdit(emp)}
+                                className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold px-2 py-1 rounded bg-indigo-950/50 border border-indigo-800/50 inline-flex items-center gap-1"
+                              >
+                                <Pencil className="h-3 w-3" /> Edit
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
-      {/* Add Client Modal */}
+      {/* Add Client / Employee Modal */}
       {isAddOpen && (
         <Modal
           isOpen={isAddOpen}
           onClose={() => setIsAddOpen(false)}
-          title="Register Client Company"
-          description="Enter commercial details and billing coordinates"
+          title="Register Client Company / Employee"
+          description="Add a new client organization or register an additional authorized contact under an existing client."
           maxWidth="md"
         >
           <form onSubmit={handleAddSubmit} className="space-y-4">
@@ -174,30 +387,84 @@ export const ClientsPage: React.FC = () => {
               </div>
             )}
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Company Name *
-              </label>
-              <input
-                type="text"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-                placeholder="e.g. Zenith Logistics Ltd"
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
-                required
-              />
-            </div>
+            {/* Existing vs New Company toggle */}
+            {companies.length > 0 && (
+              <div className="flex rounded-xl bg-slate-900 p-1 border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setCompanyMode("EXISTING")}
+                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${
+                    companyMode === "EXISTING"
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Existing Company ({companies.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCompanyMode("NEW")}
+                  className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${
+                    companyMode === "NEW"
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  + New Company
+                </button>
+              </div>
+            )}
+
+            {companyMode === "EXISTING" && companies.length > 0 ? (
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Select Existing Company *
+                </label>
+                <select
+                  value={selectedCompany}
+                  onChange={(e) => {
+                    setSelectedCompany(e.target.value);
+                    const found = companyMap[e.target.value]?.[0];
+                    if (found) {
+                      setGstNumber(found.gstNumber || "");
+                      setBillingAddress(found.billingAddress || "");
+                      setShippingAddress(found.shippingAddress || "");
+                    }
+                  }}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  required
+                >
+                  {companies.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Company Name *
+                </label>
+                <input
+                  type="text"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="e.g. Acme Industrial Corp"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  required
+                />
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Primary Contact *
+                  Employee / Contact Name *
                 </label>
                 <input
                   type="text"
                   value={contactPerson}
                   onChange={(e) => setContactPerson(e.target.value)}
-                  placeholder="Contact Name"
+                  placeholder="Full Name"
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
                   required
                 />
@@ -211,7 +478,7 @@ export const ClientsPage: React.FC = () => {
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
                   placeholder="+91..."
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none font-mono"
                   required
                 />
               </div>
@@ -224,7 +491,7 @@ export const ClientsPage: React.FC = () => {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="billing@company.com"
+                  placeholder="name@company.com"
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
                 />
               </div>
@@ -235,7 +502,7 @@ export const ClientsPage: React.FC = () => {
                   value={gstNumber}
                   onChange={(e) => setGstNumber(e.target.value)}
                   placeholder="29ABCDE1234F1Z5"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none uppercase"
                 />
               </div>
             </div>
@@ -272,7 +539,137 @@ export const ClientsPage: React.FC = () => {
                 Cancel
               </Button>
               <Button type="submit" isLoading={isSubmitting}>
-                Save Client Company
+                Save Contact
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Edit Client Modal */}
+      {isEditOpen && editingClient && (
+        <Modal
+          isOpen={isEditOpen}
+          onClose={() => setIsEditOpen(false)}
+          title={`Edit ${editingClient.contactPerson}`}
+          description={`Update details for client record under ${editingClient.companyName}`}
+          maxWidth="md"
+        >
+          <form onSubmit={handleEditSubmit} className="space-y-4">
+            {formError && (
+              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
+                {formError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Company Name *
+                </label>
+                <input
+                  type="text"
+                  value={editCompany}
+                  onChange={(e) => setEditCompany(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Status
+                </label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                >
+                  <option value="ACTIVE">ACTIVE</option>
+                  <option value="INACTIVE">INACTIVE</option>
+                  <option value="BLOCKED">BLOCKED</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Contact Person *
+                </label>
+                <input
+                  type="text"
+                  value={editContact}
+                  onChange={(e) => setEditContact(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Mobile Number *
+                </label>
+                <input
+                  type="text"
+                  value={editMobile}
+                  onChange={(e) => setEditMobile(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none font-mono"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">GST Number</label>
+                <input
+                  type="text"
+                  value={editGst}
+                  onChange={(e) => setEditGst(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none uppercase"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Billing Address *
+              </label>
+              <textarea
+                value={editBilling}
+                onChange={(e) => setEditBilling(e.target.value)}
+                rows={2}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Shipping Address
+              </label>
+              <textarea
+                value={editShipping}
+                onChange={(e) => setEditShipping(e.target.value)}
+                rows={2}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setIsEditOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" isLoading={isSubmitting}>
+                Save Changes
               </Button>
             </div>
           </form>

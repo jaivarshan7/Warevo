@@ -11,7 +11,10 @@ import {
   Bell,
   Settings,
   UserCheck,
-  Shield
+  Shield,
+  Truck,
+  Activity,
+  Globe
 } from "lucide-react";
 import { Role, ClientEmployeeRole } from "@/types";
 import { hasPermission } from "./permissions";
@@ -250,8 +253,9 @@ export function getNavigationItems(
       icon: Package,
       children: [
         { id: "orders", label: "Orders", path: "/operations/orders" },
+        { id: "track", label: "Live Delivery Tracker", path: "/operations/orders/track" },
         { id: "inventory", label: "Inventory", path: "/operations/inventory" },
-        { id: "clients", label: "Clients", path: "/operations/clients" }
+        { id: "clients", label: "Clients Directory", path: "/operations/clients" }
       ]
     },
     {
@@ -273,6 +277,12 @@ export function getNavigationItems(
       icon: BarChart3
     },
     {
+      id: "change-log",
+      label: "Change Log",
+      path: "/change-log",
+      icon: Activity
+    },
+    {
       id: "notifications",
       label: "Notifications",
       path: "/notifications",
@@ -283,6 +293,12 @@ export function getNavigationItems(
       label: "Admin Console",
       path: "/admin",
       icon: Shield
+    },
+    {
+      id: "platform",
+      label: "Platform Overview",
+      path: "/platform",
+      icon: Globe
     },
     {
       id: "settings",
@@ -300,6 +316,9 @@ export function getNavigationItems(
 
   // Filter based on permissions
   return items.filter((item) => {
+    if (item.id === "platform" && role !== "PLATFORM_ADMIN") {
+      return false;
+    }
     if (item.id === "admin" && role !== "PLATFORM_ADMIN" && role !== "WAREHOUSE_OWNER") {
       return false;
     }

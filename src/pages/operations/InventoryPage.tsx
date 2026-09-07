@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchInventory, adjustInventoryStock, fetchInventoryMovements } from "@/lib/services";
+import {
+  fetchInventory,
+  adjustInventoryStock,
+  fetchInventoryMovements,
+  fetchWarehouses,
+  fetchCategories,
+  createProductWithInitialStock
+} from "@/lib/services";
 import { Inventory, InventoryMovementType } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -8,13 +15,15 @@ import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Tabs } from "@/components/ui/Tabs";
-import { Boxes, ArrowUpDown, AlertCircle, History, Plus, CheckCircle2 } from "lucide-react";
+import { Boxes, ArrowUpDown, History, Plus, CheckCircle2 } from "lucide-react";
 
 export const InventoryPage: React.FC = () => {
   const { tenant, user, role } = useAuth();
   const [activeTab, setActiveTab] = useState<string>("stock");
   const [inventory, setInventory] = useState<Inventory[]>([]);
   const [movements, setMovements] = useState<any[]>([]);
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [categories, setCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Stock Adjustment Modal
@@ -27,15 +36,46 @@ export const InventoryPage: React.FC = () => {
   const [modalError, setModalError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // New Stock Item Modal
+  const [isAddProductOpen, setIsAddProductOpen] = useState(false);
+  const [newProduct, setNewProduct] = useState({
+    sku: "",
+    name: "",
+    categoryId: "",
+    description: "",
+    price: 0,
+    costPrice: 0,
+    unit: "PCS",
+    reorderLevel: 10,
+    gstRate: 18,
+    hsnCode: "",
+    warehouseId: "",
+    zone: "A",
+    rack: "1",
+    shelf: "A",
+    bin: "01",
+    initialQuantity: 100
+  });
+
   const loadData = async () => {
     try {
       setLoading(true);
-      const [invList, movList] = await Promise.all([
+      const [invList, movList, whList, catList] = await Promise.all([
         fetchInventory(tenant?.id),
-        fetchInventoryMovements(tenant?.id)
+        fetchInventoryMovements(tenant?.id),
+        fetchWarehouses(tenant?.id),
+        fetchCategories(tenant?.id)
       ]);
       setInventory(invList);
       setMovements(movList);
+      setWarehouses(whList);
+      setCategories(catList);
+      if (whList.length > 0 && !newProduct.warehouseId) {
+        setNewProduct((prev) => ({ ...prev, warehouseId: whList[0].id }));
+      }
+      if (catList.length > 0 && !newProduct.categoryId) {
+        setNewProduct((prev) => ({ ...prev, categoryId: catList[0].id }));
+      }
     } catch (err) {
       console.error("Error loading inventory:", err);
     } finally {
@@ -46,6 +86,61 @@ export const InventoryPage: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [tenant?.id]);
+
+  const handleCreateProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setModalError(null);
+    setSuccessMsg(null);
+
+    try {
+      await createProductWithInitialStock({
+        tenantId: tenant?.id,
+        sku: newProduct.sku,
+        name: newProduct.name,
+        categoryId: newProduct.categoryId || undefined,
+        description: newProduct.description,
+        price: Number(newProduct.price),
+        costPrice: Number(newProduct.costPrice),
+        unit: newProduct.unit,
+        reorderLevel: Number(newProduct.reorderLevel),
+        gstRate: Number(newProduct.gstRate),
+        hsnCode: newProduct.hsnCode,
+        warehouseId: newProduct.warehouseId,
+        zone: newProduct.zone,
+        rack: newProduct.rack,
+        shelf: newProduct.shelf,
+        bin: newProduct.bin,
+        initialQuantity: Number(newProduct.initialQuantity),
+        userId: user?.id
+      });
+      setIsAddProductOpen(false);
+      setSuccessMsg(`Successfully created product "${newProduct.name}" and initialized ${newProduct.initialQuantity} units.`);
+      setNewProduct({
+        sku: "",
+        name: "",
+        categoryId: categories[0]?.id || "",
+        description: "",
+        price: 0,
+        costPrice: 0,
+        unit: "PCS",
+        reorderLevel: 10,
+        gstRate: 18,
+        hsnCode: "",
+        warehouseId: warehouses[0]?.id || "",
+        zone: "A",
+        rack: "1",
+        shelf: "A",
+        bin: "01",
+        initialQuantity: 100
+      });
+      await loadData();
+    } catch (err: any) {
+      setModalError(err?.message || "Failed to create product");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,15 +179,24 @@ export const InventoryPage: React.FC = () => {
         </div>
 
         {role !== "CLIENT" && (
-          <Button
-            onClick={() => {
-              if (inventory.length > 0) setSelectedInv(inventory[0]);
-              setIsAdjustOpen(true);
-            }}
-            className="gap-1.5 self-start sm:self-auto"
-          >
-            <ArrowUpDown className="w-4 h-4" /> Adjust / Receive Stock
-          </Button>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <Button
+              variant="outline"
+              onClick={() => setIsAddProductOpen(true)}
+              className="gap-1.5"
+            >
+              <Plus className="w-4 h-4" /> Add Stock Item
+            </Button>
+            <Button
+              onClick={() => {
+                if (inventory.length > 0) setSelectedInv(inventory[0]);
+                setIsAdjustOpen(true);
+              }}
+              className="gap-1.5"
+            >
+              <ArrowUpDown className="w-4 h-4" /> Adjust Stock
+            </Button>
+          </div>
         )}
       </div>
 
@@ -333,6 +437,209 @@ export const InventoryPage: React.FC = () => {
               </Button>
               <Button type="submit" isLoading={isSubmitting}>
                 Execute Adjustment
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Add New Stock Item Modal */}
+      {isAddProductOpen && (
+        <Modal
+          isOpen={isAddProductOpen}
+          onClose={() => setIsAddProductOpen(false)}
+          title="Add New Stock Item / SKU"
+          description="Create SKU catalog definition, assign physical warehouse bin location, and post opening stock."
+        >
+          <form onSubmit={handleCreateProduct} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+            {modalError && (
+              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
+                {modalError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">SKU / Code *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. ELEC-BAT-001"
+                  value={newProduct.sku}
+                  onChange={(e) => setNewProduct({ ...newProduct, sku: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Product Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Lithium Polymer 5000mAh"
+                  value={newProduct.name}
+                  onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Category</label>
+                <select
+                  value={newProduct.categoryId}
+                  onChange={(e) => setNewProduct({ ...newProduct, categoryId: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                >
+                  <option value="">None / General</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">HSN Code</label>
+                <input
+                  type="text"
+                  placeholder="8504"
+                  value={newProduct.hsnCode}
+                  onChange={(e) => setNewProduct({ ...newProduct, hsnCode: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">GST Rate (%)</label>
+                <select
+                  value={newProduct.gstRate}
+                  onChange={(e) => setNewProduct({ ...newProduct, gstRate: Number(e.target.value) })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                >
+                  <option value={0}>0% (Exempt)</option>
+                  <option value={5}>5%</option>
+                  <option value={12}>12%</option>
+                  <option value={18}>18%</option>
+                  <option value={28}>28%</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Selling Price (₹) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  required
+                  value={newProduct.price}
+                  onChange={(e) => setNewProduct({ ...newProduct, price: Number(e.target.value) })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white text-right"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Cost Price (₹)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={newProduct.costPrice}
+                  onChange={(e) => setNewProduct({ ...newProduct, costPrice: Number(e.target.value) })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white text-right"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">Unit</label>
+                <select
+                  value={newProduct.unit}
+                  onChange={(e) => setNewProduct({ ...newProduct, unit: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                >
+                  <option value="PCS">PCS (Pieces)</option>
+                  <option value="BOX">BOX (Boxes)</option>
+                  <option value="KG">KG (Kilograms)</option>
+                  <option value="MTR">MTR (Meters)</option>
+                  <option value="SET">SET (Sets)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Warehouse & Physical Location Mapping */}
+            <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3">
+              <div className="text-xs font-semibold text-indigo-400 uppercase tracking-wider">
+                Warehouse & Bin Location Setup
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Facility / Warehouse *</label>
+                  <select
+                    value={newProduct.warehouseId}
+                    onChange={(e) => setNewProduct({ ...newProduct, warehouseId: e.target.value })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    required
+                  >
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>{w.name} ({w.code})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Initial Opening Quantity</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newProduct.initialQuantity}
+                    onChange={(e) => setNewProduct({ ...newProduct, initialQuantity: Number(e.target.value) })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white text-right font-bold text-emerald-400"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-500 uppercase">Zone</label>
+                  <input
+                    type="text"
+                    value={newProduct.zone}
+                    onChange={(e) => setNewProduct({ ...newProduct, zone: e.target.value })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-center uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 uppercase">Rack</label>
+                  <input
+                    type="text"
+                    value={newProduct.rack}
+                    onChange={(e) => setNewProduct({ ...newProduct, rack: e.target.value })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-center uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 uppercase">Shelf</label>
+                  <input
+                    type="text"
+                    value={newProduct.shelf}
+                    onChange={(e) => setNewProduct({ ...newProduct, shelf: e.target.value })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-center uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 uppercase">Bin</label>
+                  <input
+                    type="text"
+                    value={newProduct.bin}
+                    onChange={(e) => setNewProduct({ ...newProduct, bin: e.target.value })}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-center uppercase"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setIsAddProductOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" isLoading={isSubmitting}>
+                Save Product & Place in Warehouse
               </Button>
             </div>
           </form>

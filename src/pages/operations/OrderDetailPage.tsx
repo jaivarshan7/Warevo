@@ -130,7 +130,7 @@ export const OrderDetailPage: React.FC = () => {
 
   const canVerify =
     ["RECEIVED", "VERIFICATION_PENDING", "DISPATCHED"].includes(order.status) &&
-    (role === "CLIENT" || role === "PRODUCT_RECEIVER" || role === "WAREHOUSE_OWNER");
+    (role === "CLIENT" || role === "PRODUCT_RECEIVER");
 
   const canGenerateInvoice =
     ["WAREHOUSE_OWNER", "ACCOUNTANT", "ACCOUNTS_TEAM", "PLATFORM_ADMIN"].includes(role);

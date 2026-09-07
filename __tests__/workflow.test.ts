@@ -25,6 +25,7 @@ import { filterAuditLogs, summarizeAuditChange } from "@/lib/audit-log";
 import { buildReportSummary } from "@/lib/reporting";
 import { normalizeSelectedContactIds, resolvePrimaryClientId } from "@/lib/order-contacts";
 import { parseInvoiceText, samplePureAuraInvoice } from "@/lib/invoice-parser";
+import { parseInvoiceText as parseReactInvoiceText } from "@/src/lib/invoiceParser";
 import { extractTextFromPdf } from "@/lib/pdf-text-extractor";
 
 describe("RBAC and tenant isolation", () => {
@@ -315,5 +316,46 @@ describe("pdf text extractor", () => {
     ].join("\n");
 
     expect(extractTextFromPdf(Buffer.from(pdf, "latin1"))).toBe("Hi");
+  });
+});
+
+describe("invoice parser", () => {
+  it("extracts products from the flattened Pure Aura PDF layout", () => {
+    const parsed = parseReactInvoiceText([
+      "Tax Invoice PURE AURA ENTERPRISES",
+      "Bill To PSS Multiplex - Tenkasi 510 RAILWAY FEEDER ROAD TENKASI",
+      "Contact No. : 9344890042 GSTIN : 33AAYFP5618B1Z4",
+      "Invoice Details Invoice No. : 2324 Date : 17-08-2026",
+      "# Item Name HSN Quantity Unit Price/ Unit",
+      "1 Acid - HCL - 1 Liter 2907122 0 10 Btl ₹ 42.37 ₹ 42.37",
+      "2 Hand wash Dispenser 3924909 0 5 Pcs ₹ 180.00 ₹ 180.00",
+      "3 Wooden Stirrer - 110 mm (450pcs/packet) 4419 30 Pac ₹ 60.00 ₹ 60.00",
+      "Total 145",
+      "For: PURE AURA ENTERPRISES Authorized Signatory"
+    ].join(" "));
+
+    expect(parsed.items).toHaveLength(3);
+    expect(parsed.items[0]).toMatchObject({ name: "Acid - HCL - 1 Liter", quantity: 10, unitPrice: 42.37, hsn: "29071220" });
+    expect(parsed.items[2]).toMatchObject({ name: "Wooden Stirrer - 110 mm (450pcs/packet)", quantity: 30, unitPrice: 60 });
+  });
+
+  it("extracts flattened GST invoice rows with numeric item names", () => {
+    const text = [
+      "Invoice No.: 2438 Date: 29-08-2026 Bill To SRI KAUVERY MEDICAL CARE",
+      "# Item Name HSN Quantity Unit Price/ Unit Taxable Price/ Unit Taxable Amount CGST SGST Final Rate Amount",
+      "1 Carbon Sheet 100 Pcs ₹ 2.00 ₹ 2.00 ₹ 200.00 ₹ 18.00 (9.0%) ₹ 18.00 (9.0%) ₹ 2.36 ₹ 236.00",
+      "2 Cello Tape - 1 inch - Brown 10 Pcs ₹ 22.00 ₹ 22.00 ₹ 220.00 ₹ 19.80 (9.0%) ₹ 19.80 (9.0%) ₹ 25.96 ₹ 259.60",
+      "3 Packing Tape - 1 inch - Transparent 15 Pcs ₹ 22.00 ₹ 22.00 ₹ 330.00 ₹ 29.70 (9.0%) ₹ 29.70 (9.0%) ₹ 25.96 ₹ 389.40",
+      "4 Cello Tape - 2 inch - Brown 40 Pcs ₹ 30.00 ₹ 30.00 ₹ 1,200.00 ₹ 108.00 (9.0%) ₹ 108.00 (9.0%) ₹ 35.40 ₹ 1,416.00",
+      "5 Fevi Stick (8 Gms) 15 Pcs ₹ 20.00 ₹ 20.00 ₹ 300.00 ₹ 27.00 (9.0%) ₹ 27.00 (9.0%) ₹ 23.60 ₹ 354.00",
+      "6 Blue Pen (Elkos Branded) 300 Pcs ₹ 4.80 ₹ 4.80 ₹ 1,440.00 ₹ 129.60 (9.0%) ₹ 129.60 (9.0%) ₹ 5.66 ₹ 1,699.20",
+      "7 stapler Pin - Small 50 Pcs ₹ 6.50 ₹ 6.50 ₹ 325.00 ₹ 29.25 (9.0%) ₹ 29.25 (9.0%) ₹ 7.67 ₹ 383.50",
+      "Total 530 ₹ 4,015.00 ₹ 361.35 ₹ 361.35 ₹ 4,737.70",
+    ].join(" ");
+
+    const parsed = parseReactInvoiceText(text);
+    expect(parsed.items).toHaveLength(7);
+    expect(parsed.items[1]).toMatchObject({ name: "Cello Tape - 1 inch - Brown", quantity: 10, unitPrice: 22, gstRate: 18 });
+    expect(parsed.items[5]).toMatchObject({ name: "Blue Pen (Elkos Branded)", quantity: 300, unitPrice: 4.8 });
   });
 });

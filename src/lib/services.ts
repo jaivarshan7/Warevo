@@ -105,18 +105,35 @@ export async function fetchOrderById(orderId: string): Promise<Order | null> {
       client:Client(*),
       createdBy:User!createdById(*),
       assignedStaff:User!assignedStaffId(*),
-      items:OrderItem(*, product:Product(*)),
-      statusHistory:OrderStatusHistory(*, changedBy:User!changedById(*)),
-      verification:VerificationResponse(*)
+      items:OrderItem(*, product:Product(*))
     `)
     .eq("id", orderId)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error("Error fetching order by ID:", error);
     return null;
   }
-  return data as Order;
+  if (!data) return null;
+
+  const [historyResult, verificationResult] = await Promise.all([
+    supabase
+      .from("OrderStatusHistory")
+      .select("*, changedBy:User!changedById(*)")
+      .eq("orderId", orderId)
+      .order("createdAt", { ascending: true }),
+    supabase
+      .from("VerificationResponse")
+      .select("*")
+      .eq("orderId", orderId)
+      .maybeSingle()
+  ]);
+
+  return {
+    ...(data as Order),
+    statusHistory: (historyResult.data || []) as Order["statusHistory"],
+    verification: (verificationResult.data || null) as Order["verification"]
+  };
 }
 
 export async function transitionOrderStatus(
@@ -215,6 +232,265 @@ export async function createOrder(payload: {
   return order;
 }
 
+export async function createEnhancedOrder(payload: {
+  tenantId: string;
+  clientId: string;
+  selectedContactIds?: string[];
+  createdById: string;
+  assignedStaffId?: string;
+  expectedDelivery?: string;
+  notes?: string;
+  status?: OrderStatus;
+  generateInvoice?: boolean;
+  eWayBill?: {
+    transporterName?: string;
+    vehicleNumber?: string;
+    distanceKm?: number;
+    transportMode?: string;
+  };
+  items: Array<{
+    productId: string;
+    quantity: number;
+    unitPrice: number;
+    taxRate: number;
+    discount?: number;
+  }>;
+}) {
+  const latestRes = await supabase
+    .from("Order")
+    .select("orderNumber")
+    .eq("tenantId", payload.tenantId)
+    .order("createdAt", { ascending: false })
+    .limit(1);
+
+  const lastNum = latestRes.data?.[0]?.orderNumber
+    ? parseInt(latestRes.data[0].orderNumber.replace(/[^0-9]/g, "").slice(-6), 10) || 0
+    : 0;
+
+  const orderNumber = `ORD-2026-${String(lastNum + 1).padStart(6, "0")}`;
+  const subtotal = payload.items.reduce(
+    (sum, item) => sum + item.quantity * item.unitPrice - (item.discount || 0),
+    0
+  );
+  const taxTotal = payload.items.reduce(
+    (sum, item) => sum + ((item.quantity * item.unitPrice - (item.discount || 0)) * item.taxRate) / 100,
+    0
+  );
+  const discountTotal = payload.items.reduce((sum, item) => sum + (item.discount || 0), 0);
+  const totalAmount = subtotal + taxTotal;
+
+  const orderId = `ord_${Math.random().toString(36).substring(2, 11)}`;
+  const initialStatus: OrderStatus = payload.status || (payload.generateInvoice ? "ISSUED" : "DRAFT");
+
+  // 1. Insert Order
+  const { data: order, error: orderErr } = await supabase
+    .from("Order")
+    .insert({
+      id: orderId,
+      tenantId: payload.tenantId,
+      clientId: payload.clientId,
+      orderNumber,
+      status: initialStatus,
+      verificationStatus: "PENDING",
+      subtotal,
+      taxTotal,
+      discountTotal,
+      totalAmount,
+      notes: payload.notes || null,
+      createdById: payload.createdById,
+      assignedStaffId: payload.assignedStaffId || null,
+      expectedDelivery: payload.expectedDelivery || null
+    })
+    .select()
+    .single();
+
+  if (orderErr) throw orderErr;
+
+  // 2. Insert Order Items
+  const itemsToInsert = payload.items.map((item) => {
+    const itemSub = item.quantity * item.unitPrice - (item.discount || 0);
+    const itemTax = (itemSub * item.taxRate) / 100;
+    return {
+      id: `oi_${Math.random().toString(36).substring(2, 11)}`,
+      orderId,
+      productId: item.productId,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      taxRate: item.taxRate,
+      discount: item.discount || 0,
+      total: itemSub + itemTax
+    };
+  });
+
+  const { error: itemErr } = await supabase.from("OrderItem").insert(itemsToInsert);
+  if (itemErr) throw itemErr;
+
+  // 3. Status History
+  await supabase.from("OrderStatusHistory").insert({
+    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
+    tenantId: payload.tenantId,
+    orderId,
+    newStatus: initialStatus,
+    changedById: payload.createdById,
+    notes: payload.status === "DISPATCHED" ? "Imported and dispatched" : "Initial order created"
+  });
+
+  // 4. Auto-generate Invoice if requested or if status is DISPATCHED
+  if (payload.generateInvoice) {
+    const invCountRes = await supabase
+      .from("Invoice")
+      .select("invoiceNumber")
+      .eq("tenantId", payload.tenantId)
+      .order("createdAt", { ascending: false })
+      .limit(1);
+
+    const lastInvNum = invCountRes.data?.[0]?.invoiceNumber
+      ? parseInt(invCountRes.data[0].invoiceNumber.replace(/[^0-9]/g, "").slice(-6), 10) || 0
+      : 0;
+
+    const invoiceNumber = `INV-2026-${String(lastInvNum + 1).padStart(6, "0")}`;
+    const invoiceId = `inv_${Math.random().toString(36).substring(2, 11)}`;
+
+    await supabase.from("Invoice").insert({
+      id: invoiceId,
+      tenantId: payload.tenantId,
+      orderId,
+      clientId: payload.clientId,
+      invoiceNumber,
+      invoiceDate: new Date().toISOString().split("T")[0],
+      status: "FINAL",
+      paymentStatus: "UNPAID",
+      subtotal,
+      cgst: taxTotal / 2,
+      sgst: taxTotal / 2,
+      igst: 0,
+      discountTotal,
+      total: totalAmount
+    });
+
+    // Insert invoice items
+    const invItems = itemsToInsert.map((item) => ({
+      id: `ii_${Math.random().toString(36).substring(2, 11)}`,
+      invoiceId,
+      productId: item.productId,
+      quantity: item.quantity,
+      rate: item.unitPrice,
+      discount: item.discount,
+      cgst: (item.total - item.quantity * item.unitPrice) / 2,
+      sgst: (item.total - item.quantity * item.unitPrice) / 2,
+      igst: 0,
+      total: item.total
+    }));
+
+    await supabase.from("InvoiceItem").insert(invItems);
+  }
+
+  // 5. Send notifications to selected contacts
+  const contactIds = (payload.selectedContactIds && payload.selectedContactIds.length > 0)
+    ? payload.selectedContactIds
+    : [payload.clientId];
+
+  for (const cId of contactIds) {
+    await supabase.from("Notification").insert({
+      id: `notif_${Math.random().toString(36).substring(2, 10)}`,
+      tenantId: payload.tenantId,
+      orderId,
+      type: "ORDER_ISSUED",
+      title: `New Order Issued: ${orderNumber}`,
+      message: `Commercial order ${orderNumber} has been issued and assigned for fulfillment.`,
+      priority: "NORMAL",
+      actionUrl: `/operations/orders/${orderId}`,
+      read: false
+    });
+  }
+
+  return order;
+}
+
+export async function submitDetailedOrderVerification(payload: {
+  orderId: string;
+  tenantId: string;
+  clientId: string;
+  status: VerificationStatus;
+  checklist: Array<{ text: string; checked: boolean }>;
+  comments?: string;
+  itemDiscrepancies?: Record<string, { received: number; damaged: number }>;
+  userId?: string | null;
+}) {
+  const nextOrderStatus: OrderStatus =
+    payload.status === "VERIFIED"
+      ? "VERIFIED"
+      : payload.status === "PARTIALLY_VERIFIED"
+      ? "PARTIALLY_VERIFIED"
+      : "REJECTED";
+
+  // 1. Upsert VerificationResponse
+  const respId = `vr_${Math.random().toString(36).substring(2, 10)}`;
+  await supabase.from("VerificationResponse").upsert({
+    id: respId,
+    tenantId: payload.tenantId,
+    orderId: payload.orderId,
+    clientId: payload.clientId,
+    userId: payload.userId || null,
+    status: payload.status,
+    responses: payload.checklist,
+    comments: payload.comments || null
+  }, { onConflict: "orderId" });
+
+  // 2. Update Order status
+  const { data: updatedOrder, error: orderErr } = await supabase
+    .from("Order")
+    .update({
+      verificationStatus: payload.status,
+      status: nextOrderStatus,
+      updatedAt: new Date().toISOString()
+    })
+    .eq("id", payload.orderId)
+    .select()
+    .single();
+
+  if (orderErr) throw orderErr;
+
+  // 3. Status History
+  await supabase.from("OrderStatusHistory").insert({
+    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
+    tenantId: payload.tenantId,
+    orderId: payload.orderId,
+    newStatus: nextOrderStatus,
+    changedById: payload.userId || null,
+    notes: payload.comments || `Delivery marked as ${payload.status}`
+  });
+
+  // 4. Audit Log
+  if (payload.userId) {
+    await supabase.from("AuditLog").insert({
+      id: `al_${Math.random().toString(36).substring(2, 10)}`,
+      tenantId: payload.tenantId,
+      userId: payload.userId,
+      userRole: "PRODUCT_RECEIVER",
+      action: "Submitted delivery verification checklist",
+      entity: "Order",
+      entityId: payload.orderId,
+      newValue: { verificationStatus: payload.status, status: nextOrderStatus }
+    });
+  }
+
+  // 5. Notification
+  await supabase.from("Notification").insert({
+    id: `notif_${Math.random().toString(36).substring(2, 10)}`,
+    tenantId: payload.tenantId,
+    orderId: payload.orderId,
+    type: "CLIENT_COMPLETED_VERIFICATION",
+    title: "Delivery Inspection Submitted",
+    message: `Order delivery verification completed with status: ${payload.status}`,
+    priority: "HIGH",
+    actionUrl: `/operations/orders/${payload.orderId}`,
+    read: false
+  });
+
+  return updatedOrder;
+}
+
 // ======================== INVENTORY ========================
 
 export async function fetchInventory(tenantId?: string | null): Promise<Inventory[]> {
@@ -269,6 +545,184 @@ export async function fetchInventoryMovements(tenantId?: string | null) {
   return data || [];
 }
 
+export async function fetchWarehouses(tenantId?: string | null) {
+  let query = supabase.from("Warehouse").select("*").order("name", { ascending: true });
+  if (tenantId) query = query.eq("tenantId", tenantId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+export async function fetchCategories(tenantId?: string | null) {
+  let query = supabase.from("Category").select("*").order("name", { ascending: true });
+  if (tenantId) query = query.eq("tenantId", tenantId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createProductWithInitialStock(payload: {
+  tenantId: string;
+  name: string;
+  sku: string;
+  brand?: string;
+  categoryName?: string;
+  unit?: string;
+  description?: string;
+  purchasePrice: number;
+  sellingPrice: number;
+  gstRate: number;
+  minimumStock: number;
+  reorderLevel: number;
+  warehouseId: string;
+  zone?: string;
+  rack?: string;
+  shelf?: string;
+  bin?: string;
+  initialQuantity: number;
+  userId?: string | null;
+  userRole?: Role;
+}) {
+  // 1. Resolve category
+  let categoryId: string | null = null;
+  if (payload.categoryName?.trim()) {
+    const catName = payload.categoryName.trim();
+    const existingCat = await supabase
+      .from("Category")
+      .select("id")
+      .eq("tenantId", payload.tenantId)
+      .eq("name", catName)
+      .maybeSingle();
+
+    if (existingCat.data?.id) {
+      categoryId = existingCat.data.id;
+    } else {
+      const newCatId = `cat_${Math.random().toString(36).substring(2, 10)}`;
+      const { data: catData } = await supabase
+        .from("Category")
+        .insert({
+          id: newCatId,
+          tenantId: payload.tenantId,
+          name: catName
+        })
+        .select("id")
+        .single();
+      categoryId = catData?.id || newCatId;
+    }
+  }
+
+  // 2. Create Product
+  const productId = `prod_${Math.random().toString(36).substring(2, 11)}`;
+  const { data: product, error: prodErr } = await supabase
+    .from("Product")
+    .insert({
+      id: productId,
+      tenantId: payload.tenantId,
+      categoryId,
+      sku: payload.sku.toUpperCase().trim(),
+      name: payload.name.trim(),
+      brand: payload.brand?.trim() || null,
+      description: payload.description?.trim() || null,
+      unit: payload.unit || "pcs",
+      purchasePrice: payload.purchasePrice || 0,
+      sellingPrice: payload.sellingPrice || 0,
+      gstRate: payload.gstRate || 18,
+      minimumStock: payload.minimumStock || 10,
+      reorderLevel: payload.reorderLevel || 20,
+      status: "ACTIVE"
+    })
+    .select()
+    .single();
+
+  if (prodErr) throw prodErr;
+
+  // 3. Location
+  const zone = (payload.zone || "A").toUpperCase().trim();
+  const rack = (payload.rack || "R1").toUpperCase().trim();
+  const shelf = (payload.shelf || "S1").toUpperCase().trim();
+  const bin = (payload.bin || "B1").toUpperCase().trim();
+
+  let locationId: string | null = null;
+  const existingLoc = await supabase
+    .from("WarehouseLocation")
+    .select("id")
+    .eq("tenantId", payload.tenantId)
+    .eq("warehouseId", payload.warehouseId)
+    .eq("zone", zone)
+    .eq("rack", rack)
+    .eq("shelf", shelf)
+    .eq("bin", bin)
+    .maybeSingle();
+
+  if (existingLoc.data?.id) {
+    locationId = existingLoc.data.id;
+  } else {
+    locationId = `loc_${Math.random().toString(36).substring(2, 10)}`;
+    await supabase.from("WarehouseLocation").insert({
+      id: locationId,
+      tenantId: payload.tenantId,
+      warehouseId: payload.warehouseId,
+      zone,
+      rack,
+      shelf,
+      bin
+    });
+  }
+
+  // 4. Create Inventory record
+  const inventoryId = `inv_${Math.random().toString(36).substring(2, 11)}`;
+  const initialQty = Math.max(0, payload.initialQuantity || 0);
+  const { data: inventory, error: invErr } = await supabase
+    .from("Inventory")
+    .insert({
+      id: inventoryId,
+      tenantId: payload.tenantId,
+      warehouseId: payload.warehouseId,
+      locationId,
+      productId,
+      totalQuantity: initialQty,
+      availableQuantity: initialQty,
+      reservedQuantity: 0,
+      damagedQuantity: 0
+    })
+    .select()
+    .single();
+
+  if (invErr) throw invErr;
+
+  // 5. Initial stock movement
+  if (initialQty > 0) {
+    await supabase.from("InventoryMovement").insert({
+      id: `im_${Math.random().toString(36).substring(2, 10)}`,
+      tenantId: payload.tenantId,
+      inventoryId,
+      productId,
+      type: "RECEIPT",
+      quantity: initialQty,
+      previousQuantity: 0,
+      newQuantity: initialQty,
+      notes: "Initial stock intake on product creation",
+      createdById: payload.userId || null
+    });
+  }
+
+  // 6. Audit log
+  if (payload.userId) {
+    await supabase.from("AuditLog").insert({
+      id: `al_${Math.random().toString(36).substring(2, 10)}`,
+      tenantId: payload.tenantId,
+      userId: payload.userId,
+      userRole: payload.userRole || "WAREHOUSE_STAFF",
+      action: "Created new catalog product & stock intake",
+      entity: "Product",
+      entityId: productId,
+      newValue: { sku: payload.sku, name: payload.name, initialQuantity: initialQty }
+    });
+  }
+
+  return { product, inventory };
+}
+
 // ======================== CLIENTS ========================
 
 export async function fetchClients(tenantId?: string | null): Promise<Client[]> {
@@ -304,6 +758,31 @@ export async function createClientRecord(payload: {
       ...payload,
       status: "ACTIVE"
     })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateClientRecord(
+  id: string,
+  payload: Partial<{
+    companyName: string;
+    contactPerson: string;
+    mobile: string;
+    email: string;
+    gstNumber: string;
+    billingAddress: string;
+    shippingAddress: string;
+    status: string;
+    employeeRole: string;
+  }>
+) {
+  const { data, error } = await supabase
+    .from("Client")
+    .update(payload)
+    .eq("id", id)
     .select()
     .single();
 
@@ -356,7 +835,14 @@ export async function fetchInvoices(
 export async function fetchInvoiceById(invoiceId: string): Promise<Invoice | null> {
   const { data, error } = await supabase
     .from("Invoice")
-    .select("*, client:Client(*), order:Order(*), items:InvoiceItem(*, product:Product(*)), payments:Payment(*)")
+    .select(`
+      *,
+      client:Client(*),
+      tenant:Tenant(*),
+      order:Order(*, verification:VerificationResponse(*), assignedStaff:User!assignedStaffId(*)),
+      items:InvoiceItem(*, product:Product(*)),
+      payments:Payment(*)
+    `)
     .eq("id", invoiceId)
     .single();
 
@@ -402,6 +888,60 @@ export async function recordInvoicePayment(
     p_user_id: userId || null,
     p_user_role: userRole || "ACCOUNTS_TEAM"
   });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function uploadPaymentProofFile(file: File): Promise<string> {
+  const fileExt = file.name.split(".").pop();
+  const fileName = `payment-proofs/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
+  const { error } = await supabase.storage.from("invoices").upload(fileName, file, {
+    upsert: false,
+    contentType: file.type
+  });
+  if (error) {
+    console.warn("Storage upload error:", error);
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    });
+  }
+  const { data: publicUrlData } = supabase.storage.from("invoices").getPublicUrl(fileName);
+  return publicUrlData.publicUrl;
+}
+
+export async function markInvoiceAsPaid(
+  invoiceId: string,
+  proofUrl: string,
+  tenantId: string,
+  totalAmount: number,
+  userId?: string | null
+) {
+  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
+  await supabase.from("Payment").insert({
+    id: paymentId,
+    tenantId,
+    invoiceId,
+    amount: totalAmount,
+    status: "PAID",
+    method: "BANK_TRANSFER",
+    reference: `PAY-${Date.now().toString().slice(-6)}`,
+    proofUrl: proofUrl || null,
+    paidAt: new Date().toISOString()
+  });
+
+  const { data, error } = await supabase
+    .from("Invoice")
+    .update({
+      paymentStatus: "PAID",
+      status: "FINAL",
+      finalizedAt: new Date().toISOString()
+    })
+    .eq("id", invoiceId)
+    .select()
+    .single();
 
   if (error) throw error;
   return data;
@@ -468,6 +1008,37 @@ export async function fetchProducts(tenantId?: string | null) {
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
+}
+
+export async function createProductFromInvoice(payload: {
+  tenantId: string;
+  sku: string;
+  name: string;
+  unit: string;
+  sellingPrice: number;
+  gstRate: number;
+}) {
+  const productId = `prod_${Math.random().toString(36).substring(2, 11)}`;
+  const { data, error } = await supabase
+    .from("Product")
+    .insert({
+      id: productId,
+      tenantId: payload.tenantId,
+      sku: payload.sku.toUpperCase().trim(),
+      name: payload.name.trim(),
+      unit: payload.unit || "pcs",
+      purchasePrice: payload.sellingPrice || 0,
+      sellingPrice: payload.sellingPrice || 0,
+      gstRate: payload.gstRate || 18,
+      minimumStock: 0,
+      reorderLevel: 0,
+      status: "ACTIVE"
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 // ======================== ADMIN DASHBOARD ========================

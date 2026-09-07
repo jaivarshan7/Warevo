@@ -4,10 +4,11 @@ import {
   fetchOrders,
   fetchClients,
   fetchProducts,
-  createOrder,
+  createEnhancedOrder,
   transitionOrderStatus
 } from "@/lib/services";
 import { Order, Client, Product, OrderStatus } from "@/types";
+import { parseInvoiceText, samplePureAuraInvoice } from "@/lib/invoiceParser";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -15,7 +16,23 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { validOrderTransitions } from "@/lib/orderWorkflow";
-import { Plus, Search, Filter, ArrowRight, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  Plus,
+  Search,
+  Filter,
+  ArrowRight,
+  CheckCircle2,
+  AlertCircle,
+  Upload,
+  FileText,
+  Sparkles,
+  Building2,
+  Users,
+  CheckSquare,
+  Square,
+  Truck,
+  FileSpreadsheet
+} from "lucide-react";
 import { Link } from "react-router-dom";
 
 export const OrdersPage: React.FC = () => {
@@ -27,15 +44,33 @@ export const OrdersPage: React.FC = () => {
 
   // Create Order Modal State
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<"manual" | "import">("manual");
   const [clients, setClients] = useState<Client[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [selectedClient, setSelectedClient] = useState("");
+  
+  // 2-tier client selection
+  const [selectedCompanyName, setSelectedCompanyName] = useState("");
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+  
   const [orderNotes, setOrderNotes] = useState("");
   const [orderItems, setOrderItems] = useState<
-    Array<{ productId: string; quantity: number; unitPrice: number; taxRate: number }>
+    Array<{ productId: string; quantity: number; unitPrice: number; taxRate: number; discount: number }>
   >([]);
+  
+  // E-Way Bill details
+  const [transporterName, setTransporterName] = useState("");
+  const [vehicleNumber, setVehicleNumber] = useState("");
+  const [distanceKm, setDistanceKm] = useState<number>(0);
+  const [autoGenerateInvoice, setAutoGenerateInvoice] = useState(true);
+
+  // Invoice OCR / Import state
+  const [invoiceRawText, setInvoiceRawText] = useState("");
+  const [isParsing, setIsParsing] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Transition modal state
   const [transitioningOrder, setTransitioningOrder] = useState<Order | null>(null);
@@ -54,14 +89,23 @@ export const OrdersPage: React.FC = () => {
       setOrders(oList);
       setClients(cList);
       setProducts(pList as Product[]);
-      if (cList.length > 0) setSelectedClient(cList[0].id);
+
+      // Default company selection
+      if (cList.length > 0) {
+        const firstCo = cList[0].companyName;
+        setSelectedCompanyName(firstCo);
+        const contactsInFirst = cList.filter((c) => c.companyName === firstCo);
+        setSelectedContactIds(contactsInFirst.map((c) => c.id));
+      }
+
       if (pList.length > 0) {
         setOrderItems([
           {
             productId: pList[0].id,
             quantity: 1,
             unitPrice: Number(pList[0].sellingPrice),
-            taxRate: Number(pList[0].gstRate)
+            taxRate: Number(pList[0].gstRate),
+            discount: 0
           }
         ]);
       }
@@ -76,21 +120,173 @@ export const OrdersPage: React.FC = () => {
     loadData();
   }, [tenant?.id, role, user?.id, user?.client?.id]);
 
+  // Unique companies
+  const companyNames = Array.from(new Set(clients.map((c) => c.companyName || "Direct Client")));
+  const companyEmployees = clients.filter((c) => c.companyName === selectedCompanyName);
+
+  const handleCompanyChange = (cName: string) => {
+    setSelectedCompanyName(cName);
+    const emps = clients.filter((c) => c.companyName === cName);
+    setSelectedContactIds(emps.map((e) => e.id));
+  };
+
+  const toggleContactSelection = (contactId: string) => {
+    setSelectedContactIds((prev) =>
+      prev.includes(contactId) ? prev.filter((id) => id !== contactId) : [...prev, contactId]
+    );
+  };
+
+  // Run parser on pasted text or sample
+  const processImportText = (text: string) => {
+    setIsParsing(true);
+    setImportNotice(null);
+    try {
+      const parsed = parseInvoiceText(text);
+
+      // Auto-match company if found
+      if (parsed.clientName) {
+        const matchedCo = companyNames.find(
+          (c) => c.toLowerCase().includes(parsed.clientName.toLowerCase()) || parsed.clientName.toLowerCase().includes(c.toLowerCase())
+        );
+        if (matchedCo) {
+          setSelectedCompanyName(matchedCo);
+          const emps = clients.filter((c) => c.companyName === matchedCo);
+          setSelectedContactIds(emps.map((e) => e.id));
+        }
+      }
+
+      // Fill E-Way Bill
+      if (parsed.eWayBill) {
+        if (parsed.eWayBill.transporterName) setTransporterName(parsed.eWayBill.transporterName);
+        if (parsed.eWayBill.vehicleNumber) setVehicleNumber(parsed.eWayBill.vehicleNumber);
+        if (parsed.eWayBill.distanceKm) setDistanceKm(parsed.eWayBill.distanceKm);
+      }
+
+      if (parsed.notes) {
+        setOrderNotes((prev) => (prev ? `${prev}\n${parsed.notes}` : parsed.notes));
+      }
+
+      // Map parsed items to catalog products or add them
+      if (parsed.items && parsed.items.length > 0) {
+        const mappedItems: Array<{
+          productId: string;
+          quantity: number;
+          unitPrice: number;
+          taxRate: number;
+          discount: number;
+        }> = [];
+
+        for (const item of parsed.items) {
+          const matchedProd = products.find(
+            (p) =>
+              (item.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
+              p.name.toLowerCase().includes(item.name.toLowerCase()) ||
+              item.name.toLowerCase().includes(p.name.toLowerCase())
+          );
+
+          if (matchedProd) {
+            mappedItems.push({
+              productId: matchedProd.id,
+              quantity: item.quantity || 1,
+              unitPrice: item.unitPrice || Number(matchedProd.sellingPrice),
+              taxRate: item.gstRate || Number(matchedProd.gstRate),
+              discount: 0
+            });
+          } else if (products.length > 0) {
+            // Fallback to first available product with item price
+            mappedItems.push({
+              productId: products[0].id,
+              quantity: item.quantity || 1,
+              unitPrice: item.unitPrice || Number(products[0].sellingPrice),
+              taxRate: item.gstRate || Number(products[0].gstRate),
+              discount: 0
+            });
+          }
+        }
+
+        if (mappedItems.length > 0) {
+          setOrderItems(mappedItems);
+        }
+      }
+
+      setImportNotice(
+        `Successfully extracted ${parsed.items.length} line items from invoice (${parsed.invoiceNumber || "Parsed"}).`
+      );
+    } catch (err: any) {
+      setActionError(err?.message || "Invoice extraction failed");
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setInvoiceRawText(content);
+      processImportText(content);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleLoadSampleInvoice = () => {
+    const formatted = `INVOICE NUMBER: ${samplePureAuraInvoice.invoiceNumber}
+DATE: ${samplePureAuraInvoice.invoiceDate}
+CUSTOMER: ${samplePureAuraInvoice.clientName}
+CONTACT: ${samplePureAuraInvoice.contactPerson}
+GSTIN: ${samplePureAuraInvoice.clientGstin}
+DELIVERY ADDRESS: ${samplePureAuraInvoice.clientAddress}
+TRANSPORTER: ${samplePureAuraInvoice.eWayBill?.transporterName}
+VEHICLE NO: ${samplePureAuraInvoice.eWayBill?.vehicleNumber}
+DISTANCE: ${samplePureAuraInvoice.eWayBill?.distanceKm} KM
+
+LINE ITEMS:
+${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.quantity} | UnitPrice: ${it.unitPrice} | GST: ${it.gstRate}%`).join("\n")}`;
+
+    setInvoiceRawText(formatted);
+    processImportText(formatted);
+  };
+
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tenant?.id || !user?.id || !selectedClient) return;
+    if (!tenant?.id || !user?.id) return;
+
+    // Pick primary client ID from selected contacts or first client of selected company
+    const primaryClient =
+      clients.find((c) => selectedContactIds.includes(c.id)) ||
+      clients.find((c) => c.companyName === selectedCompanyName) ||
+      clients[0];
+
+    if (!primaryClient) {
+      setActionError("Please register at least one client company before creating orders.");
+      return;
+    }
+
     setIsSubmitting(true);
     setActionError(null);
 
     try {
-      await createOrder({
+      await createEnhancedOrder({
         tenantId: tenant.id,
-        clientId: selectedClient,
+        clientId: primaryClient.id,
+        selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : [primaryClient.id],
         createdById: user.id,
         notes: orderNotes,
+        generateInvoice: autoGenerateInvoice,
+        eWayBill: transporterName || vehicleNumber ? {
+          transporterName,
+          vehicleNumber,
+          distanceKm,
+          transportMode: "ROAD"
+        } : undefined,
         items: orderItems
       });
+
       setIsCreateOpen(false);
+      setSuccessMsg(`Order created successfully with ${orderItems.length} items.`);
       await loadData();
     } catch (err: any) {
       setActionError(err?.message || "Failed to create order");
@@ -116,6 +312,7 @@ export const OrdersPage: React.FC = () => {
       setTransitioningOrder(null);
       setTargetStatus("");
       setTransitionNotes("");
+      setSuccessMsg(`Order ${transitioningOrder.orderNumber} transitioned to ${targetStatus}`);
       await loadData();
     } catch (err: any) {
       setActionError(err?.message || "Failed to transition order");
@@ -128,7 +325,7 @@ export const OrdersPage: React.FC = () => {
     const matchesStatus = filterStatus === "ALL" || o.status === filterStatus;
     const matchesSearch =
       o.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      o.client?.companyName.toLowerCase().includes(searchTerm.toLowerCase());
+      o.client?.companyName?.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesStatus && matchesSearch;
   });
 
@@ -144,11 +341,30 @@ export const OrdersPage: React.FC = () => {
         </div>
 
         {role !== "CLIENT" && (
-          <Button onClick={() => setIsCreateOpen(true)} className="gap-1.5 self-start sm:self-auto">
-            <Plus className="w-4 h-4" /> Create New Order
-          </Button>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <Link to="/operations/orders/track">
+              <Button variant="outline" className="gap-1.5">
+                <Truck className="w-4 h-4" /> Live Delivery Tracker
+              </Button>
+            </Link>
+            <Button onClick={() => setIsCreateOpen(true)} className="gap-1.5">
+              <Plus className="w-4 h-4" /> Create New Order
+            </Button>
+            <Link to="/operations/orders/import">
+              <Button className="gap-1.5">
+              <Sparkles className="w-4 h-4 text-amber-300" /> Import Invoice
+              </Button>
+            </Link>
+          </div>
         )}
       </div>
+
+      {successMsg && (
+        <div className="p-4 rounded-xl bg-emerald-950/60 border border-emerald-800 text-xs text-emerald-300 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{successMsg}</span>
+        </div>
+      )}
 
       {actionError && (
         <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-xs text-rose-200 flex items-center gap-2">
@@ -334,43 +550,124 @@ export const OrdersPage: React.FC = () => {
         </Modal>
       )}
 
-      {/* Create Order Modal */}
+      {/* Create Order Modal with Invoice Import & OCR */}
       {isCreateOpen && (
         <Modal
           isOpen={isCreateOpen}
           onClose={() => setIsCreateOpen(false)}
-          title="Create New Commercial Order"
-          description="Build line items and assign client customer"
+          title="Create Commercial Order"
+          description="Select client company, designate notified employee contacts, and build or import line items."
           maxWidth="lg"
         >
-          <form onSubmit={handleCreateOrder} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Client Company</label>
+          <form onSubmit={handleCreateOrder} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+            {actionError && (
+              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
+                {actionError}
+              </div>
+            )}
+
+            {/* 2-Tier Company & Employee Contacts Selection */}
+            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                <Building2 className="w-4 h-4 text-indigo-400" />
+                <span>1. Select Client Company</span>
+              </div>
               <select
-                value={selectedClient}
-                onChange={(e) => setSelectedClient(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                value={selectedCompanyName}
+                onChange={(e) => handleCompanyChange(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
                 required
               >
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.companyName} ({c.contactPerson})
+                {companyNames.map((cName) => (
+                  <option key={cName} value={cName}>
+                    {cName}
                   </option>
                 ))}
               </select>
+
+              {/* Designated Employees Checkboxes */}
+              <div>
+                <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5">
+                  <span className="flex items-center gap-1">
+                    <Users className="w-3.5 h-3.5" />
+                    Select Designated Employees to Notify ({selectedContactIds.length} selected):
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedContactIds(companyEmployees.map((e) => e.id))}
+                    className="text-indigo-400 hover:underline text-[10px]"
+                  >
+                    Select All
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                  {companyEmployees.map((emp) => {
+                    const isSelected = selectedContactIds.includes(emp.id);
+                    return (
+                      <button
+                        type="button"
+                        key={emp.id}
+                        onClick={() => toggleContactSelection(emp.id)}
+                        className={`flex items-start gap-2 p-2 rounded-lg text-left border transition ${
+                          isSelected
+                            ? "bg-indigo-950/60 border-indigo-700 text-white"
+                            : "bg-slate-800/40 border-slate-800 text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-600 shrink-0 mt-0.5" />
+                        )}
+                        <div className="text-[11px] leading-tight">
+                          <p className="font-semibold text-white">{emp.contactPerson}</p>
+                          <p className="font-mono text-slate-400 text-[10px]">{emp.mobile}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Line Items
-              </label>
+            {/* Line Items Builder */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-medium text-slate-300">
+                  Line Items ({orderItems.length})
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (products.length > 0) {
+                      setOrderItems((prev) => [
+                        ...prev,
+                        {
+                          productId: products[0].id,
+                          quantity: 1,
+                          unitPrice: Number(products[0].sellingPrice),
+                          taxRate: Number(products[0].gstRate),
+                          discount: 0
+                        }
+                      ]);
+                    }
+                  }}
+                  className="text-xs h-7 px-2"
+                >
+                  <Plus className="w-3 h-3" /> Add Item
+                </Button>
+              </div>
+
               <div className="space-y-2">
                 {orderItems.map((item, idx) => (
                   <div
                     key={idx}
-                    className="grid grid-cols-12 gap-2 p-3 bg-slate-800/60 rounded-xl border border-slate-700"
+                    className="grid grid-cols-12 gap-2 p-2.5 bg-slate-800/60 rounded-xl border border-slate-700"
                   >
-                    <div className="col-span-6">
+                    <div className="col-span-5">
                       <label className="text-[10px] text-slate-400 block">Product</label>
                       <select
                         value={item.productId}
@@ -384,7 +681,7 @@ export const OrdersPage: React.FC = () => {
                           }
                           setOrderItems(newItems);
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white"
                       >
                         {products.map((p) => (
                           <option key={p.id} value={p.id}>
@@ -394,7 +691,7 @@ export const OrdersPage: React.FC = () => {
                       </select>
                     </div>
 
-                    <div className="col-span-3">
+                    <div className="col-span-2">
                       <label className="text-[10px] text-slate-400 block">Qty</label>
                       <input
                         type="number"
@@ -405,32 +702,117 @@ export const OrdersPage: React.FC = () => {
                           newItems[idx].quantity = parseInt(e.target.value, 10) || 1;
                           setOrderItems(newItems);
                         }}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white text-right"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white text-right"
                       />
                     </div>
 
-                    <div className="col-span-3">
-                      <label className="text-[10px] text-slate-400 block">Unit Price (₹)</label>
+                    <div className="col-span-2">
+                      <label className="text-[10px] text-slate-400 block">Rate (₹)</label>
                       <input
                         type="number"
+                        min="0"
+                        step="0.01"
                         value={item.unitPrice}
-                        readOnly
-                        className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 text-right"
+                        onChange={(e) => {
+                          const newItems = [...orderItems];
+                          newItems[idx].unitPrice = parseFloat(e.target.value) || 0;
+                          setOrderItems(newItems);
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white text-right font-mono"
                       />
+                    </div>
+
+                    <div className="col-span-2">
+                      <label className="text-[10px] text-slate-400 block">GST %</label>
+                      <input
+                        type="number"
+                        value={item.taxRate}
+                        onChange={(e) => {
+                          const newItems = [...orderItems];
+                          newItems[idx].taxRate = parseFloat(e.target.value) || 0;
+                          setOrderItems(newItems);
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white text-right font-mono"
+                      />
+                    </div>
+
+                    <div className="col-span-1 flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (orderItems.length > 1) {
+                            setOrderItems(orderItems.filter((_, i) => i !== idx));
+                          }
+                        }}
+                        className="p-1 rounded text-rose-400 hover:bg-rose-950/60 transition w-full flex justify-center text-xs"
+                      >
+                        ✕
+                      </button>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
 
+            {/* E-Way Bill Details */}
+            <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
+              <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <Truck className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Transport & E-Way Bill Information</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-400">Transporter</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Apex Cargo"
+                    value={transporterName}
+                    onChange={(e) => setTransporterName(e.target.value)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400">Vehicle #</label>
+                  <input
+                    type="text"
+                    placeholder="TN-76-AB-1234"
+                    value={vehicleNumber}
+                    onChange={(e) => setVehicleNumber(e.target.value)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400">Distance (KM)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={distanceKm}
+                    onChange={(e) => setDistanceKm(Number(e.target.value))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-right"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Auto Generate Invoice Checkbox */}
+            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={autoGenerateInvoice}
+                onChange={(e) => setAutoGenerateInvoice(e.target.checked)}
+                className="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
+              />
+              <span>Automatically generate Tax Invoice and email notified contacts upon creation</span>
+            </label>
+
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Order Instructions / Notes
+                Order Instructions / Delivery Notes
               </label>
               <textarea
                 value={orderNotes}
                 onChange={(e) => setOrderNotes(e.target.value)}
-                placeholder="Shipping instructions, dock requirements..."
+                placeholder="Gate entry instructions, dock appointment, fragile cargo..."
                 rows={2}
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none"
               />
@@ -441,7 +823,7 @@ export const OrdersPage: React.FC = () => {
                 Cancel
               </Button>
               <Button type="submit" isLoading={isSubmitting}>
-                Save Order (DRAFT)
+                Save Order & Issue
               </Button>
             </div>
           </form>
