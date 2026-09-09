@@ -4,25 +4,25 @@ import { fetchAdminDashboardData, fetchAuditLogs } from "@/lib/services";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
-import { StatusBadge } from "@/components/shared/StatusBadge";
 import {
   Globe,
   Building,
   Users,
   Warehouse,
-  FileText,
   Activity,
   Shield,
-  CheckCircle2,
   RefreshCw
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 export const PlatformOverviewPage: React.FC = () => {
-  const { role } = useAuth();
+  const { role, user } = useAuth();
   const [data, setData] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // PLATFORM_ADMIN only - prevent data loading for other roles
+  const isAuthorized = role === "PLATFORM_ADMIN";
 
   const loadData = async () => {
     try {
@@ -41,11 +41,26 @@ export const PlatformOverviewPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (isAuthorized) {
+      loadData();
+    }
+  }, [isAuthorized]);
 
   if (loading) {
     return <LoadingSpinner message="Aggregating platform tenant metrics..." />;
+  }
+
+  // Non-PLATFORM_ADMIN users should never see this page content
+  if (!isAuthorized) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-center">
+          <Shield className="w-16 h-16 text-slate-700 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-white">Access Denied</h2>
+          <p className="text-slate-400 mt-2">You do not have permission to view platform overview.</p>
+        </div>
+      </div>
+    );
   }
 
   const tenants = data?.tenants || [];

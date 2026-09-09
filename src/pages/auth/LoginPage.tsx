@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { ShieldCheck, ArrowRight, Building2, User } from "lucide-react";
+import { ArrowRight } from "lucide-react";
+import { config } from "@/lib/config";
 
 export const LoginPage: React.FC = () => {
   const { allUsers, switchUser, signInWithEmail } = useAuth();
@@ -88,37 +89,39 @@ export const LoginPage: React.FC = () => {
             </Button>
           </form>
 
-          {/* Quick Demo Switcher */}
-          <div className="mt-6 pt-6 border-t border-slate-800">
-            <div className="text-center mb-3">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                Or Instant Demo Sign-In
-              </span>
-            </div>
+          {/* Quick Demo Switcher - only in development */}
+          {config.showDemoFeatures && (
+            <div className="mt-6 pt-6 border-t border-slate-800">
+              <div className="text-center mb-3">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Or Instant Demo Sign-In
+                </span>
+              </div>
 
-            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-              {sortedDemoUsers.map((u) => (
-                <button
-                  key={u.id}
-                  onClick={() => handleQuickLogin(u.id)}
-                  className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 text-left transition-colors group"
-                >
-                  <div className="truncate pr-2">
-                    <p className="text-xs font-semibold text-white group-hover:text-indigo-300 transition-colors">
-                      {u.name}
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      <span className={u.role === "PLATFORM_ADMIN" ? "text-rose-400 font-semibold" : ""}>
-                        {u.role.replace(/_/g, " ")}
-                      </span>
-                      {" "}• {u.tenant?.name || "Apex Warehousing"}
-                    </p>
-                  </div>
-                  <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all shrink-0" />
-                </button>
-              ))}
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {sortedDemoUsers.map((u) => (
+                  <button
+                    key={u.id}
+                    onClick={() => handleQuickLogin(u.id)}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 text-left transition-colors group"
+                  >
+                    <div className="truncate pr-2">
+                      <p className="text-xs font-semibold text-white group-hover:text-indigo-300 transition-colors">
+                        {u.name}
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        <span className={u.role === "PLATFORM_ADMIN" ? "text-rose-400 font-semibold" : ""}>
+                          {u.role.replace(/_/g, " ")}
+                        </span>
+                        {" "}• {u.tenant?.name || "Apex Warehousing"}
+                      </p>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all shrink-0" />
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </Card>
       </div>
     </div>

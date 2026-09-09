@@ -8,13 +8,11 @@ import {
   Layers,
   Mail,
   Phone,
-  ShieldCheck,
   Briefcase,
   UserCheck,
   Store,
   RefreshCw,
   X,
-  Filter,
   Pencil,
   Trash2
 } from "lucide-react";
@@ -33,12 +31,8 @@ import {
   updateAdminWarehouse,
   deleteAdminWarehouse,
   updateAdminUser,
-  deleteAdminUser,
   updateAdminClient,
-  deleteAdminClient,
   updateAdminTenant,
-  deleteAdminTenant,
-  deleteAdminCompanyGroup,
   AdminWarehouseItem,
   AdminUserItem,
   AdminClientItem,
@@ -46,6 +40,7 @@ import {
   AdminTenantItem
 } from "@/lib/services";
 import { Role, ClientEmployeeRole } from "@/types";
+import { useAuth } from "@/contexts/AuthContext";
 
 export const AdminDashboardPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
@@ -55,6 +50,8 @@ export const AdminDashboardPage: React.FC = () => {
   const [clients, setClients] = useState<AdminClientItem[]>([]);
   const [companyGroups, setCompanyGroups] = useState<AdminCompanyGroupItem[]>([]);
   const [tenants, setTenants] = useState<AdminTenantItem[]>([]);
+
+  const { user, role } = useAuth();
 
   // Navigation & Filtering
   const [activeTab, setActiveTab] = useState<"warehouses" | "users" | "clients" | "groups" | "tenants">("warehouses");
@@ -133,7 +130,7 @@ export const AdminDashboardPage: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const data = await fetchAdminDashboardData();
+      const data = await fetchAdminDashboardData(user?.tenantId, role);
       setWarehouses(data.warehouses);
       setUsers(data.users);
       setClients(data.clients);

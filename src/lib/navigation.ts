@@ -2,17 +2,12 @@ import {
   LayoutDashboard,
   Package,
   Boxes,
-  Users,
   CircleDollarSign,
-  FileText,
-  CreditCard,
-  FileSpreadsheet,
   BarChart3,
   Bell,
   Settings,
   UserCheck,
   Shield,
-  Truck,
   Activity,
   Globe
 } from "lucide-react";
@@ -316,12 +311,15 @@ export function getNavigationItems(
 
   // Filter based on permissions
   return items.filter((item) => {
+    // Platform Overview is ONLY for PLATFORM_ADMIN
     if (item.id === "platform" && role !== "PLATFORM_ADMIN") {
       return false;
     }
-    if (item.id === "admin" && role !== "PLATFORM_ADMIN" && role !== "WAREHOUSE_OWNER") {
+    // Admin Console is ONLY for PLATFORM_ADMIN
+    if (item.id === "admin" && role !== "PLATFORM_ADMIN") {
       return false;
     }
+    // Settings requires tenant:settings permission or PLATFORM_ADMIN
     if (item.id === "settings" && !hasPermission(role, "tenant:settings") && role !== "PLATFORM_ADMIN") {
       return false;
     }

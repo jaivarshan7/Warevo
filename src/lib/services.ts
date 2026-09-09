@@ -390,7 +390,7 @@ export async function createEnhancedOrder(payload: {
     ? payload.selectedContactIds
     : [payload.clientId];
 
-  for (const cId of contactIds) {
+  for (const _cId of contactIds) {
     await supabase.from("Notification").insert({
       id: `notif_${Math.random().toString(36).substring(2, 10)}`,
       tenantId: payload.tenantId,
@@ -1105,29 +1105,63 @@ export interface AdminTenantItem {
   clientsCount: number;
 }
 
-export async function fetchAdminDashboardData() {
-  const [warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes] = await Promise.all([
-    supabase
-      .from("Warehouse")
-      .select("*, tenant:Tenant(id, name, slug), locations:WarehouseLocation(id), inventory:Inventory(id)")
-      .order("createdAt", { ascending: false }),
-    supabase
-      .from("User")
-      .select("*, tenant:Tenant(id, name, slug)")
-      .order("createdAt", { ascending: false }),
-    supabase
-      .from("Client")
-      .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), orders:Order(id, orderNumber, status)")
-      .order("createdAt", { ascending: false }),
-    supabase
-      .from("CompanyGroup")
-      .select("*, clients:Client(*)")
-      .order("name", { ascending: true }),
-    supabase
-      .from("Tenant")
-      .select("*, warehouses:Warehouse(id), users:User(id), clients:Client(id)")
-      .order("name", { ascending: true })
-  ]);
+export async function fetchAdminDashboardData(tenantId?: string | null, role?: Role) {
+  let warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes;
+
+  // PLATFORM_ADMIN can see all tenants, others only their own
+  if (role === "PLATFORM_ADMIN") {
+    [warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes] = await Promise.all([
+      supabase
+        .from("Warehouse")
+        .select("*, tenant:Tenant(id, name, slug), locations:WarehouseLocation(id), inventory:Inventory(id)")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("User")
+        .select("*, tenant:Tenant(id, name, slug)")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("Client")
+        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), orders:Order(id, orderNumber, status)")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("CompanyGroup")
+        .select("*, clients:Client(*)")
+        .order("name", { ascending: true }),
+      supabase
+        .from("Tenant")
+        .select("*, warehouses:Warehouse(id), users:User(id), clients:Client(id)")
+        .order("name", { ascending: true })
+    ]);
+  } else {
+    // Non-PLATFORM_ADMIN users can only access their own tenant's data
+    const tenantQuery = tenantId
+      ? supabase.from("Tenant").select("*, warehouses:Warehouse(id), users:User(id), clients:Client(id)").eq("id", tenantId)
+      : supabase.from("Tenant").select("*, warehouses:Warehouse(id), users:User(id), clients:Client(id)");
+
+    [warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes] = await Promise.all([
+      supabase
+        .from("Warehouse")
+        .select("*, tenant:Tenant(id, name, slug), locations:WarehouseLocation(id), inventory:Inventory(id)")
+        .eq("tenantId", tenantId || "")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("User")
+        .select("*, tenant:Tenant(id, name, slug)")
+        .eq("tenantId", tenantId || "")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("Client")
+        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), orders:Order(id, orderNumber, status)")
+        .eq("tenantId", tenantId || "")
+        .order("createdAt", { ascending: false }),
+      supabase
+        .from("CompanyGroup")
+        .select("*, clients:Client(*)")
+        .eq("tenantId", tenantId || "")
+        .order("name", { ascending: true }),
+      tenantQuery.order("name", { ascending: true })
+    ]);
+  }
 
   const warehouses: AdminWarehouseItem[] = (warehousesRes.data || []).map((w: any) => ({
     id: w.id,

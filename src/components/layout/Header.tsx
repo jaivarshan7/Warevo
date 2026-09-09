@@ -3,6 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { NotificationBell } from "./NotificationBell";
 import { Building2, ChevronDown, UserCircle2, LogOut, ShieldCheck, Shield } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { config } from "@/lib/config";
 
 export const Header: React.FC = () => {
   const { user, tenant, role, allUsers, allTenants, switchUser, switchTenant, signOut } = useAuth();
@@ -46,8 +47,8 @@ export const Header: React.FC = () => {
           </span>
         </div>
 
-        {/* Tenant selector */}
-        {tenant && (
+        {/* Tenant selector - only show in development or for PLATFORM_ADMIN */}
+        {tenant && (config.showDemoFeatures || role === "PLATFORM_ADMIN") && (
           <div className="relative ml-2 sm:ml-4 pl-3 sm:pl-4 border-l border-slate-800">
             <button
               onClick={() => setShowTenantMenu(!showTenantMenu)}
@@ -90,8 +91,8 @@ export const Header: React.FC = () => {
 
       {/* Right side: Notifications & User profile & Switcher */}
       <div className="flex items-center gap-2 sm:gap-4">
-        {/* Admin Console Shortcut */}
-        {(role === "PLATFORM_ADMIN" || role === "WAREHOUSE_OWNER") && (
+        {/* Admin Console Shortcut - only for PLATFORM_ADMIN */}
+        {role === "PLATFORM_ADMIN" && (
           <Link
             to="/admin"
             className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 border border-purple-800/60 transition-colors"
@@ -156,46 +157,50 @@ export const Header: React.FC = () => {
                 </span>
               </div>
 
-              {/* Demo Role Switcher Section */}
-              <div className="py-1">
-                <div className="px-3 py-1 text-[10px] font-bold tracking-wider uppercase text-slate-500">
-                  Switch Active Role (Demo)
+              {/* Demo Role Switcher Section - only in development */}
+              {config.showDemoFeatures && (
+                <div className="py-1">
+                  <div className="px-3 py-1 text-[10px] font-bold tracking-wider uppercase text-slate-500">
+                    Switch Active Role (Demo)
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-0.5">
+                    {allUsers.map((u) => (
+                      <button
+                        key={u.id}
+                        onClick={() => {
+                          switchUser(u.id);
+                          setShowUserMenu(false);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 text-xs rounded-lg flex items-center justify-between transition-colors ${
+                          u.id === user?.id
+                            ? "bg-indigo-950 text-indigo-300 font-semibold"
+                            : "text-slate-300 hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <div className="truncate pr-2">
+                          <div className="truncate">{u.name}</div>
+                          <div className="text-[10px] text-slate-500">{u.role}</div>
+                        </div>
+                        {u.id === user?.id && (
+                          <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="max-h-48 overflow-y-auto space-y-0.5">
-                  {allUsers.map((u) => (
-                    <button
-                      key={u.id}
-                      onClick={() => {
-                        switchUser(u.id);
-                        setShowUserMenu(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 text-xs rounded-lg flex items-center justify-between transition-colors ${
-                        u.id === user?.id
-                          ? "bg-indigo-950 text-indigo-300 font-semibold"
-                          : "text-slate-300 hover:bg-slate-800/60"
-                      }`}
-                    >
-                      <div className="truncate pr-2">
-                        <div className="truncate">{u.name}</div>
-                        <div className="text-[10px] text-slate-500">{u.role}</div>
-                      </div>
-                      {u.id === user?.id && (
-                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              )}
 
               <div className="border-t border-slate-800 pt-1 mt-1">
-                <Link
-                  to="/admin"
-                  onClick={() => setShowUserMenu(false)}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-xs text-purple-300 hover:bg-purple-950/40 rounded-lg transition-colors"
-                >
-                  <Shield className="w-4 h-4 text-purple-400" />
-                  <span>Admin Console</span>
-                </Link>
+                {role === "PLATFORM_ADMIN" && (
+                  <Link
+                    to="/admin"
+                    onClick={() => setShowUserMenu(false)}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-xs text-purple-300 hover:bg-purple-950/40 rounded-lg transition-colors"
+                  >
+                    <Shield className="w-4 h-4 text-purple-400" />
+                    <span>Admin Console</span>
+                  </Link>
+                )}
                 <Link
                   to="/profile"
                   onClick={() => setShowUserMenu(false)}

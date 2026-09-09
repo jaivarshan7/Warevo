@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AppShell } from "@/components/layout/AppShell";
+import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { OrdersPage } from "@/pages/operations/OrdersPage";
@@ -54,10 +55,24 @@ export const App: React.FC = () => {
             {/* Notifications */}
             <Route path="notifications" element={<NotificationsPage />} />
 
-            {/* Admin Console & Platform Overview */}
-            <Route path="admin" element={<AdminDashboardPage />} />
+            {/* Admin Console & Platform Overview - Protected */}
+            <Route
+              path="admin"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN"]}>
+                  <AdminDashboardPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="admin-dashboard" element={<Navigate to="/admin" replace />} />
-            <Route path="platform" element={<PlatformOverviewPage />} />
+            <Route
+              path="platform"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN"]}>
+                  <PlatformOverviewPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Settings & Profile */}
             <Route path="settings" element={<SettingsPage />} />
