@@ -5,11 +5,16 @@ import {
   Client,
   Invoice,
   Notification,
+  NotificationSettings,
+  NotificationType,
   AuditLog,
   OrderStatus,
   InventoryMovementType,
   VerificationStatus,
-  Role
+  Role,
+  User,
+  UserStatus,
+  TenantSettings
 } from "@/types";
 
 export async function fetchDashboardSummary(
@@ -190,6 +195,10 @@ export async function createOrder(payload: {
 
   const orderId = `ord_${Math.random().toString(36).substring(2, 11)}`;
 
+  // Calculate CGST/SGST (assuming intra-state GST)
+  const cgst = taxTotal / 2;
+  const sgst = taxTotal / 2;
+
   // Insert order
   const { data: order, error: orderErr } = await supabase
     .from("Order")
@@ -229,7 +238,95 @@ export async function createOrder(payload: {
   const { error: itemErr } = await supabase.from("OrderItem").insert(itemsToInsert);
   if (itemErr) throw itemErr;
 
+  // 4. Create invoice automatically (new feature)
+  await createInvoiceForOrder(orderId, payload.tenantId, payload.clientId, taxTotal);
+
   return order;
+}
+
+async function createInvoiceForOrder(orderId: string, tenantId: string, clientId: string, taxTotal: number): Promise<void> {
+  // Check if invoice already exists for this order
+  const existingInvoice = await supabase
+    .from("Invoice")
+    .select("id")
+    .eq("orderId", orderId)
+    .maybeSingle();
+
+  if (existingInvoice.data) {
+    // Invoice already exists, skip creation
+    return;
+  }
+
+  // Get tenant settings for prefix
+  const settings = await fetchTenantSettings(tenantId);
+
+  // Generate invoice number
+  const invoiceNumber = await generateNextInvoiceNumber(tenantId, settings);
+
+  // Get order to calculate invoice totals
+  const orderRes = await supabase
+    .from("Order")
+    .select("subtotal, discountTotal, totalAmount, createdAt")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (!orderRes.data) {
+    throw new Error("Order not found for invoice creation");
+  }
+
+  const order = orderRes.data;
+  const invoiceId = `inv_${Math.random().toString(36).substring(2, 11)}`;
+
+  // Calculate CGST/SGST (assuming intra-state GST, split equally)
+  const cgst = taxTotal / 2;
+  const sgst = taxTotal / 2;
+  const igst = 0; // Default to 0, set to taxTotal for inter-state
+
+  // Insert invoice
+  const invoiceDate = new Date().toISOString().split("T")[0];
+  const { error: invoiceErr } = await supabase.from("Invoice").insert({
+    id: invoiceId,
+    tenantId,
+    orderId,
+    clientId,
+    invoiceNumber,
+    invoiceDate,
+    status: "DRAFT",
+    paymentStatus: "UNPAID",
+    subtotal: order.subtotal,
+    cgst,
+    sgst,
+    igst,
+    discountTotal: order.discountTotal,
+    total: order.totalAmount,
+    createdAt: new Date().toISOString()
+  });
+
+  if (invoiceErr) throw invoiceErr;
+
+  // Insert invoice items from order items
+  const orderItemsRes = await supabase
+    .from("OrderItem")
+    .select("*")
+    .eq("orderId", orderId);
+
+  const invoiceItemsToInsert = (orderItemsRes.data || []).map((item, index) => ({
+    id: `ii_${Math.random().toString(36).substring(2, 11)}`,
+    invoiceId,
+    productId: item.productId,
+    quantity: item.quantity,
+    rate: item.unitPrice,
+    discount: item.discount,
+    cgst: (item.total - item.quantity * item.unitPrice) / 2,
+    sgst: (item.total - item.quantity * item.unitPrice) / 2,
+    igst: 0,
+    total: item.total
+  }));
+
+  if (invoiceItemsToInsert.length > 0) {
+    const { error: itemsErr } = await supabase.from("InvoiceItem").insert(invoiceItemsToInsert);
+    if (itemsErr) throw itemsErr;
+  }
 }
 
 export async function createEnhancedOrder(payload: {
@@ -412,10 +509,11 @@ export async function submitDetailedOrderVerification(payload: {
   tenantId: string;
   clientId: string;
   status: VerificationStatus;
-  checklist: Array<{ text: string; checked: boolean }>;
+  responses: Array<{ text: string; checked: boolean }>;
   comments?: string;
-  itemDiscrepancies?: Record<string, { received: number; damaged: number }>;
+  itemReceivedMap?: Record<string, { received: number; damaged: number }>;
   userId?: string | null;
+  userRole?: Role;
 }) {
   const nextOrderStatus: OrderStatus =
     payload.status === "VERIFIED"
@@ -433,7 +531,7 @@ export async function submitDetailedOrderVerification(payload: {
     clientId: payload.clientId,
     userId: payload.userId || null,
     status: payload.status,
-    responses: payload.checklist,
+    responses: payload.responses,
     comments: payload.comments || null
   }, { onConflict: "orderId" });
 
@@ -467,7 +565,7 @@ export async function submitDetailedOrderVerification(payload: {
       id: `al_${Math.random().toString(36).substring(2, 10)}`,
       tenantId: payload.tenantId,
       userId: payload.userId,
-      userRole: "PRODUCT_RECEIVER",
+      userRole: payload.userRole || "PRODUCT_RECEIVER",
       action: "Submitted delivery verification checklist",
       entity: "Order",
       entityId: payload.orderId,
@@ -813,6 +911,177 @@ export async function submitOrderVerification(
   return data;
 }
 
+// ======================== INVOICE NUMBER GENERATION ========================
+
+// Generate the next invoice number for a tenant
+async function generateNextInvoiceNumber(tenantId: string, settings?: TenantSettings | null): Promise<string> {
+  // Get prefix from settings (defaults to empty string)
+  const prefix = settings?.invoicePrefix?.trim() || "";
+
+  // Get latest invoice to determine next number
+  const latestRes = await supabase
+    .from("Invoice")
+    .select("invoiceNumber")
+    .eq("tenantId", tenantId)
+    .order("createdAt", { ascending: false })
+    .limit(1);
+
+  // Parse the latest invoice number to find next sequence
+  const latestInvoice = latestRes.data?.[0];
+  let nextNum = 1;
+
+  if (latestInvoice?.invoiceNumber) {
+    // Remove prefix to get the numeric part
+    const numPart = latestInvoice.invoiceNumber.replace(prefix, "");
+    // Try to parse as number
+    const parsed = parseInt(numPart, 10);
+    if (!isNaN(parsed)) {
+      nextNum = parsed + 1;
+    }
+  }
+
+  // Format invoice number with prefix
+  return `${prefix}${nextNum}`;
+}
+
+// ======================== CLIENT RECEIVER VERIFICATION ========================
+
+export async function submitClientReceiverVerification(payload: {
+  orderId: string;
+  tenantId: string;
+  clientId: string;
+  status: VerificationStatus;
+  responses: Array<{ orderItemId: string; checked: boolean }>;
+  comments?: string;
+  userId?: string | null;
+  userRole?: Role;
+}): Promise<{ updatedOrder: any; responseId: string }> {
+  // Validate all items are checked when status is VERIFIED
+  if (payload.status === "VERIFIED") {
+    const allChecked = payload.responses.every((r) => r.checked);
+    if (!allChecked) {
+      throw new Error("All order items must be checked to verify delivery as VERIFIED.");
+    }
+  }
+
+  // Check if verification already exists for this order
+  const existingVerification = await supabase
+    .from("VerificationResponse")
+    .select("id, status")
+    .eq("orderId", payload.orderId)
+    .maybeSingle();
+
+  if (existingVerification.data && existingVerification.data.status === "VERIFIED") {
+    throw new Error("Delivery has already been verified. Cannot verify again.");
+  }
+
+  // Insert or update verification response
+  const respId = existingVerification.data?.id || `vr_${Math.random().toString(36).substring(2, 10)}`;
+  const { data: verification, error: verificationError } = await supabase
+    .from("VerificationResponse")
+    .upsert({
+      id: respId,
+      tenantId: payload.tenantId,
+      orderId: payload.orderId,
+      clientId: payload.clientId,
+      userId: payload.userId || null,
+      status: payload.status,
+      responses: payload.responses,
+      comments: payload.comments || null
+    }, { onConflict: "orderId" })
+    .select()
+    .single();
+
+  if (verificationError) throw verificationError;
+
+  // Determine order status based on verification status
+  const nextOrderStatus: OrderStatus =
+    payload.status === "VERIFIED"
+      ? "VERIFIED"
+      : payload.status === "PARTIALLY_VERIFIED"
+      ? "PARTIALLY_VERIFIED"
+      : "REJECTED";
+
+  // Update order verification status
+  const { data: updatedOrder, error: orderErr } = await supabase
+    .from("Order")
+    .update({
+      verificationStatus: payload.status,
+      status: nextOrderStatus,
+      updatedAt: new Date().toISOString()
+    })
+    .eq("id", payload.orderId)
+    .select()
+    .single();
+
+  if (orderErr) throw orderErr;
+
+  // Create status history
+  await supabase.from("OrderStatusHistory").insert({
+    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
+    tenantId: payload.tenantId,
+    orderId: payload.orderId,
+    newStatus: nextOrderStatus,
+    changedById: payload.userId || null,
+    notes: payload.comments || `Delivery verification marked as ${payload.status}`
+  });
+
+  // Create audit log
+  if (payload.userId) {
+    await supabase.from("AuditLog").insert({
+      id: `al_${Math.random().toString(36).substring(2, 10)}`,
+      tenantId: payload.tenantId,
+      userId: payload.userId,
+      userRole: payload.userRole || "PRODUCT_RECEIVER",
+      action: "Submitted delivery verification",
+      entity: "Order",
+      entityId: payload.orderId,
+      newValue: {
+        verificationStatus: payload.status,
+        status: nextOrderStatus,
+        responses: payload.responses
+      }
+    });
+  }
+
+  // Create notification
+  await supabase.from("Notification").insert({
+    id: `notif_${Math.random().toString(36).substring(2, 10)}`,
+    tenantId: payload.tenantId,
+    orderId: payload.orderId,
+    type: "CLIENT_COMPLETED_VERIFICATION",
+    title: "Delivery Inspection Submitted",
+    message: `Order delivery verification completed with status: ${payload.status}`,
+    priority: "HIGH",
+    actionUrl: `/operations/orders/${payload.orderId}`,
+    read: false
+  });
+
+  return { updatedOrder, responseId: respId };
+}
+
+export async function fetchPendingVerificationOrders(
+  clientId?: string | null,
+  tenantId?: string | null
+): Promise<Order[]> {
+  let query = supabase
+    .from("Order")
+    .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
+    .eq("verificationStatus", "PENDING")
+    .order("createdAt", { ascending: false });
+
+  if (tenantId) {
+    query = query.eq("tenantId", tenantId);
+  }
+  if (clientId) {
+    query = query.eq("clientId", clientId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data as Order[]) || [];
+}
+
 // ======================== ACCOUNTING & INVOICES ========================
 
 export async function fetchInvoices(
@@ -893,22 +1162,72 @@ export async function recordInvoicePayment(
   return data;
 }
 
-export async function uploadPaymentProofFile(file: File): Promise<string> {
-  const fileExt = file.name.split(".").pop();
-  const fileName = `payment-proofs/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
-  const { error } = await supabase.storage.from("invoices").upload(fileName, file, {
-    upsert: false,
-    contentType: file.type
-  });
-  if (error) {
-    console.warn("Storage upload error:", error);
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(file);
-    });
+// Supported file types for payment proofs
+const ALLOWED_PAYMENT_PROOF_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "application/pdf"
+];
+
+// Maximum file size: 10MB
+const MAX_PAYMENT_PROOF_SIZE = 10 * 1024 * 1024;
+
+/**
+ * Validates a payment proof file before upload
+ * @param file - File to validate
+ * @returns true if valid, throws Error with message if invalid
+ */
+function validatePaymentProofFile(file: File): void {
+  // Check MIME type
+  if (!ALLOWED_PAYMENT_PROOF_MIME_TYPES.includes(file.type)) {
+    throw new Error("Please upload a JPG, PNG, or PDF payment proof.");
   }
-  const { data: publicUrlData } = supabase.storage.from("invoices").getPublicUrl(fileName);
+
+  // Check file size
+  if (file.size > MAX_PAYMENT_PROOF_SIZE) {
+    throw new Error("File size exceeds 10MB limit. Please upload a smaller file.");
+  }
+}
+
+/**
+ * Uploads a payment proof file to Supabase Storage with tenant-scoped path
+ * Path format: payment-proofs/{tenantId}/{invoiceId}/{paymentId}/{unique-id}-{original-name}
+ *
+ * @param file - The payment proof file to upload
+ * @param tenantId - The tenant ID (for tenant isolation)
+ * @param invoiceId - The invoice ID (for organization)
+ * @param paymentId - The payment ID (for unique identification per payment)
+ * @returns The public URL of the uploaded file
+ */
+export async function uploadPaymentProofFile(
+  file: File,
+  tenantId: string,
+  invoiceId: string,
+  paymentId: string
+): Promise<string> {
+  // Validate file first
+  validatePaymentProofFile(file);
+
+  // Generate unique storage path with tenant isolation
+  const fileExt = file.name.split(".").pop();
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  const safeFileName = `${uniqueId}.${fileExt}`;
+  const storagePath = `payment-proofs/${tenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
+
+  const { error } = await supabase.storage
+    .from("payment-proofs")
+    .upload(storagePath, file, {
+      upsert: false,
+      contentType: file.type
+    });
+
+  if (error) {
+    console.error("Payment proof storage upload error:", error);
+    throw new Error(`Failed to upload payment proof: ${error.message}`);
+  }
+
+  // Get public URL for the uploaded file
+  const { data: publicUrlData } = supabase.storage.from("payment-proofs").getPublicUrl(storagePath);
   return publicUrlData.publicUrl;
 }
 
@@ -945,6 +1264,202 @@ export async function markInvoiceAsPaid(
 
   if (error) throw error;
   return data;
+}
+
+/**
+ * Records a payment and uploads a payment proof file
+ * Creates payment record first, then uploads file, then updates proofUrl
+ *
+ * @param invoiceId - The invoice to record payment for
+ * @param file - The payment proof file
+ * @param tenantId - The tenant ID (for storage path isolation)
+ * @param totalAmount - The payment amount
+ * @param userId - The user recording the payment
+ */
+export async function recordPaymentWithProof(
+  invoiceId: string,
+  file: File,
+  tenantId: string,
+  totalAmount: number,
+  userId?: string | null
+): Promise<{ paymentId: string; proofUrl: string }> {
+  // First create the payment record
+  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
+
+  // We'll get the proofUrl after upload
+  // Insert payment record with temporary proofUrl (will be updated after upload)
+  await supabase.from("Payment").insert({
+    id: paymentId,
+    tenantId,
+    invoiceId,
+    amount: totalAmount,
+    status: "PAID",
+    method: "BANK_TRANSFER",
+    reference: `PAY-${Date.now().toString().slice(-6)}`,
+    proofUrl: null, // Will be updated after upload
+    paidAt: new Date().toISOString()
+  });
+
+  try {
+    // Get invoiceId if not passed (for storage path)
+    // Actually we need it to be passed, so we can build the path
+
+    // Upload the payment proof file
+    const proofUrl = await uploadPaymentProofFile(file, tenantId, invoiceId, paymentId);
+
+    // Update payment record with the actual proofUrl
+    const { error: updateError } = await supabase
+      .from("Payment")
+      .update({ proofUrl })
+      .eq("id", paymentId);
+
+    if (updateError) {
+      console.warn("Failed to update payment proof URL:", updateError);
+      // Don't throw - payment is recorded, just proofUrl update failed
+      // The file is still in storage
+    }
+
+    // Update invoice payment status
+    const { data, error } = await supabase
+      .from("Invoice")
+      .update({
+        paymentStatus: "PAID",
+        status: "FINAL",
+        finalizedAt: new Date().toISOString()
+      })
+      .eq("id", invoiceId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return { paymentId, proofUrl };
+  } catch (uploadError) {
+    // If upload fails, clean up the payment record
+    await supabase.from("Payment").delete().eq("id", paymentId);
+    throw uploadError;
+  }
+}
+
+/**
+ * Records a partial payment with proof
+ * For partial payments, only updates payment status, doesn't mark invoice PAID
+ *
+ * @param invoiceId - The invoice to record payment for
+ * @param file - The payment proof file
+ * @param tenantId - The tenant ID (for storage path isolation)
+ * @param amount - The payment amount
+ * @param method - Payment method (e.g., "BANK_TRANSFER", "CASH", "UPI")
+ * @param reference - Payment reference/UTR number
+ * @param userId - The user recording the payment
+ */
+export async function recordPartialPaymentWithProof(
+  invoiceId: string,
+  file: File,
+  tenantId: string,
+  amount: number,
+  method: string,
+  reference?: string,
+  userId?: string | null
+): Promise<{ paymentId: string; proofUrl: string }> {
+  // First create the payment record
+  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
+
+  await supabase.from("Payment").insert({
+    id: paymentId,
+    tenantId,
+    invoiceId,
+    amount,
+    status: "PAID",
+    method: method || "BANK_TRANSFER",
+    reference: reference || `PAY-${Date.now().toString().slice(-6)}`,
+    proofUrl: null, // Will be updated after upload
+    paidAt: new Date().toISOString()
+  });
+
+  try {
+    // Upload the payment proof file
+    const proofUrl = await uploadPaymentProofFile(
+      file,
+      tenantId,
+      invoiceId,
+      paymentId
+    );
+
+    // Update payment record with the actual proofUrl
+    await supabase.from("Payment").update({ proofUrl }).eq("id", paymentId);
+
+    // Update invoice payment status based on total paid vs invoice total
+    // Calculate total paid
+    const { data: payments, error: paymentsError } = await supabase
+      .from("Payment")
+      .select("amount")
+      .eq("invoiceId", invoiceId)
+      .eq("status", "PAID");
+
+    if (paymentsError) throw paymentsError;
+
+    const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    const { data: invoice } = await supabase
+      .from("Invoice")
+      .select("total")
+      .eq("id", invoiceId)
+      .single();
+
+    let newPaymentStatus: PaymentStatus = "PARTIALLY_PAID";
+    let newInvoiceStatus: InvoiceStatus = "DRAFT";
+
+    if (invoice && totalPaid >= invoice.total) {
+      newPaymentStatus = "PAID";
+      newInvoiceStatus = "FINAL";
+    }
+
+    await supabase.from("Invoice").update({
+      paymentStatus: newPaymentStatus,
+      status: newInvoiceStatus,
+      updatedAt: new Date().toISOString()
+    }).eq("id", invoiceId);
+
+    return { paymentId, proofUrl };
+  } catch (uploadError) {
+    // If upload fails, clean up the payment record
+    await supabase.from("Payment").delete().eq("id", paymentId);
+    throw uploadError;
+  }
+}
+
+/**
+ * Fetches a payment proof file URL with proper authorization
+ * Returns a signed URL for secure access
+ *
+ * @param paymentId - The payment ID
+ * @returns The signed URL for the payment proof, or null if no proof exists
+ */
+export async function getPaymentProofUrl(paymentId: string): Promise<string | null> {
+  const { data: payment, error: paymentError } = await supabase
+    .from("Payment")
+    .select("proofUrl, tenantId, invoiceId")
+    .eq("id", paymentId)
+    .single();
+
+  if (paymentError || !payment || !payment.proofUrl) {
+    return null;
+  }
+
+  // Extract storage path from proofUrl
+  // proofUrl is like: https://rglumbheyypdanfpmuef.supabase.co/storage/v1/object/public/payment-proofs/...
+  const storagePath = payment.proofUrl.replace(
+    "https://rglumbheyypdanfpmuef.supabase.co/storage/v1/object/public/",
+    ""
+  );
+
+  // Generate a signed URL for secure access
+  const { data: signedUrlData } = await supabase.storage
+    .from("payment-proofs")
+    .createSignedUrl(storagePath, 60 * 60); // 1 hour expiry
+
+  return signedUrlData?.signedUrl || payment.proofUrl;
 }
 
 // ======================== NOTIFICATIONS ========================
@@ -1437,4 +1952,340 @@ export async function deleteAdminTenant(id: string) {
 export async function deleteAdminCompanyGroup(id: string) {
   const { error } = await supabase.from("CompanyGroup").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ======================== EMPLOYEES ========================
+
+export async function fetchEmployees(tenantId?: string | null) {
+  let query = supabase
+    .from("User")
+    .select("*, tenant:Tenant(*)")
+    .order("createdAt", { ascending: false });
+
+  if (tenantId) {
+    query = query.eq("tenantId", tenantId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data as User[]) || [];
+}
+
+export async function createEmployee(payload: {
+  name: string;
+  email?: string;
+  mobile?: string;
+  role: Role;
+  tenantId: string;
+  status?: UserStatus;
+}) {
+  const { data, error } = await supabase
+    .from("User")
+    .insert({
+      name: payload.name.trim(),
+      email: payload.email?.trim() || null,
+      mobile: payload.mobile?.trim() || null,
+      role: payload.role,
+      tenantId: payload.tenantId,
+      status: payload.status || "ACTIVE"
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateEmployee(
+  id: string,
+  payload: Partial<{
+    name: string;
+    email: string;
+    mobile: string;
+    role: string;
+    status: string;
+  }>
+) {
+  const { data, error } = await supabase
+    .from("User")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function createAuditLogRecord(payload: {
+  tenantId?: string | null;
+  userId?: string | null;
+  userRole: Role;
+  action: string;
+  entity: string;
+  entityId: string;
+  previousValue?: unknown;
+  newValue?: unknown;
+}) {
+  const { data, error } = await supabase
+    .from("AuditLog")
+    .insert({
+      tenantId: payload.tenantId || null,
+      userId: payload.userId || null,
+      userRole: payload.userRole,
+      action: payload.action,
+      entity: payload.entity,
+      entityId: payload.entityId,
+      previousValue: payload.previousValue || null,
+      newValue: payload.newValue || null
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+// ======================== TENANT SETTINGS ========================
+
+export async function fetchTenantSettings(tenantId?: string | null) {
+  if (!tenantId) return null;
+  const { data, error } = await supabase
+    .from("TenantSettings")
+    .select("*")
+    .eq("tenantId", tenantId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateTenantSettings(
+  id: string,
+  payload: Partial<{ invoicePrefix: string | null }>
+) {
+  const { data, error } = await supabase
+    .from("TenantSettings")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function createTenantSettings(payload: {
+  tenantId: string;
+  invoicePrefix?: string | null;
+}) {
+  const { data, error } = await supabase
+    .from("TenantSettings")
+    .insert({
+      tenantId: payload.tenantId,
+      invoicePrefix: payload.invoicePrefix?.trim() || null
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Get or create tenant settings with safe defaults
+export async function getOrCreateTenantSettings(tenantId: string) {
+  const settings = await fetchTenantSettings(tenantId);
+  if (settings) return settings;
+  return await createTenantSettings({ tenantId, invoicePrefix: null });
+}
+
+// ======================== NOTIFICATION SETTINGS ========================
+
+// Default notification event configuration
+const DEFAULT_NOTIFICATION_SETTINGS: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> = {
+  NEW_ORDER: { inApp: true, clientEmail: true },
+  ORDER_ISSUED: { inApp: true, clientEmail: true },
+  PROCESSING_STARTED: { inApp: true, clientEmail: false },
+  READY_FOR_DISPATCH: { inApp: true, clientEmail: true },
+  ORDER_DISPATCHED: { inApp: true, clientEmail: true },
+  CLIENT_RECEIVED_ORDER: { inApp: true, clientEmail: false },
+  CLIENT_STARTED_VERIFICATION: { inApp: true, clientEmail: false },
+  CLIENT_COMPLETED_VERIFICATION: { inApp: true, clientEmail: true },
+  CLIENT_REJECTED_ORDER: { inApp: true, clientEmail: true },
+  DAMAGE_REPORTED: { inApp: true, clientEmail: true },
+  MISSING_ITEMS_REPORTED: { inApp: true, clientEmail: true },
+  VERIFICATION_COMPLETED: { inApp: true, clientEmail: true },
+  INVOICE_GENERATED: { inApp: true, clientEmail: true },
+  INVOICE_SENT: { inApp: true, clientEmail: true },
+  PAYMENT_RECEIVED: { inApp: true, clientEmail: true },
+  PAYMENT_OVERDUE: { inApp: true, clientEmail: true },
+  ORDER_COMPLETED: { inApp: true, clientEmail: true }
+};
+
+export async function fetchNotificationSettings(tenantId?: string | null) {
+  if (!tenantId) return null;
+  const { data, error } = await supabase
+    .from("NotificationSettings")
+    .select("*")
+    .eq("tenantId", tenantId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateNotificationSettings(
+  id: string,
+  payload: Partial<{ enabled?: boolean; eventConfig?: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> }>
+) {
+  const { data, error } = await supabase
+    .from("NotificationSettings")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function createNotificationSettings(payload: {
+  tenantId: string;
+  enabled?: boolean;
+  eventConfig?: Record<NotificationType, { inApp: boolean; clientEmail: boolean }>;
+}) {
+  const { data, error } = await supabase
+    .from("NotificationSettings")
+    .insert({
+      tenantId: payload.tenantId,
+      enabled: payload.enabled !== false,
+      eventConfig: payload.eventConfig || DEFAULT_NOTIFICATION_SETTINGS
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Get or create notification settings with safe defaults
+export async function getOrCreateNotificationSettings(tenantId: string) {
+  const settings = await fetchNotificationSettings(tenantId);
+  if (settings) return settings;
+  return await createNotificationSettings({ tenantId });
+}
+
+/**
+ * Sends a client email notification
+ * This function respects the notification settings and tenant isolation.
+ * In a production environment, this would integrate with an email provider.
+ *
+ * @param notification - The notification record containing event details
+ * @param tenantId - The tenant ID for security validation
+ * @param clientId - The client ID to receive the email
+ * @returns true if email was queued/sent, false if skipped due to settings
+ */
+export async function sendClientEmail(
+  notification: Notification,
+  tenantId: string,
+  clientId: string
+): Promise<boolean> {
+  // Get notification settings for this tenant
+  const settings = await getOrCreateNotificationSettings(tenantId);
+
+  // Check if notifications are enabled globally
+  if (!settings.enabled) {
+    console.debug(`Notifications disabled for tenant ${tenantId}`);
+    return false;
+  }
+
+  // Check if client email is enabled for this event type
+  const eventConfig = settings.eventConfig?.[notification.type as NotificationType];
+  if (!eventConfig?.clientEmail) {
+    console.debug(`Client email disabled for event ${notification.type}`);
+    return false;
+  }
+
+  // Security: Verify client belongs to tenant
+  const { data: client } = await supabase
+    .from("Client")
+    .select("tenantId")
+    .eq("id", clientId)
+    .maybeSingle();
+
+  if (!client || client.tenantId !== tenantId) {
+    console.error(`Security: Client ${clientId} does not belong to tenant ${tenantId}`);
+    return false;
+  }
+
+  // Build email payload
+  const emailPayload = buildClientEmailPayload(notification, client);
+
+  // Simulate email sending (replace with actual email provider integration)
+  // In production, you would use a service like SendGrid, Mailgun, etc.
+  try {
+    console.log(`[Email Simulation] Sending to ${client.email || client.contactPerson}:`, {
+      subject: emailPayload.subject,
+      to: client.email || client.contactPerson,
+      event: notification.type,
+      tenantId,
+      clientId
+    });
+
+    // Return true to indicate email would be sent
+    return true;
+  } catch (error) {
+    console.error("Email sending error:", error);
+    return false;
+  }
+}
+
+/**
+ * Builds an email payload for client notifications
+ */
+function buildClientEmailPayload(
+  notification: Notification,
+  client: Client
+): { subject: string; body: string } {
+  const { type, title, message, actionUrl, createdAt } = notification;
+
+  const eventLabels: Record<string, string> = {
+    NEW_ORDER: "New Order Created",
+    ORDER_ISSUED: "Order Issued",
+    PROCESSING_STARTED: "Order Processing Started",
+    READY_FOR_DISPATCH: "Order Ready for Dispatch",
+    ORDER_DISPATCHED: "Order Dispatched",
+    CLIENT_RECEIVED_ORDER: "Order Received",
+    CLIENT_STARTED_VERIFICATION: "Verification Started",
+    CLIENT_COMPLETED_VERIFICATION: "Verification Completed",
+    CLIENT_REJECTED_ORDER: "Order Rejected",
+    DAMAGE_REPORTED: "Damage Reported",
+    MISSING_ITEMS_REPORTED: "Missing Items Reported",
+    VERIFICATION_COMPLETED: "Delivery Verification Complete",
+    INVOICE_GENERATED: "Invoice Generated",
+    INVOICE_SENT: "Invoice Sent",
+    PAYMENT_RECEIVED: "Payment Received",
+    PAYMENT_OVERDUE: "Payment Overdue",
+    ORDER_COMPLETED: "Order Completed"
+  };
+
+  const eventLabel = eventLabels[type] || type;
+
+  // Generate action link if provided
+  const actionLink = actionUrl ? `\n\nView details: ${actionUrl}` : "";
+
+  const emailBody = `
+Dear ${client.contactPerson || "Valued Client"},
+
+${title}
+
+${message}
+
+Event: ${eventLabel}
+Timestamp: ${new Date(createdAt).toLocaleString()}
+
+${actionLink}
+
+Best regards,
+Warevo Logistics Enterprise
+`;
+
+  return {
+    subject: `${eventLabel} - ${title}`,
+    body: emailBody.trim()
+  };
 }

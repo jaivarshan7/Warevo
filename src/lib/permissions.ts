@@ -48,6 +48,7 @@ export const permissions: Record<Role, string[]> = {
     "dashboard:read",
     "tenant:settings",
     "users:manage",
+    "employees:manage",
     "clients:manage",
     "products:manage",
     "inventory:manage",

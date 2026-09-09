@@ -1,17 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
-  fetchOrders,
-  fetchClients,
-  fetchProducts,
-  submitDetailedOrderVerification,
-  transitionOrderStatus
+  fetchPendingVerificationOrders,
+  submitClientReceiverVerification,
+  fetchOrderById
 } from "@/lib/services";
-import { Order, OrderStatus, VerificationStatus } from "@/types";
+import { Order, OrderStatus, VerificationStatus, ClientEmployeeRole } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { StatusBadge } from "@/components/shared/StatusBadge";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import {
@@ -22,27 +19,30 @@ import {
   XCircle,
   Search,
   Package,
-  Calendar,
-  Building2,
-  FileText,
   Clock,
-  ArrowRight,
-  ShieldCheck,
-  Check
+  Check,
+  ShieldCheck
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-const timelineSteps = [
-  { key: "ISSUED", label: "Order Issued", desc: "Order confirmed in ERP" },
-  { key: "PROCESSING", label: "Processing", desc: "Picking & warehouse packing" },
-  { key: "DISPATCHED", label: "Dispatched", desc: "In transit with logistics carrier" },
-  { key: "RECEIVED", label: "Delivered", desc: "Arrived at customer dock" },
-  { key: "VERIFIED", label: "Verified", desc: "Physical delivery inspection passed" },
-  { key: "INVOICED", label: "Invoiced", desc: "Tax invoice signed & settled" }
-];
+// Client Receiver status labels
+const ORDER_STATUS_LABELS: Record<string, string> = {
+  ISSUED: "Order Issued",
+  PROCESSING: "Processing",
+  DISPATCHED: "Dispatched",
+  RECEIVED: "Received",
+  VERIFIED: "Verified",
+  INVOICED: "Invoiced"
+};
 
 export const OrderTrackPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
+
+  // Authorization check for CLIENT role users
+  // Only CLIENT users with employeeRole === "RECEIVER" can perform delivery verification
+  const isClientReceiver = role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
+  const hasVerificationAccess = role === "PRODUCT_RECEIVER" || isClientReceiver;
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState<string>("");
@@ -50,29 +50,34 @@ export const OrderTrackPage: React.FC = () => {
 
   // Verification Modal State
   const [isVerifyOpen, setIsVerifyOpen] = useState(false);
-  const [verificationDecision, setVerificationDecision] = useState<"VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED">("VERIFIED");
-  const [inspectionComments, setInspectionComments] = useState("");
-  const [itemReceipts, setItemReceipts] = useState<Record<string, { received: number; damaged: number }>>({});
-  const [checklistResponses, setChecklistResponses] = useState<Array<{ text: string; checked: boolean }>>([
-    { text: "Physical package seals intact with no unauthorized tampering", checked: true },
-    { text: "Delivery vehicle temperature / storage conditions satisfactory", checked: true },
-    { text: "Item count and SKU labels match accompanying Tax Invoice / Delivery Challan", checked: true },
-    { text: "Zero evident transit damage or liquid leakage", checked: true }
-  ]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verificationComments, setVerificationComments] = useState("");
+  const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // Order already verified state
+  const [alreadyVerified, setAlreadyVerified] = useState(false);
+
   const loadOrders = async () => {
+    if (!user?.client?.id || !tenant?.id) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
-      const list = await fetchOrders(tenant?.id, role, user?.client?.id);
+      const list = await fetchPendingVerificationOrders(user.client.id, tenant.id);
       setOrders(list);
       if (list.length > 0 && !selectedOrderId) {
         setSelectedOrderId(list[0].id);
+        setAlreadyVerified(false);
+      } else if (list.length === 0 && selectedOrderId) {
+        // Selected order may have been verified, clear it
+        setSelectedOrderId("");
+        setAlreadyVerified(true);
       }
     } catch (err) {
-      console.error("Error loading orders for tracker:", err);
+      console.error("Error loading pending verification orders:", err);
     } finally {
       setLoading(false);
     }
@@ -80,10 +85,37 @@ export const OrderTrackPage: React.FC = () => {
 
   useEffect(() => {
     loadOrders();
-  }, [tenant?.id, role, user?.client?.id]);
+  }, [tenant?.id, user?.client?.id]);
 
-  const activeOrder = orders.find((o) => o.id === selectedOrderId) || orders[0];
+  const loadOrderDetails = async (orderId: string) => {
+    try {
+      const order = await fetchOrderById(orderId);
+      if (order) {
+        // Check if already verified
+        if (order.verificationStatus === "VERIFIED") {
+          setAlreadyVerified(true);
+        } else {
+          setAlreadyVerified(false);
+          // Initialize checkboxes for all items
+          const initialCheckboxes: Record<string, boolean> = {};
+          order.items?.forEach((item) => {
+            initialCheckboxes[item.id] = false;
+          });
+          setItemCheckboxes(initialCheckboxes);
+        }
+        setSelectedOrderId(orderId);
+      }
+    } catch (err) {
+      console.error("Error loading order details:", err);
+    }
+  };
 
+  const activeOrder = orders.find((o) => o.id === selectedOrderId);
+
+  // If user doesn't have verification access (e.g., CLIENT_ACCOUNTANT), show unauthorized message
+  const isUnauthorized = role === "CLIENT_ACCOUNTANT" && !hasVerificationAccess;
+
+  // Filter orders by search
   const filteredOrders = orders.filter((o) => {
     const term = searchTerm.toLowerCase();
     return (
@@ -92,92 +124,67 @@ export const OrderTrackPage: React.FC = () => {
     );
   });
 
-  const getStepIndex = (status: OrderStatus) => {
-    const map: Record<string, number> = {
-      DRAFT: 0,
-      ISSUED: 1,
-      PROCESSING: 2,
-      READY_FOR_DISPATCH: 2,
-      DISPATCHED: 3,
-      RECEIVED: 4,
-      VERIFICATION_PENDING: 4,
-      VERIFIED: 5,
-      INVOICE_PENDING: 5,
-      INVOICED: 6,
-      PAID: 6,
-      COMPLETED: 6
-    };
-    return map[status] ?? 1;
-  };
+  // Count checked items
+  const checkedCount = Object.values(itemCheckboxes).filter(Boolean).length;
+  const totalItems = activeOrder?.items?.length || 0;
+  const allItemsChecked = totalItems > 0 && checkedCount === totalItems;
 
-  const handleOpenVerifyModal = () => {
-    if (!activeOrder) return;
-    const initialReceipts: Record<string, { received: number; damaged: number }> = {};
-    activeOrder.items?.forEach((it) => {
-      initialReceipts[it.id] = { received: it.quantity, damaged: 0 };
-    });
-    setItemReceipts(initialReceipts);
-    setVerificationDecision("VERIFIED");
-    setInspectionComments("");
-    setIsVerifyOpen(true);
-  };
-
-  const handleDispatch = async () => {
-    if (!activeOrder || activeOrder.status !== "READY_FOR_DISPATCH") return;
-    setIsSubmitting(true);
-    setActionError(null);
-    try {
-      await transitionOrderStatus(activeOrder.id, "DISPATCHED", "Dispatched by warehouse team", user?.id, role);
-      setSuccessMsg(`Order ${activeOrder.orderNumber} dispatched successfully.`);
-      await loadOrders();
-    } catch (err: any) {
-      setActionError(err?.message || "Failed to dispatch order");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleReceiptChange = (itemId: string, field: "received" | "damaged", val: number) => {
-    setItemReceipts((prev) => ({
+  const handleToggleItemCheckbox = (itemId: string, checked: boolean) => {
+    setItemCheckboxes((prev) => ({
       ...prev,
-      [itemId]: {
-        received: field === "received" ? val : (prev[itemId]?.received ?? 0),
-        damaged: field === "damaged" ? val : (prev[itemId]?.damaged ?? 0)
-      }
+      [itemId]: checked
     }));
   };
 
-  const toggleChecklistItem = (idx: number) => {
-    setChecklistResponses((prev) =>
-      prev.map((item, i) => (i === idx ? { ...item, checked: !item.checked } : item))
-    );
-  };
-
-  const handleSubmitVerification = async (e: React.FormEvent) => {
+  const handleVerifyDelivery = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeOrder) return;
-    setIsSubmitting(true);
+    if (activeOrder.verificationStatus === "VERIFIED") return;
+
+    setIsVerifying(true);
     setActionError(null);
 
     try {
-      await submitDetailedOrderVerification({
+      // Convert item checkboxes to orderItemId-based responses
+      const responses = activeOrder.items?.map((item) => ({
+        orderItemId: item.id,
+        checked: itemCheckboxes[item.id] || false
+      })) || [];
+
+      await submitClientReceiverVerification({
         orderId: activeOrder.id,
-        status: verificationDecision,
-        comments: inspectionComments,
-        responses: checklistResponses,
-        itemReceivedMap: itemReceipts,
+        tenantId: activeOrder.tenantId,
+        clientId: activeOrder.clientId,
+        status: "VERIFIED", // Client Receiver only verifies (not partial/rejected)
+        responses: responses,
+        comments: verificationComments,
         userId: user?.id,
         userRole: role
       });
 
       setIsVerifyOpen(false);
-      setSuccessMsg(`Order ${activeOrder.orderNumber} verification submitted as ${verificationDecision}!`);
+      setSuccessMsg(`Order ${activeOrder.orderNumber} verified successfully!`);
+      setVerificationComments("");
+      setItemCheckboxes({});
       await loadOrders();
     } catch (err: any) {
       setActionError(err?.message || "Failed to submit verification");
     } finally {
-      setIsSubmitting(false);
+      setIsVerifying(false);
     }
+  };
+
+  const handleOpenVerifyModal = () => {
+    if (!activeOrder || activeOrder.verificationStatus === "VERIFIED") return;
+    // Initialize checkboxes for all items
+    const initialCheckboxes: Record<string, boolean> = {};
+    activeOrder.items?.forEach((item) => {
+      initialCheckboxes[item.id] = false;
+    });
+    setItemCheckboxes(initialCheckboxes);
+    setVerificationComments("");
+    setIsVerifyOpen(true);
+    setActionError(null);
   };
 
   return (
@@ -185,10 +192,10 @@ export const OrderTrackPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <Truck className="w-6 h-6 text-indigo-400" /> Live Order & Delivery Tracker
+            <Truck className="w-6 h-6 text-indigo-400" /> Order & Delivery Tracker
           </h1>
           <p className="text-sm text-slate-400">
-            Real-time fulfillment milestones, delivery inspection checklists, and verification stamps.
+            Track delivery status and verify received items.
           </p>
         </div>
 
@@ -208,16 +215,40 @@ export const OrderTrackPage: React.FC = () => {
         </div>
       )}
 
+      {/* Unauthorized state for CLIENT_ACCOUNTANT users */}
+      {isUnauthorized && (
+        <Card className="p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-rose-950 text-rose-400 mb-4">
+            <ShieldCheck className="w-8 h-8" />
+          </div>
+          <h3 className="text-base font-semibold text-white mb-2">Access Denied</h3>
+          <p className="text-sm text-slate-400">
+            Only Client Receivers (employeeRole: RECEIVER) can verify deliveries.
+            Contact your warehouse manager for delivery verification access.
+          </p>
+        </Card>
+      )}
+
       {loading ? (
-        <LoadingSpinner message="Loading active shipments..." />
+        <LoadingSpinner message="Loading pending deliveries..." />
+      ) : orders.length === 0 && alreadyVerified ? (
+        <Card className="p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-indigo-950 text-indigo-400 mb-4">
+            <Check className="w-8 h-8" />
+          </div>
+          <h3 className="text-base font-semibold text-white mb-2">All deliveries verified</h3>
+          <p className="text-sm text-slate-400">
+            No pending deliveries waiting for verification.
+          </p>
+        </Card>
       ) : orders.length === 0 ? (
         <EmptyState
-          title="No active orders"
-          description="Create commercial orders to begin tracking physical delivery milestones."
+          title="No pending deliveries"
+          description="You will see orders here once they are dispatched and ready for delivery verification."
         />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Shipment Selector */}
+          {/* Left Column: Pending Deliveries List */}
           <div className="space-y-3">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -225,37 +256,54 @@ export const OrderTrackPage: React.FC = () => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search shipment / order..."
+                placeholder="Search order..."
                 className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
             <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-              {filteredOrders.map((o) => {
-                const isSelected = o.id === activeOrder?.id;
+              {filteredOrders.map((order) => {
+                const isSelected = order.id === activeOrder?.id;
+                const verificationBadge = order.verificationStatus === "PENDING" ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
+                    Verify Pending
+                  </span>
+                ) : order.verificationStatus === "VERIFIED" ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
+                    Verified
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-800 text-slate-400 border border-slate-700">
+                    {order.verificationStatus}
+                  </span>
+                );
+
                 return (
                   <div
-                    key={o.id}
-                    onClick={() => setSelectedOrderId(o.id)}
+                    key={order.id}
+                    onClick={() => loadOrderDetails(order.id)}
                     className={`p-3 rounded-xl border cursor-pointer transition ${
                       isSelected
                         ? "bg-indigo-950/60 border-indigo-500 shadow-md"
                         : "bg-slate-900/60 border-slate-800 hover:border-slate-700"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
                       <span className="font-mono font-bold text-xs text-white">
-                        {o.orderNumber}
+                        {order.orderNumber}
                       </span>
-                      <StatusBadge status={o.status} type="order" />
+                      {verificationBadge}
                     </div>
                     <div className="text-xs text-slate-300 font-medium truncate">
-                      {o.client?.companyName || "Direct Client"}
+                      {order.client?.companyName || "Direct Client"}
                     </div>
                     <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2">
-                      <span>{new Date(o.createdAt).toLocaleDateString()}</span>
+                      <span className="flex items-center gap-1">
+                        <Package className="w-3 h-3" />
+                        {order.items?.length || 0} items
+                      </span>
                       <span className="font-mono text-emerald-400 font-semibold">
-                        ₹{Number(o.totalAmount).toLocaleString("en-IN")}
+                        ₹{Number(order.totalAmount).toLocaleString("en-IN")}
                       </span>
                     </div>
                   </div>
@@ -264,10 +312,10 @@ export const OrderTrackPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Right Column: Active Order Details & Milestone Timeline */}
+          {/* Right Column: Active Order Details */}
           {activeOrder && (
             <div className="lg:col-span-2 space-y-5">
-              {/* Milestone Tracker Card */}
+              {/* Order Details Card */}
               <Card className="p-5 border border-slate-800 bg-slate-900/80">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-4 mb-5">
                   <div>
@@ -275,45 +323,62 @@ export const OrderTrackPage: React.FC = () => {
                       <h2 className="text-xl font-bold text-white font-mono">
                         {activeOrder.orderNumber}
                       </h2>
-                      <StatusBadge status={activeOrder.status} type="order" />
-                      <StatusBadge status={activeOrder.verificationStatus} type="verification" />
+                      {activeOrder.verificationStatus === "VERIFIED" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
+                          Verified
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
+                          Pending Verification
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">
                       Client: <strong className="text-slate-200">{activeOrder.client?.companyName}</strong> ({activeOrder.client?.contactPerson})
                     </p>
                   </div>
 
-                  {role === "WAREHOUSE_OWNER" || role === "WAREHOUSE_STAFF" ? (
-                    activeOrder.status === "READY_FOR_DISPATCH" && (
-                      <Button
-                        onClick={handleDispatch}
-                        isLoading={isSubmitting}
-                        className="gap-1.5 self-start sm:self-auto bg-indigo-600 hover:bg-indigo-500"
-                      >
-                        <Truck className="w-4 h-4" /> Dispatch Order
-                      </Button>
-                    )
-                  ) : activeOrder.verificationStatus !== "VERIFIED" && (
+                  {activeOrder.verificationStatus !== "VERIFIED" ? (
                     <Button
                       onClick={handleOpenVerifyModal}
-                      className="gap-1.5 self-start sm:self-auto bg-emerald-600 hover:bg-emerald-500"
+                      disabled={!allItemsChecked}
+                      className={`gap-1.5 self-start sm:self-auto ${
+                        allItemsChecked
+                          ? "bg-emerald-600 hover:bg-emerald-500"
+                          : "bg-slate-700 cursor-not-allowed opacity-60"
+                      }`}
                     >
-                      <ClipboardCheck className="w-4 h-4" /> Inspect & Verify Delivery
+                      <ClipboardCheck className="w-4 h-4" />
+                      {allItemsChecked ? "Verify Delivery" : `${checkedCount} of ${totalItems} items checked`}
                     </Button>
+                  ) : (
+                    <div className="flex items-center gap-2 self-start sm:self-auto">
+                      <div className="px-3 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-800 text-emerald-400 text-xs font-semibold">
+                        <CheckCircle2 className="w-4 h-4 inline-block mr-1" />
+                        Delivery Verified
+                      </div>
+                    </div>
                   )}
                 </div>
 
-                {/* Visual Timeline */}
+                {/* Order Timeline */}
                 <div className="py-3">
                   <div className="relative flex items-center justify-between">
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-slate-800 z-0" />
-                    {timelineSteps.map((step, idx) => {
-                      const currentIdx = getStepIndex(activeOrder.status);
-                      const isCompleted = currentIdx > idx;
+                    {["ISSUED", "PROCESSING", "DISPATCHED", "RECEIVED", "VERIFIED"].map((step, idx) => {
+                      const stepMap: Record<string, number> = {
+                        ISSUED: 1,
+                        PROCESSING: 2,
+                        DISPATCHED: 3,
+                        RECEIVED: 4,
+                        VERIFIED: 5
+                      };
+                      const currentIdx = stepMap[activeOrder.status] || 1;
+                      const isCompleted = currentIdx >= idx + 1;
                       const isCurrent = currentIdx === idx + 1;
 
                       return (
-                        <div key={step.key} className="relative z-10 flex flex-col items-center">
+                        <div key={step} className="relative z-10 flex flex-col items-center">
                           <div
                             className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition ${
                               isCompleted
@@ -330,11 +395,11 @@ export const OrderTrackPage: React.FC = () => {
                             )}
                           </div>
                           <span
-                            className={`text-[11px] font-semibold mt-2 text-center max-w-[80px] leading-tight ${
+                            className={`text-[10px] font-semibold mt-2 text-center max-w-[70px] leading-tight ${
                               isCompleted || isCurrent ? "text-white" : "text-slate-500"
                             }`}
                           >
-                            {step.label}
+                            {step}
                           </span>
                         </div>
                       );
@@ -343,84 +408,88 @@ export const OrderTrackPage: React.FC = () => {
                 </div>
               </Card>
 
-              {/* Order Items Table */}
+              {/* Item Checklist Card */}
               <Card className="p-0 overflow-hidden border border-slate-800">
                 <div className="bg-slate-950/40 px-5 py-3 border-b border-slate-800 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                    Shipment Line Items ({activeOrder.items?.length || 0})
-                  </span>
-                  <span className="text-xs font-mono text-emerald-400 font-bold">
-                    Total: ₹{Number(activeOrder.totalAmount).toLocaleString("en-IN")}
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                      Delivery Item Checklist
+                    </span>
+                  </div>
+                  <span className="text-xs font-mono text-indigo-400 font-semibold">
+                    {checkedCount} / {totalItems} items verified
                   </span>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="border-b border-slate-800 bg-slate-900/60 text-slate-400 uppercase text-[10px]">
-                      <tr>
-                        <th className="py-2.5 px-4">Item & SKU</th>
-                        <th className="py-2.5 px-4 text-right">Ordered</th>
-                        <th className="py-2.5 px-4 text-right">Unit Price</th>
-                        <th className="py-2.5 px-4 text-right">GST %</th>
-                        <th className="py-2.5 px-4 text-right">Line Total</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {activeOrder.items?.map((it) => (
-                        <tr key={it.id} className="hover:bg-slate-800/30">
-                          <td className="py-3 px-4 font-semibold text-white">
-                            {it.product?.name || "Product Item"}
-                            <div className="text-[10px] font-mono text-slate-500">
-                              SKU: {it.product?.sku || "N/A"}
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-200">
-                            {it.quantity} {it.product?.unit || "PCS"}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-400">
-                            ₹{Number(it.unitPrice).toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-400">
-                            {it.taxRate}%
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-white">
-                            ₹{Number(it.total).toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="p-4 space-y-2">
+                  {activeOrder.items?.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/50 border border-slate-800"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={itemCheckboxes[item.id] || false}
+                        onChange={(e) => handleToggleItemCheckbox(item.id, e.target.checked)}
+                        disabled={activeOrder.verificationStatus === "VERIFIED"}
+                        className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 focus:ring-offset-0"
+                      />
+                      <div className="flex-1">
+                        <p className="text-sm font-semibold text-white">
+                          {item.product?.name || "Product Item"}
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                          <span>SKU: {item.product?.sku || "N/A"}</span>
+                          <span className="w-1 h-1 rounded-full bg-slate-600" />
+                          <span>Qty: {item.quantity} {item.product?.unit || "PCS"}</span>
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Unit Price: ₹{Number(item.unitPrice).toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+
+                  {activeOrder.items?.length === 0 && (
+                    <div className="p-4 text-center text-sm text-slate-400">
+                      No items in this order
+                    </div>
+                  )}
                 </div>
               </Card>
 
-              {/* Delivery Destination and Address */}
+              {/* Client Information */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Card className="p-4 border border-slate-800">
                   <div className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-2">
-                    Delivery Coordinates
+                    Delivery Address
                   </div>
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    {activeOrder.client?.shippingAddress || activeOrder.client?.billingAddress || "Direct Delivery"}
+                    {activeOrder.client?.shippingAddress || activeOrder.client?.billingAddress || "N/A"}
                   </p>
                   <p className="text-[11px] text-slate-400 mt-2">
-                    Contact: {activeOrder.client?.contactPerson} ({activeOrder.client?.mobile})
+                    Contact: {activeOrder.client?.contactPerson} • {activeOrder.client?.mobile}
                   </p>
                 </Card>
 
                 <Card className="p-4 border border-slate-800">
                   <div className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-2">
-                    Commercial Invoicing Link
+                    Order Summary
                   </div>
-                  <p className="text-xs text-slate-400">
-                    Official Tax Invoice generation & payment proof upload:
-                  </p>
-                  <div className="mt-3">
-                    <Link
-                      to={`/operations/orders/${activeOrder.id}`}
-                      className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1"
-                    >
-                      View Order Details & Invoices <ArrowRight className="w-3.5 h-3.5" />
-                    </Link>
+                  <div className="text-xs space-y-1 text-slate-300">
+                    <div className="flex justify-between">
+                      <span>Subtotal:</span>
+                      <span className="font-mono">₹{Number(activeOrder.subtotal).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Tax:</span>
+                      <span className="font-mono">₹{Number(activeOrder.taxTotal).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between pt-2 border-t border-slate-800/50">
+                      <span className="font-semibold">Total:</span>
+                      <span className="font-mono font-bold text-white">₹{Number(activeOrder.totalAmount).toLocaleString("en-IN")}</span>
+                    </div>
                   </div>
                 </Card>
               </div>
@@ -429,162 +498,68 @@ export const OrderTrackPage: React.FC = () => {
         </div>
       )}
 
-      {/* Item-Level Delivery Inspection & Verification Modal */}
+      {/* Verify Delivery Modal */}
       {isVerifyOpen && activeOrder && (
         <Modal
           isOpen={isVerifyOpen}
           onClose={() => setIsVerifyOpen(false)}
-          title={`Delivery Verification: ${activeOrder.orderNumber}`}
-          description="Document physical cargo inspection, received vs. damaged quantities, and audit compliance checklist."
+          title={`Verify Delivery: ${activeOrder.orderNumber}`}
+          description="Review and confirm all items have been received in good condition."
           maxWidth="lg"
         >
-          <form onSubmit={handleSubmitVerification} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+          <form onSubmit={handleVerifyDelivery} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
             {actionError && (
               <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
                 {actionError}
               </div>
             )}
 
-            {/* Decision Radio Selection */}
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Verification Verdict *
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setVerificationDecision("VERIFIED")}
-                  className={`p-2.5 rounded-xl border text-center transition ${
-                    verificationDecision === "VERIFIED"
-                      ? "bg-emerald-950/80 border-emerald-500 text-emerald-300 shadow-md"
-                      : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <CheckCircle2 className="w-4 h-4 mx-auto mb-1 text-emerald-400" />
-                  <span className="text-xs font-bold block">VERIFIED</span>
-                  <span className="text-[10px] text-slate-400">100% Intact</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setVerificationDecision("PARTIALLY_VERIFIED")}
-                  className={`p-2.5 rounded-xl border text-center transition ${
-                    verificationDecision === "PARTIALLY_VERIFIED"
-                      ? "bg-amber-950/80 border-amber-500 text-amber-300 shadow-md"
-                      : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <AlertTriangle className="w-4 h-4 mx-auto mb-1 text-amber-400" />
-                  <span className="text-xs font-bold block">PARTIAL</span>
-                  <span className="text-[10px] text-slate-400">Damaged/Missing</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setVerificationDecision("REJECTED")}
-                  className={`p-2.5 rounded-xl border text-center transition ${
-                    verificationDecision === "REJECTED"
-                      ? "bg-rose-950/80 border-rose-500 text-rose-300 shadow-md"
-                      : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <XCircle className="w-4 h-4 mx-auto mb-1 text-rose-400" />
-                  <span className="text-xs font-bold block">REJECTED</span>
-                  <span className="text-[10px] text-slate-400">Refused Cargo</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Checklist Checkboxes */}
+            {/* Item Checklist */}
             <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
               <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-indigo-400" />
-                <span>Standard Delivery Inspection Checklist</span>
+                <span>Delivery Checklist ({checkedCount} of {totalItems} items)</span>
               </div>
               <div className="space-y-1.5">
-                {checklistResponses.map((item, idx) => (
+                {activeOrder.items?.map((item) => (
                   <label
-                    key={idx}
-                    onClick={() => toggleChecklistItem(idx)}
-                    className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer hover:text-white select-none"
+                    key={item.id}
+                    onClick={() => handleToggleItemCheckbox(item.id, !(itemCheckboxes[item.id] || false))}
+                    className={`flex items-start gap-2 text-xs cursor-pointer select-none ${
+                      activeOrder.verificationStatus === "VERIFIED" ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
                   >
                     <input
                       type="checkbox"
-                      checked={item.checked}
+                      checked={itemCheckboxes[item.id] || false}
                       onChange={() => {}}
+                      disabled={activeOrder.verificationStatus === "VERIFIED"}
                       className="mt-0.5 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
                     />
-                    <span>{item.text}</span>
+                    <span>
+                      <span className="font-semibold text-white">{item.product?.name}</span>
+                      <span className="text-slate-500"> • Qty: {item.quantity} {item.product?.unit}</span>
+                    </span>
                   </label>
                 ))}
               </div>
-            </div>
-
-            {/* Item Counts: Received vs Damaged */}
-            <div className="space-y-2">
-              <label className="block text-xs font-medium text-slate-300">
-                Item-Level Physical Count Verification
-              </label>
-              <div className="space-y-2">
-                {activeOrder.items?.map((it) => {
-                  const receipt = itemReceipts[it.id] || { received: it.quantity, damaged: 0 };
-                  return (
-                    <div
-                      key={it.id}
-                      className="grid grid-cols-12 gap-2 p-2.5 bg-slate-900/60 border border-slate-800 rounded-xl items-center"
-                    >
-                      <div className="col-span-6">
-                        <p className="text-xs font-semibold text-white truncate">
-                          {it.product?.name}
-                        </p>
-                        <p className="text-[10px] font-mono text-slate-500">
-                          Ordered: {it.quantity} {it.product?.unit}
-                        </p>
-                      </div>
-
-                      <div className="col-span-3">
-                        <label className="text-[10px] text-slate-400 block">Received</label>
-                        <input
-                          type="number"
-                          min="0"
-                          max={it.quantity}
-                          value={receipt.received}
-                          onChange={(e) =>
-                            handleReceiptChange(it.id, "received", parseInt(e.target.value, 10) || 0)
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono text-right"
-                        />
-                      </div>
-
-                      <div className="col-span-3">
-                        <label className="text-[10px] text-rose-400 block">Damaged</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={receipt.damaged}
-                          onChange={(e) =>
-                            handleReceiptChange(it.id, "damaged", parseInt(e.target.value, 10) || 0)
-                          }
-                          className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-rose-400 font-mono text-right"
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-500">
+                All items must be checked to complete verification.
               </div>
             </div>
 
-            {/* Inspector Comments */}
+            {/* Comments */}
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Inspection Remarks / Delivery Notes
+                Inspection Comments (Optional)
               </label>
               <textarea
-                value={inspectionComments}
-                onChange={(e) => setInspectionComments(e.target.value)}
-                placeholder="Discrepancy notes, damaged carton serial numbers, receiver signature details..."
+                value={verificationComments}
+                onChange={(e) => setVerificationComments(e.target.value)}
+                placeholder="Any notes about the delivery..."
                 rows={3}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none"
+                disabled={activeOrder.verificationStatus === "VERIFIED"}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none disabled:opacity-50"
               />
             </div>
 
@@ -592,8 +567,13 @@ export const OrderTrackPage: React.FC = () => {
               <Button type="button" variant="outline" onClick={() => setIsVerifyOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" isLoading={isSubmitting}>
-                Submit Official Inspection
+              <Button
+                type="submit"
+                isLoading={isVerifying}
+                disabled={!allItemsChecked || activeOrder.verificationStatus === "VERIFIED"}
+                className={activeOrder.verificationStatus === "VERIFIED" ? "opacity-60 cursor-not-allowed" : ""}
+              >
+                Confirm Delivery Verification
               </Button>
             </div>
           </form>
@@ -602,3 +582,5 @@ export const OrderTrackPage: React.FC = () => {
     </div>
   );
 };
+
+export default OrderTrackPage;

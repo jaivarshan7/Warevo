@@ -11,6 +11,7 @@ import { OrderDetailPage } from "@/pages/operations/OrderDetailPage";
 import { OrderTrackPage } from "@/pages/operations/OrderTrackPage";
 import { InventoryPage } from "@/pages/operations/InventoryPage";
 import { ClientsPage } from "@/pages/operations/ClientsPage";
+import { EmployeesPage } from "@/pages/operations/EmployeesPage";
 import { AccountingPage } from "@/pages/accounting/AccountingPage";
 import { InvoiceDetailPage } from "@/pages/accounting/InvoiceDetailPage";
 import { ChangeLogPage } from "@/pages/audit/ChangeLogPage";
@@ -32,14 +33,39 @@ export const App: React.FC = () => {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
 
-            {/* Operations */}
+            {/* Operations - Protected for specific roles */}
             <Route path="operations" element={<Navigate to="/operations/orders" replace />} />
-            <Route path="operations/orders" element={<OrdersPage />} />
-            <Route path="operations/orders/import" element={<InvoiceImportPage />} />
-            <Route path="operations/orders/track" element={<OrderTrackPage />} />
+            <Route
+              path="operations/orders"
+              element={
+                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT", "CLIENT_ACCOUNTANT", "ACCOUNTS_TEAM", "ACCOUNTANT"]}>
+                  <OrdersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/import"
+              element={
+                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
+                  <InvoiceImportPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/track"
+              element={
+                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT"]}>
+                  <OrderTrackPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="operations/orders/:id" element={<OrderDetailPage />} />
             <Route path="operations/inventory" element={<InventoryPage />} />
             <Route path="operations/clients" element={<ClientsPage />} />
+            <Route path="operations/employees" element={<EmployeesPage />} />
+
+            {/* Employees route (alias) */}
+            <Route path="employees" element={<EmployeesPage />} />
 
             {/* Accounting */}
             <Route path="accounting" element={<AccountingPage />} />

@@ -9,7 +9,8 @@ import {
   UserCheck,
   Shield,
   Activity,
-  Globe
+  Globe,
+  Users
 } from "lucide-react";
 import { Role, ClientEmployeeRole } from "@/types";
 import { hasPermission } from "./permissions";
@@ -252,6 +253,13 @@ export function getNavigationItems(
         { id: "inventory", label: "Inventory", path: "/operations/inventory" },
         { id: "clients", label: "Clients Directory", path: "/operations/clients" }
       ]
+    },
+    {
+      id: "employees",
+      label: "Employees",
+      path: "/employees",
+      icon: Users,
+      permissions: ["employees:manage", "users:manage"]
     },
     {
       id: "accounting",

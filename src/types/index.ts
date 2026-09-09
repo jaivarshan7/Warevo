@@ -335,6 +335,35 @@ export interface Invoice {
   payments?: Payment[];
 }
 
+// Notification event configuration
+export interface NotificationEventConfig {
+  inApp: boolean;
+  clientEmail: boolean;
+}
+
+// Notification settings for a tenant
+export interface NotificationSettings {
+  id: string;
+  tenantId: string;
+  enabled: boolean;
+  eventConfig: {
+    [key in NotificationType]?: NotificationEventConfig;
+  };
+  createdAt: string;
+  updatedAt?: string;
+  tenant?: Tenant | null;
+}
+
+export interface TenantSettings {
+  id: string;
+  tenantId: string;
+  invoicePrefix?: string | null;
+  notificationSettings?: NotificationSettings | null;
+  createdAt: string;
+  updatedAt?: string;
+  tenant?: Tenant | null;
+}
+
 export interface Notification {
   id: string;
   tenantId: string;

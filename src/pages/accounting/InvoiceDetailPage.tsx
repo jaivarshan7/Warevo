@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchInvoiceById, uploadPaymentProofFile, markInvoiceAsPaid } from "@/lib/services";
+import { fetchInvoiceById, recordPaymentWithProof } from "@/lib/services";
 import { Invoice } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -19,19 +19,22 @@ import {
   ExternalLink,
   ShieldCheck,
   Truck,
-  CreditCard
+  CreditCard,
+  XCircle
 } from "lucide-react";
 
 export const InvoiceDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { user, role } = useAuth();
+  const { user, role, tenant } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
-  const [proofUrl, setProofUrl] = useState("");
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [isMarkingPaid, setIsMarkingPaid] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
 
   const loadInvoice = async () => {
     if (!id) return;
@@ -53,31 +56,44 @@ export const InvoiceDetailPage: React.FC = () => {
   const handleMarkPaid = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!invoice) return;
+    if (!proofFile) {
+      setActionError("Please select a payment proof file (JPG, PNG, or PDF).");
+      return;
+    }
+
     setIsMarkingPaid(true);
     setActionError(null);
     setSuccessMsg(null);
+    setUploading(true);
 
     try {
-      let finalProofUrl = proofUrl.trim();
-      if (proofFile) {
-        finalProofUrl = await uploadPaymentProofFile(proofFile, invoice.id);
-      }
-
-      if (!finalProofUrl) {
-        setActionError("Please upload a payment proof receipt or enter a verification reference URL.");
+      if (!invoice.tenantId) {
+        setActionError("Tenant information is missing from this invoice.");
         setIsMarkingPaid(false);
+        setUploading(false);
         return;
       }
 
-      await markInvoiceAsPaid(invoice.id, finalProofUrl, user?.id);
+      // Use the new function that handles upload and payment record creation
+      await recordPaymentWithProof(
+        invoice.id,
+        proofFile,
+        invoice.tenantId,
+        invoice.total,
+        user.id
+      );
+
       setSuccessMsg("Invoice settled! Status updated to PAID and payment record logged.");
       setProofFile(null);
-      setProofUrl("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       await loadInvoice();
     } catch (err: any) {
-      setActionError(err?.message || "Failed to mark invoice as paid");
+      setActionError(err?.message || "Failed to record payment. Please try again.");
     } finally {
       setIsMarkingPaid(false);
+      setUploading(false);
     }
   };
 
@@ -156,33 +172,78 @@ export const InvoiceDetailPage: React.FC = () => {
                 <CreditCard className="w-4 h-4 text-indigo-400" /> Settle Invoice & Upload Payment Proof
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Record bank transfer transaction receipt to transition invoice to PAID.
+                Upload payment proof (JPG, PNG, or PDF) to mark invoice as paid.
               </p>
             </div>
 
-            <form onSubmit={handleMarkPaid} className="flex w-full max-w-xl flex-col sm:flex-row items-end gap-2">
-              <div className="flex-1 w-full space-y-1.5">
+            <form onSubmit={handleMarkPaid} className="flex w-full max-w-md flex-col sm:flex-row items-end gap-2">
+              <div className="flex-1 w-full space-y-2">
                 <label className="text-[11px] font-semibold text-slate-300 block">
-                  Upload Receipt / Bank UTR URL
+                  Payment Proof File
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="file"
-                    accept="application/pdf,image/jpeg,image/png,image/webp"
-                    onChange={(e) => setProofFile(e.target.files?.[0] || null)}
-                    className="w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-slate-800 file:text-indigo-300 hover:file:bg-slate-700"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Or enter UTR reference..."
-                    value={proofUrl}
-                    onChange={(e) => setProofUrl(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white"
-                  />
-                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,application/pdf"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      // Validate file type
+                      const validTypes = ["image/jpeg", "image/png", "application/pdf"];
+                      if (!validTypes.includes(file.type)) {
+                        setActionError("Please upload a JPG, PNG, or PDF payment proof.");
+                        setProofFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                        return;
+                      }
+                      // Validate file size (10MB)
+                      if (file.size > 10 * 1024 * 1024) {
+                        setActionError("File size exceeds 10MB limit. Please upload a smaller file.");
+                        setProofFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                        return;
+                      }
+                      setActionError(null);
+                      setProofFile(file);
+                    }
+                  }}
+                  className="w-full text-xs text-slate-400 file:mr-2 file:py-2 file:px-3 file:rounded file:border-0 file:text-xs file:bg-indigo-950 file:text-indigo-300 hover:file:bg-indigo-900 cursor-pointer"
+                  disabled={uploading}
+                />
+                {proofFile && (
+                  <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-800/50 rounded-lg px-3 py-2">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span className="truncate max-w-[200px]">{proofFile.name}</span>
+                    <span className="text-emerald-500 font-mono">
+                      {(proofFile.size / 1024).toFixed(1)} KB
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProofFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                        setActionError(null);
+                      }}
+                      className="ml-auto hover:text-rose-400"
+                      title="Remove file"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+                {!proofFile && !actionError && (
+                  <p className="text-[10px] text-slate-500">
+                    Supported: JPG, PNG, PDF (Max 10MB)
+                  </p>
+                )}
               </div>
-              <Button type="submit" isLoading={isMarkingPaid} className="h-8 whitespace-nowrap text-xs">
-                Mark as Paid
+              <Button
+                type="submit"
+                isLoading={isMarkingPaid}
+                disabled={!proofFile || uploading}
+                className="h-10 whitespace-nowrap text-xs"
+              >
+                Record Payment
               </Button>
             </form>
           </div>
@@ -201,14 +262,19 @@ export const InvoiceDetailPage: React.FC = () => {
               </p>
             </div>
             {invoice.payments && invoice.payments.length > 0 && invoice.payments[0].proofUrl && (
-              <a
-                href={invoice.payments[0].proofUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1"
-              >
-                View Payment Proof Document <ExternalLink className="w-3.5 h-3.5" />
-              </a>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-400 font-medium truncate max-w-[200px]">
+                  {invoice.payments[0].proofUrl.split("/").pop() || "payment-proof"}
+                </span>
+                <a
+                  href={invoice.payments[0].proofUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1"
+                >
+                  View <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
             )}
           </div>
         </Card>

@@ -96,28 +96,35 @@ export const SettingsPage: React.FC = () => {
         <Card className="lg:col-span-2">
           <div className="flex items-center gap-2 mb-4">
             <SettingsIcon className="w-5 h-5 text-amber-400" />
-            <h2 className="text-base font-semibold text-white">Numbering Configurations</h2>
+            <h2 className="text-base font-semibold text-white">Invoice Settings</h2>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Order Number Format
+                Invoice Prefix *
               </label>
               <input
                 type="text"
-                defaultValue="ORD-2026-XXXXXX"
-                readOnly
-                className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-400"
+                value={invoicePrefix || ""}
+                onChange={(e) => setInvoicePrefix(e.target.value.trim() || undefined)}
+                placeholder="e.g. INV-, WMS-, SI-"
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
+                maxLength={10}
               />
+              {invoicePrefix && (
+                <div className="mt-2 text-xs text-amber-300">
+                  <span className="font-mono bg-slate-900/50 px-1 py-0.5 rounded border border-slate-800">Preview: {invoicePrefix}{{nextInvoiceNumber}}</span>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Invoice Number Format
+                Next Invoice Number
               </label>
               <input
                 type="text"
-                defaultValue="INV-2026-XXXXXX"
+                value={{nextInvoiceNumber}}
                 readOnly
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-400"
               />
