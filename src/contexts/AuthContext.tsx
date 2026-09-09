@@ -12,12 +12,33 @@ interface AuthContextType {
   switchUser: (userId: string) => Promise<void>;
   switchTenant: (tenantId: string) => Promise<void>;
   signInWithEmail: (email: string) => Promise<{ error: Error | null }>;
+  signInWithGoogle: () => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
+  refreshUsers: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export { AuthProvider };
+
+// Refresh users from Supabase - returns the users list
+export async function refreshUsersFromSupabase() {
+  try {
+    const { data: users } = await supabase
+      .from("User")
+      .select("*, tenant:Tenant(*), client:Client(*)")
+      .order("role", { ascending: true });
+    if (users && users.length > 0) {
+      return users as User[];
+    }
+    return [];
+  } catch (err) {
+    console.error("Failed to refresh users from Supabase:", err);
+    return [];
+  }
+}
+
+const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -140,6 +161,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTenant(null);
   };
 
+  const refreshUsers = async () => {
+    try {
+      const { data: users } = await supabase
+        .from("User")
+        .select("*, tenant:Tenant(*), client:Client(*)")
+        .order("role", { ascending: true });
+      if (users && users.length > 0) {
+        setAllUsers(users as User[]);
+      } else {
+        setAllUsers([]);
+      }
+    } catch (err) {
+      console.error("Failed to refresh users:", err);
+      setAllUsers([]);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin + "/auth/callback",
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+    } catch (err) {
+      console.error("Failed to sign in with Google:", err);
+      return { error: err as Error };
+    }
+    return { error: null };
+  };
+
   const role = user?.role || "WAREHOUSE_STAFF";
 
   return (
@@ -154,7 +211,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         switchUser,
         switchTenant,
         signInWithEmail,
-        signOut
+        signInWithGoogle,
+        signOut,
+        refreshUsers
       }}
     >
       {children}

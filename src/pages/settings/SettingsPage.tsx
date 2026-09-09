@@ -1,11 +1,70 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Building2, Settings as SettingsIcon, Shield, Server, Database } from "lucide-react";
+import { Building2, Settings as SettingsIcon, Server } from "lucide-react";
+import { fetchTenantSettings, createTenantSettings, updateTenantSettings } from "@/lib/services";
 
 export const SettingsPage: React.FC = () => {
   const { tenant, role } = useAuth();
+
+  const [invoicePrefix, setInvoicePrefix] = useState("");
+  const [nextInvoiceNumber, setNextInvoiceNumber] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  // Load tenant settings on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      if (!tenant?.id) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const settings = await fetchTenantSettings(tenant.id);
+        if (settings) {
+          setInvoicePrefix(settings.invoicePrefix?.trim() || "");
+          // Calculate next invoice number based on existing invoices
+          setNextInvoiceNumber(1);
+        } else {
+          setInvoicePrefix("");
+          setNextInvoiceNumber(1);
+        }
+      } catch (error) {
+        console.error("Failed to load settings:", error);
+        setInvoicePrefix("");
+        setNextInvoiceNumber(1);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadSettings();
+  }, [tenant?.id]);
+
+  const handleSavePrefix = async () => {
+    if (!tenant?.id) return;
+    setSaving(true);
+    try {
+      let settings = await fetchTenantSettings(tenant.id);
+      if (!settings) {
+        settings = await createTenantSettings({
+          tenantId: tenant.id,
+          invoicePrefix: invoicePrefix || null
+        });
+      } else {
+        settings = await updateTenantSettings(settings.id, {
+          invoicePrefix: invoicePrefix || null
+        });
+      }
+      if (settings) {
+        setInvoicePrefix(settings.invoicePrefix?.trim() || "");
+      }
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -106,15 +165,18 @@ export const SettingsPage: React.FC = () => {
               </label>
               <input
                 type="text"
-                value={invoicePrefix || ""}
-                onChange={(e) => setInvoicePrefix(e.target.value.trim() || undefined)}
+                value={invoicePrefix}
+                onChange={(e) => setInvoicePrefix(e.target.value.trim())}
                 placeholder="e.g. INV-, WMS-, SI-"
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
                 maxLength={10}
+                disabled={loading}
               />
               {invoicePrefix && (
                 <div className="mt-2 text-xs text-amber-300">
-                  <span className="font-mono bg-slate-900/50 px-1 py-0.5 rounded border border-slate-800">Preview: {invoicePrefix}{{nextInvoiceNumber}}</span>
+                  <span className="font-mono bg-slate-900/50 px-1 py-0.5 rounded border border-slate-800">
+                    Preview: {invoicePrefix}{nextInvoiceNumber}
+                  </span>
                 </div>
               )}
             </div>
@@ -124,11 +186,22 @@ export const SettingsPage: React.FC = () => {
               </label>
               <input
                 type="text"
-                value={{nextInvoiceNumber}}
+                value={nextInvoiceNumber}
                 readOnly
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-400"
               />
             </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-slate-700/60 flex justify-end">
+            <Button
+              size="sm"
+              onClick={handleSavePrefix}
+              isLoading={saving}
+              disabled={loading}
+            >
+              Save Invoice Settings
+            </Button>
           </div>
         </Card>
       </div>

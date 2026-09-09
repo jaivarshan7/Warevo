@@ -4,10 +4,11 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { ArrowRight } from "lucide-react";
+import { Google } from "lucide-react";
 import { config } from "@/lib/config";
 
 export const LoginPage: React.FC = () => {
-  const { allUsers, switchUser, signInWithEmail } = useAuth();
+  const { allUsers, switchUser, signInWithEmail, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [identifier, setIdentifier] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -21,6 +22,17 @@ export const LoginPage: React.FC = () => {
     setIsLoading(false);
     if (res.error) {
       setError(res.error.message);
+    } else {
+      navigate("/dashboard");
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true);
+    const res = await signInWithGoogle();
+    setIsLoading(false);
+    if (res.error) {
+      setError(res.error.message || "Unable to sign in with Google. Please try again.");
     } else {
       navigate("/dashboard");
     }
@@ -88,6 +100,24 @@ export const LoginPage: React.FC = () => {
               Sign In
             </Button>
           </form>
+
+          {/* Google Sign-In */}
+          <div className="mt-4 pt-4 border-t border-slate-800/60">
+            <div className="text-center mb-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Or Continue with
+              </span>
+            </div>
+
+            <Button
+              type="button"
+              onClick={handleGoogleSignIn}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700/60 hover:bg-slate-700 hover:text-indigo-400 font-medium text-sm transition-colors"
+              disabled={isLoading}
+            >
+              <Google className="w-4 h-4" /> Continue with Google
+            </Button>
+          </div>
 
           {/* Quick Demo Switcher - only in development */}
           {config.showDemoFeatures && (

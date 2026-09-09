@@ -51,7 +51,7 @@ export const AdminDashboardPage: React.FC = () => {
   const [companyGroups, setCompanyGroups] = useState<AdminCompanyGroupItem[]>([]);
   const [tenants, setTenants] = useState<AdminTenantItem[]>([]);
 
-  const { user, role } = useAuth();
+  const { user, role, refreshUsers } = useAuth();
 
   // Navigation & Filtering
   const [activeTab, setActiveTab] = useState<"warehouses" | "users" | "clients" | "groups" | "tenants">("warehouses");
@@ -262,6 +262,8 @@ export const AdminDashboardPage: React.FC = () => {
       setUserForm({ name: "", email: "", mobile: "", role: "WAREHOUSE_STAFF", tenantId: tenants[0]?.id || "" });
       setActionMessage({ type: "success", text: "User created successfully!" });
       await loadData();
+      // Refresh allUsers in AuthContext so newly created user can be found during login
+      await refreshUsers();
     } catch (err: any) {
       setActionMessage({ type: "error", text: err.message || "Failed to create user." });
     } finally {
@@ -1434,15 +1436,19 @@ export const AdminDashboardPage: React.FC = () => {
 
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              Email Address
+              Email Address *
             </label>
             <input
               type="email"
               value={userForm.email}
               onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
               placeholder="user@example.test"
+              required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Required for login. User will receive invitation to set password.
+            </p>
           </div>
 
           <div>
