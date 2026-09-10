@@ -89,7 +89,13 @@ export const OrderTrackPage: React.FC = () => {
 
   const loadOrderDetails = async (orderId: string) => {
     try {
-      const order = await fetchOrderById(orderId);
+      // SECURITY: Pass tenantId, clientId, and role to verify client ownership
+      const order = await fetchOrderById(
+        orderId,
+        user?.tenant?.id,
+        user?.client?.id,
+        role
+      );
       if (order) {
         // Check if already verified
         if (order.verificationStatus === "VERIFIED") {
@@ -104,6 +110,9 @@ export const OrderTrackPage: React.FC = () => {
           setItemCheckboxes(initialCheckboxes);
         }
         setSelectedOrderId(orderId);
+      } else {
+        // Order not found or access denied
+        console.error("Access denied to order:", orderId);
       }
     } catch (err) {
       console.error("Error loading order details:", err);

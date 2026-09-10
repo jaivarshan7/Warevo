@@ -40,7 +40,13 @@ export const InvoiceDetailPage: React.FC = () => {
     if (!id) return;
     try {
       setLoading(true);
-      const data = await fetchInvoiceById(id);
+      // SECURITY: Pass tenantId, clientId, and role to verify client ownership
+      const data = await fetchInvoiceById(
+        id,
+        user?.tenant?.id,
+        user?.client?.id,
+        role
+      );
       setInvoice(data);
     } catch (err) {
       console.error("Error loading invoice:", err);

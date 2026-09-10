@@ -56,7 +56,13 @@ export const OrderDetailPage: React.FC = () => {
     if (!id) return;
     try {
       setLoading(true);
-      const data = await fetchOrderById(id);
+      // SECURITY: Pass tenantId, clientId, and role to verify client ownership
+      const data = await fetchOrderById(
+        id,
+        user?.tenant?.id,
+        user?.client?.id,
+        role
+      );
       setOrder(data);
     } catch (err: any) {
       setError(err?.message || "Failed to load order");

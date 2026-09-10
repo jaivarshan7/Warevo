@@ -16,7 +16,7 @@ export function useNotifications() {
       return;
     }
     try {
-      const list = await fetchUserNotifications(tenant?.id, user.id);
+      const list = await fetchUserNotifications(tenant?.id, user?.id, user?.client?.id);
       setNotifications(list);
       setUnreadCount(list.filter((n) => !n.read).length);
     } catch (err) {
@@ -61,11 +61,14 @@ export function useNotifications() {
 
   const markAsRead = async (id: string) => {
     try {
-      await markNotificationRead(id);
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, read: true, readAt: new Date().toISOString() } : n))
-      );
-      setUnreadCount((c) => Math.max(0, c - 1));
+      const result = await markNotificationRead(id, tenant?.id, user?.client?.id);
+      // Only update UI if the operation succeeded (result is not null)
+      if (result) {
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === id ? { ...n, read: true, readAt: new Date().toISOString() } : n))
+        );
+        setUnreadCount((c) => Math.max(0, c - 1));
+      }
     } catch (err) {
       console.error("Error marking notification as read:", err);
     }
