@@ -115,6 +115,7 @@ export interface User {
   createdAt: string;
   tenant?: Tenant | null;
   client?: Client | null;
+  clientId?: string | null;
 }
 
 export interface Client {

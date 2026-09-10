@@ -26,11 +26,13 @@ import {
   createAdminWarehouse,
   createAdminUser,
   createAdminClient,
+  createClientEmployeeWithUser,
   createAdminCompanyGroup,
   createAdminTenant,
   updateAdminWarehouse,
   deleteAdminWarehouse,
   updateAdminUser,
+  updateAdminUserWithRoleAudit,
   updateAdminClient,
   updateAdminTenant,
   AdminWarehouseItem,
@@ -303,16 +305,29 @@ export const AdminDashboardPage: React.FC = () => {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await createAdminClient({
+      console.log("[ClientEmployee] create started", {
+        companyName: employeeForm.companyName,
+        contactPerson: employeeForm.contactPerson,
+        email: employeeForm.email,
+        employeeRole: employeeForm.employeeRole,
+        tenantId: employeeForm.tenantId || tenants[0]?.id,
+      });
+
+      const result = await createClientEmployeeWithUser({
         companyName: employeeForm.companyName,
         contactPerson: employeeForm.contactPerson,
         mobile: employeeForm.mobile,
-        email: employeeForm.email || undefined,
-        billingAddress: employeeForm.shippingAddress || "Main Office",
+        email: employeeForm.email || "",
         shippingAddress: employeeForm.shippingAddress || "Main Office",
+        billingAddress: employeeForm.shippingAddress || "Main Office",
         tenantId: employeeForm.tenantId || tenants[0]?.id || "",
-        employeeRole: employeeForm.employeeRole
+        employeeRole: employeeForm.employeeRole,
+        actorUserId: user?.id || null,
+        actorUserRole: role || undefined,
       });
+
+      console.log("[ClientEmployee] create result", result);
+
       setShowAddEmployee(false);
       setEmployeeForm({
         companyName: "",
@@ -323,9 +338,12 @@ export const AdminDashboardPage: React.FC = () => {
         shippingAddress: "",
         tenantId: tenants[0]?.id || ""
       });
-      setActionMessage({ type: "success", text: "Employee added successfully!" });
+      setActionMessage({ type: "success", text: "Employee added successfully! User account created with CLIENT role." });
       await loadData();
+      await refreshUsers();
+      console.log("[ClientEmployee] refresh completed");
     } catch (err: any) {
+      console.error("[ClientEmployee] create failed:", err);
       setActionMessage({ type: "error", text: err.message || "Failed to add employee." });
     } finally {
       setSubmitting(false);
@@ -373,7 +391,28 @@ export const AdminDashboardPage: React.FC = () => {
     setSubmitting(true);
     try {
       if (editingWarehouse) await updateAdminWarehouse(editingWarehouse.id, editForm);
-      if (editingUser) await updateAdminUser(editingUser.id, editForm);
+      if (editingUser) {
+        // Use updateAdminUserWithRoleAudit for role transitions, otherwise simple update
+        if (editForm.role && editForm.role !== editingUser.role) {
+          await updateAdminUserWithRoleAudit({
+            userId: editingUser.id,
+            name: editForm.name,
+            email: editForm.email,
+            mobile: editForm.mobile,
+            status: editForm.status,
+            role: editForm.role as Role,
+            previousRole: editingUser.role,
+            clientId: editingUser.client?.id || undefined,
+            employeeRole: editForm.employeeRole as ClientEmployeeRole | undefined,
+            previousEmployeeRole: editingUser.client?.employeeRole || undefined,
+            targetUserTenantId: editingUser.tenantId || undefined,
+            actorUserId: user?.id || null,
+            actorUserRole: role,
+          });
+        } else {
+          await updateAdminUser(editingUser.id, editForm);
+        }
+      }
       if (editingClient) await updateAdminClient(editingClient.id, editForm);
       if (editingTenant) await updateAdminTenant(editingTenant.id, editForm);
       setEditingWarehouse(null);
@@ -382,6 +421,7 @@ export const AdminDashboardPage: React.FC = () => {
       setEditingTenant(null);
       setActionMessage({ type: "success", text: "Record updated successfully." });
       await loadData();
+      await refreshUsers();
     } catch (err: any) {
       setActionMessage({ type: "error", text: err.message || "Failed to update record." });
     } finally {
@@ -1845,6 +1885,24 @@ export const AdminDashboardPage: React.FC = () => {
               <input type="email" value={editForm.email || ""} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
             </div>
           )}
+          {editingUser && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Role *</label>
+              <select value={editForm.role || ""} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                <option value="PLATFORM_ADMIN">PLATFORM_ADMIN</option>
+                <option value="MANAGER">MANAGER</option>
+                <option value="GM">GM</option>
+                <option value="WAREHOUSE_OWNER">WAREHOUSE_OWNER</option>
+                <option value="WAREHOUSE_MODERATOR">WAREHOUSE_MODERATOR</option>
+                <option value="ACCOUNTS_TEAM">ACCOUNTS_TEAM</option>
+                <option value="WAREHOUSE_STAFF">WAREHOUSE_STAFF</option>
+                <option value="PRODUCT_RECEIVER">PRODUCT_RECEIVER</option>
+                <option value="ACCOUNTANT">ACCOUNTANT</option>
+                <option value="CLIENT">CLIENT</option>
+                <option value="CLIENT_ACCOUNTANT">CLIENT_ACCOUNTANT</option>
+              </select>
+            </div>
+          )}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">Status</label>
             <select value={editForm.status || "ACTIVE"} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
@@ -1854,6 +1912,19 @@ export const AdminDashboardPage: React.FC = () => {
               <option value="DEACTIVATED">DEACTIVATED</option>
             </select>
           </div>
+          {editingUser && editForm.role === "CLIENT" && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Client Employee Role *</label>
+              <select value={editForm.employeeRole || ""} onChange={(e) => setEditForm({ ...editForm, employeeRole: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                <option value="RECEIVER">Receiver (Store Delivery Receiver)</option>
+                <option value="STORE">Store Incharge</option>
+                <option value="ACCOUNT">Accountant</option>
+                <option value="MANAGER">Store Manager</option>
+                <option value="GM">General Manager (GM)</option>
+                <option value="MD">Managing Director (MD)</option>
+              </select>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
             <Button type="button" variant="outline" size="sm" onClick={() => { setEditingWarehouse(null); setEditingUser(null); setEditingClient(null); setEditingTenant(null); }}>Cancel</Button>
             <Button type="submit" size="sm" isLoading={submitting}>Save Changes</Button>

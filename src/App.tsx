@@ -4,6 +4,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { AppShell } from "@/components/layout/AppShell";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { LoginPage } from "@/pages/auth/LoginPage";
+import { AuthCallbackPage } from "@/pages/auth/AuthCallbackPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { OrdersPage } from "@/pages/operations/OrdersPage";
 import { InvoiceImportPage } from "@/pages/operations/InvoiceImportPage";
@@ -28,6 +29,7 @@ export const App: React.FC = () => {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
           <Route path="/" element={<AppShell />}>
             <Route index element={<Navigate to="/dashboard" replace />} />

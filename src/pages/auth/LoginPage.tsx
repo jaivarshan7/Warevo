@@ -4,15 +4,23 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { ArrowRight } from "lucide-react";
-import { Google } from "lucide-react";
+import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { config } from "@/lib/config";
 
 export const LoginPage: React.FC = () => {
-  const { allUsers, switchUser, signInWithEmail, signInWithGoogle } = useAuth();
+  const { user, isLoading: authLoading, allUsers, switchUser, signInWithEmail, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [identifier, setIdentifier] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [googleRedirecting, setGoogleRedirecting] = useState(false);
+
+  // If already authenticated, go straight to dashboard
+  React.useEffect(() => {
+    if (!authLoading && user) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [authLoading, user, navigate]);
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,20 +36,25 @@ export const LoginPage: React.FC = () => {
   };
 
   const handleGoogleSignIn = async () => {
-    setIsLoading(true);
+    setError(null);
+    setGoogleRedirecting(true);
+    // signInWithOAuth triggers a browser redirect to Google — the browser
+    // navigates away from this page. We only get an error back if the redirect
+    // itself fails to initiate (e.g. misconfigured provider).
     const res = await signInWithGoogle();
-    setIsLoading(false);
     if (res.error) {
+      // Redirect failed to start — show error
+      setGoogleRedirecting(false);
       setError(res.error.message || "Unable to sign in with Google. Please try again.");
-    } else {
-      navigate("/dashboard");
     }
+    // If no error, the browser has already navigated to Google — do nothing.
   };
 
   const handleQuickLogin = async (userId: string) => {
     await switchUser(userId);
     navigate("/dashboard");
   };
+
 
   const sortedDemoUsers = React.useMemo(() => {
     const priority: Record<string, number> = {
@@ -113,9 +126,11 @@ export const LoginPage: React.FC = () => {
               type="button"
               onClick={handleGoogleSignIn}
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700/60 hover:bg-slate-700 hover:text-indigo-400 font-medium text-sm transition-colors"
-              disabled={isLoading}
+              disabled={isLoading || googleRedirecting}
+              isLoading={googleRedirecting}
             >
-              <Google className="w-4 h-4" /> Continue with Google
+              {!googleRedirecting && <GoogleIcon className="w-4 h-4" />}
+              {googleRedirecting ? "Redirecting to Google..." : "Continue with Google"}
             </Button>
           </div>
 

@@ -14,7 +14,8 @@ import {
   Role,
   User,
   UserStatus,
-  TenantSettings
+  TenantSettings,
+  ClientEmployeeRole
 } from "@/types";
 
 export async function fetchDashboardSummary(
@@ -1581,6 +1582,7 @@ export interface AdminUserItem {
   createdAt: string;
   tenantId: string | null;
   tenant: { id: string; name: string; slug: string } | null;
+  client?: { id: string; employeeRole: ClientEmployeeRole | null; companyName: string } | null;
 }
 
 export interface AdminClientItem {
@@ -1632,7 +1634,7 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
         .order("createdAt", { ascending: false }),
       supabase
         .from("User")
-        .select("*, tenant:Tenant(id, name, slug)")
+        .select("*, tenant:Tenant(id, name, slug), client:Client(id, employeeRole, companyName)")
         .order("createdAt", { ascending: false }),
       supabase
         .from("Client")
@@ -1661,7 +1663,7 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
         .order("createdAt", { ascending: false }),
       supabase
         .from("User")
-        .select("*, tenant:Tenant(id, name, slug)")
+        .select("*, tenant:Tenant(id, name, slug), client:Client(id, employeeRole, companyName)")
         .eq("tenantId", tenantId || "")
         .order("createdAt", { ascending: false }),
       supabase
@@ -1700,7 +1702,8 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
     status: u.status,
     createdAt: u.createdAt,
     tenantId: u.tenantId,
-    tenant: u.tenant
+    tenant: u.tenant,
+    client: u.client ? { id: u.client.id, employeeRole: u.client.employeeRole, companyName: u.client.companyName } : null
   }));
 
   const clients: AdminClientItem[] = (clientsRes.data || []).map((c: any) => ({
@@ -1922,6 +1925,292 @@ export async function updateAdminUser(id: string, payload: Partial<{ name: strin
   return data;
 }
 
+export interface CreateClientEmployeePayload {
+  companyName: string;
+  contactPerson: string;
+  mobile: string;
+  email: string;
+  shippingAddress?: string;
+  billingAddress?: string;
+  tenantId: string;
+  employeeRole: ClientEmployeeRole;
+  companyGroupId?: string;
+  actorUserId?: string | null;
+  actorUserRole?: Role;
+}
+
+export async function createClientEmployeeWithUser(payload: CreateClientEmployeePayload) {
+  const normalizedEmail = payload.email?.trim().toLowerCase();
+  if (!normalizedEmail) {
+    throw new Error("Email is required for Client Employee creation to enable WMS login and Google Sign-In.");
+  }
+  if (!payload.tenantId) {
+    throw new Error("Tenant ID is required.");
+  }
+  if (!payload.contactPerson.trim()) {
+    throw new Error("Contact Person name is required.");
+  }
+  if (!payload.mobile.trim()) {
+    throw new Error("Mobile number is required.");
+  }
+
+  // Tenant-scoped duplicate user check: check within the authorized tenant scope
+  const { data: existingTenantUsers, error: searchError } = await supabase
+    .from("User")
+    .select("id, name, email, mobile, role, tenantId, status")
+    .eq("tenantId", payload.tenantId)
+    .ilike("email", normalizedEmail);
+
+  if (searchError) {
+    throw new Error(`Failed to check existing users in organization: ${searchError.message}`);
+  }
+
+  let targetUserId: string;
+  let isNewlyCreatedUser = false;
+
+  if (existingTenantUsers && existingTenantUsers.length > 0) {
+    const existingUser = existingTenantUsers[0];
+    targetUserId = existingUser.id;
+    // If the existing user is not ACTIVE or has a different role, ensure active CLIENT role
+    if (existingUser.role !== "CLIENT" || existingUser.status !== "ACTIVE") {
+      await supabase.from("User").update({ role: "CLIENT", status: "ACTIVE" }).eq("id", targetUserId);
+    }
+  } else {
+    // Attempt to create new WMS User
+    const { data: newUser, error: userError } = await supabase
+      .from("User")
+      .insert([
+        {
+          name: payload.contactPerson.trim(),
+          email: normalizedEmail,
+          mobile: payload.mobile.trim() || null,
+          role: "CLIENT",
+          tenantId: payload.tenantId,
+          status: "ACTIVE"
+        }
+      ])
+      .select()
+      .single();
+
+    if (userError) {
+      if (userError.code === "23505" || userError.message.includes("unique")) {
+        throw new Error("A user account with this email address already exists. Please verify the email or use an alternate address.");
+      }
+      throw new Error(`Failed to create login user account: ${userError.message}`);
+    }
+
+    targetUserId = newUser.id;
+    isNewlyCreatedUser = true;
+  }
+
+  // Create Client record linked to targetUserId
+  const { data: clientRecord, error: clientError } = await supabase
+    .from("Client")
+    .insert([
+      {
+        companyName: payload.companyName.trim(),
+        contactPerson: payload.contactPerson.trim(),
+        mobile: payload.mobile.trim(),
+        email: normalizedEmail,
+        billingAddress: payload.billingAddress?.trim() || payload.shippingAddress?.trim() || "Main Office",
+        shippingAddress: payload.shippingAddress?.trim() || payload.billingAddress?.trim() || "Main Office",
+        tenantId: payload.tenantId,
+        companyGroupId: payload.companyGroupId || null,
+        employeeRole: payload.employeeRole,
+        userId: targetUserId,
+        status: "ACTIVE"
+      }
+    ])
+    .select()
+    .single();
+
+  if (clientError) {
+    // Compensating cleanup ONLY if this operation created that User
+    if (isNewlyCreatedUser) {
+      try {
+        await supabase.from("User").delete().eq("id", targetUserId);
+      } catch (cleanupErr) {
+        console.error("Compensating cleanup failed for newly created user:", cleanupErr);
+        // Cleanup failed — the user account still exists and was NOT rolled back
+        throw new Error(
+          `Client employee creation failed (${clientError.message}). A login user account was created (ID: ${targetUserId}) but could not be automatically cleaned up. The user account still exists and must be handled manually. The client employee account was NOT successfully created.`
+        );
+      }
+      // Cleanup succeeded — user was deleted, client employee creation is fully rolled back
+      throw new Error(`Client employee could not be created (${clientError.message}). The login user account was rolled back.`);
+    }
+    throw new Error(`Client employee could not be created (${clientError.message}). Existing user was not modified.`);
+  }
+
+  // Audit Logging
+  try {
+    await createAuditLogRecord({
+      tenantId: payload.tenantId,
+      userId: payload.actorUserId || null,
+      userRole: payload.actorUserRole || "PLATFORM_ADMIN",
+      action: "CREATE_CLIENT_EMPLOYEE",
+      entity: "Client",
+      entityId: clientRecord.id,
+      newValue: {
+        companyName: payload.companyName,
+        contactPerson: payload.contactPerson,
+        email: normalizedEmail,
+        mobile: payload.mobile,
+        employeeRole: payload.employeeRole,
+        userId: targetUserId
+      }
+    });
+  } catch (auditErr) {
+    console.warn("Audit log creation failed (non-critical):", auditErr);
+  }
+
+  return { client: clientRecord, userId: targetUserId, isNewUser: isNewlyCreatedUser };
+}
+
+export interface UpdateAdminUserRolePayload {
+  userId: string;
+  name?: string;
+  email?: string;
+  mobile?: string;
+  status?: string;
+  role: Role;
+  previousRole: Role;
+  clientId?: string;
+  employeeRole?: ClientEmployeeRole;
+  previousEmployeeRole?: ClientEmployeeRole;
+  targetUserTenantId?: string | null;
+  actorUserId?: string | null;
+  actorUserRole?: Role;
+}
+
+export async function updateAdminUserWithRoleAudit(payload: UpdateAdminUserRolePayload) {
+  // 1. Self-protection: PLATFORM_ADMIN cannot demote self
+  if (
+    payload.userId === payload.actorUserId &&
+    payload.actorUserRole === "PLATFORM_ADMIN" &&
+    payload.role !== "PLATFORM_ADMIN"
+  ) {
+    throw new Error("Platform Admins cannot remove or demote their own PLATFORM_ADMIN role.");
+  }
+
+  // 2. Privilege check: only PLATFORM_ADMIN can modify user roles
+  if (payload.actorUserRole !== "PLATFORM_ADMIN") {
+    throw new Error("Only Platform Administrators are authorized to modify user roles.");
+  }
+
+  // 3. Transition TO CLIENT: require valid client association
+  if (payload.role === "CLIENT" && !payload.clientId) {
+    throw new Error("A valid Client Company must be linked when assigning the CLIENT role.");
+  }
+
+  // 4. If role is CLIENT and a clientId is provided, link Client and update employeeRole
+  if (payload.role === "CLIENT" && payload.clientId) {
+    const clientUpdatePayload: Record<string, any> = { userId: payload.userId };
+    if (payload.employeeRole) {
+      clientUpdatePayload.employeeRole = payload.employeeRole;
+    }
+    const { error: clientUpdateError } = await supabase
+      .from("Client")
+      .update(clientUpdatePayload)
+      .eq("id", payload.clientId);
+
+    if (clientUpdateError) {
+      throw new Error(`Failed to link client employee record: ${clientUpdateError.message}`);
+    }
+
+    if (payload.employeeRole && payload.employeeRole !== payload.previousEmployeeRole) {
+      try {
+        await createAuditLogRecord({
+          tenantId: payload.targetUserTenantId || null,
+          userId: payload.actorUserId || null,
+          userRole: payload.actorUserRole,
+          action: "UPDATE_CLIENT_EMPLOYEE_ROLE",
+          entity: "Client",
+          entityId: payload.clientId,
+          previousValue: { employeeRole: payload.previousEmployeeRole || null },
+          newValue: { employeeRole: payload.employeeRole }
+        });
+      } catch (auditErr) {
+        console.warn("Audit log creation for client employee role failed (non-critical):", auditErr);
+      }
+    }
+  }
+
+  // 5. If role is changing FROM CLIENT to a non-CLIENT role, clear the clientId
+  //    from the User record while preserving the Client company data.
+  //    The new WMS role determines authorization; do not treat a non-CLIENT user
+  //    as a client employee.
+  if (payload.previousRole === "CLIENT" && payload.role !== "CLIENT" && payload.clientId) {
+    // Clear clientId from User record — the user is no longer a client employee
+    const { error: clearClientError } = await supabase
+      .from("User")
+      .update({ clientId: null })
+      .eq("id", payload.userId);
+
+    if (clearClientError) {
+      console.warn(
+        `Warning: Failed to clear clientId from User ${payload.userId} during role transition FROM CLIENT: ${clearClientError.message}`
+      );
+    } else {
+      // Audit the client association removal
+      try {
+        await createAuditLogRecord({
+          tenantId: payload.targetUserTenantId || null,
+          userId: payload.actorUserId || null,
+          userRole: payload.actorUserRole,
+          action: "REMOVE_CLIENT_EMPLOYEE_ASSOCIATION",
+          entity: "User",
+          entityId: payload.userId,
+          previousValue: { clientId: payload.clientId, employeeRole: payload.previousEmployeeRole || null },
+          newValue: { clientId: null, employeeRole: null }
+        });
+      } catch (auditErr) {
+        console.warn("Audit log for client employee removal failed (non-critical):", auditErr);
+      }
+    }
+  }
+
+  // 5. Update User record
+  const userUpdatePayload: Record<string, any> = {
+    role: payload.role
+  };
+  if (payload.name !== undefined) userUpdatePayload.name = payload.name;
+  if (payload.email !== undefined) userUpdatePayload.email = payload.email ? payload.email.trim().toLowerCase() : null;
+  if (payload.mobile !== undefined) userUpdatePayload.mobile = payload.mobile ? payload.mobile.trim() : null;
+  if (payload.status !== undefined) userUpdatePayload.status = payload.status;
+
+  const { data: updatedUser, error: userUpdateError } = await supabase
+    .from("User")
+    .update(userUpdatePayload)
+    .eq("id", payload.userId)
+    .select()
+    .single();
+
+  if (userUpdateError) {
+    throw userUpdateError;
+  }
+
+  // 6. Audit log for role change
+  if (payload.role !== payload.previousRole) {
+    try {
+      await createAuditLogRecord({
+        tenantId: payload.targetUserTenantId || null,
+        userId: payload.actorUserId || null,
+        userRole: payload.actorUserRole,
+        action: "UPDATE_USER_ROLE",
+        entity: "User",
+        entityId: payload.userId,
+        previousValue: { role: payload.previousRole },
+        newValue: { role: payload.role }
+      });
+    } catch (auditErr) {
+      console.warn("Audit log creation for user role failed (non-critical):", auditErr);
+    }
+  }
+
+  return updatedUser;
+}
+
 export async function deleteAdminUser(id: string) {
   const { error } = await supabase.from("User").delete().eq("id", id);
   if (error) throw error;
@@ -2050,19 +2339,61 @@ export async function createAuditLogRecord(payload: {
 
 export async function fetchTenantSettings(tenantId?: string | null) {
   if (!tenantId) return null;
-  const { data, error } = await supabase
-    .from("TenantSettings")
-    .select("*")
-    .eq("tenantId", tenantId)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
+  try {
+    const { data, error } = await supabase
+      .from("WarehouseSetting")
+      .select("*")
+      .eq("tenantId", tenantId)
+      .maybeSingle();
+    if (!error && data) return data;
+  } catch {
+    // Ignore and fallback
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("TenantSettings")
+      .select("*")
+      .eq("tenantId", tenantId)
+      .maybeSingle();
+    if (!error && data) return data;
+  } catch {
+    // Ignore
+  }
+
+  return null;
 }
 
 export async function updateTenantSettings(
   id: string,
-  payload: Partial<{ invoicePrefix: string | null }>
+  payload: Partial<{ invoicePrefix: string | null; orderPrefix?: string | null; notificationPreferences?: any }>
 ) {
+  const updateData = {
+    ...payload,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("WarehouseSetting")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (!error && data) return data;
+
+    // Try update by tenantId if id was passed as tenantId
+    const byTenant = await supabase
+      .from("WarehouseSetting")
+      .update(updateData)
+      .eq("tenantId", id)
+      .select()
+      .maybeSingle();
+    if (!byTenant.error && byTenant.data) return byTenant.data;
+  } catch {
+    // Fallback to TenantSettings
+  }
+
   const { data, error } = await supabase
     .from("TenantSettings")
     .update(payload)
@@ -2076,7 +2407,28 @@ export async function updateTenantSettings(
 export async function createTenantSettings(payload: {
   tenantId: string;
   invoicePrefix?: string | null;
+  orderPrefix?: string | null;
 }) {
+  const id = "ws_" + Math.random().toString(36).substring(2, 15);
+  const now = new Date().toISOString();
+
+  try {
+    const { data, error } = await supabase
+      .from("WarehouseSetting")
+      .upsert({
+        id,
+        tenantId: payload.tenantId,
+        invoicePrefix: payload.invoicePrefix?.trim() || "INV",
+        orderPrefix: payload.orderPrefix || "ORD",
+        updatedAt: now
+      }, { onConflict: "tenantId" })
+      .select()
+      .single();
+    if (!error && data) return data;
+  } catch {
+    // Fallback
+  }
+
   const { data, error } = await supabase
     .from("TenantSettings")
     .insert({
@@ -2093,7 +2445,7 @@ export async function createTenantSettings(payload: {
 export async function getOrCreateTenantSettings(tenantId: string) {
   const settings = await fetchTenantSettings(tenantId);
   if (settings) return settings;
-  return await createTenantSettings({ tenantId, invoicePrefix: null });
+  return await createTenantSettings({ tenantId, invoicePrefix: "INV" });
 }
 
 // ======================== NOTIFICATION SETTINGS ========================
@@ -2121,27 +2473,93 @@ const DEFAULT_NOTIFICATION_SETTINGS: Record<NotificationType, { inApp: boolean; 
 
 export async function fetchNotificationSettings(tenantId?: string | null) {
   if (!tenantId) return null;
-  const { data, error } = await supabase
-    .from("NotificationSettings")
-    .select("*")
-    .eq("tenantId", tenantId)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
+  try {
+    const { data, error } = await supabase
+      .from("NotificationSettings")
+      .select("*")
+      .eq("tenantId", tenantId)
+      .maybeSingle();
+    if (!error && data) return data;
+  } catch {
+    // Fallback to WarehouseSetting
+  }
+
+  try {
+    const { data } = await supabase
+      .from("WarehouseSetting")
+      .select("id, tenantId, notificationPreferences, createdAt, updatedAt")
+      .eq("tenantId", tenantId)
+      .maybeSingle();
+    if (data) {
+      const prefs = (data.notificationPreferences as any) || {};
+      return {
+        id: data.id,
+        tenantId: data.tenantId,
+        enabled: prefs.enabled !== false,
+        eventConfig: prefs.eventConfig || DEFAULT_NOTIFICATION_SETTINGS,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    }
+  } catch {
+    // Ignore
+  }
+
+  return null;
 }
 
 export async function updateNotificationSettings(
   id: string,
   payload: Partial<{ enabled?: boolean; eventConfig?: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> }>
 ) {
-  const { data, error } = await supabase
-    .from("NotificationSettings")
-    .update(payload)
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
+  try {
+    const { data, error } = await supabase
+      .from("NotificationSettings")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+    if (!error && data) return data;
+  } catch {
+    // Fallback to WarehouseSetting
+  }
+
+  try {
+    const updatePayload: any = {
+      updatedAt: new Date().toISOString()
+    };
+    if (payload.enabled !== undefined || payload.eventConfig !== undefined) {
+      // Merge with existing
+      const existing = await fetchNotificationSettings(id);
+      updatePayload.notificationPreferences = {
+        enabled: payload.enabled !== undefined ? payload.enabled : (existing?.enabled ?? true),
+        eventConfig: payload.eventConfig || existing?.eventConfig || DEFAULT_NOTIFICATION_SETTINGS
+      };
+    }
+
+    const { data, error } = await supabase
+      .from("WarehouseSetting")
+      .update(updatePayload)
+      .or(`id.eq.${id},tenantId.eq.${id}`)
+      .select()
+      .maybeSingle();
+
+    if (!error && data) {
+      const prefs = (data.notificationPreferences as any) || {};
+      return {
+        id: data.id,
+        tenantId: data.tenantId,
+        enabled: prefs.enabled !== false,
+        eventConfig: prefs.eventConfig || DEFAULT_NOTIFICATION_SETTINGS,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    }
+  } catch (e) {
+    console.error("Failed to update notification preferences in WarehouseSetting:", e);
+  }
+
+  return null;
 }
 
 export async function createNotificationSettings(payload: {
@@ -2149,17 +2567,55 @@ export async function createNotificationSettings(payload: {
   enabled?: boolean;
   eventConfig?: Record<NotificationType, { inApp: boolean; clientEmail: boolean }>;
 }) {
-  const { data, error } = await supabase
-    .from("NotificationSettings")
-    .insert({
-      tenantId: payload.tenantId,
+  try {
+    const { data, error } = await supabase
+      .from("NotificationSettings")
+      .insert({
+        tenantId: payload.tenantId,
+        enabled: payload.enabled !== false,
+        eventConfig: payload.eventConfig || DEFAULT_NOTIFICATION_SETTINGS
+      })
+      .select()
+      .single();
+    if (!error && data) return data;
+  } catch {
+    // Fallback
+  }
+
+  try {
+    const id = "ws_" + Math.random().toString(36).substring(2, 15);
+    const now = new Date().toISOString();
+    const notificationPreferences = {
       enabled: payload.enabled !== false,
       eventConfig: payload.eventConfig || DEFAULT_NOTIFICATION_SETTINGS
-    })
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
+    };
+
+    const { data, error } = await supabase
+      .from("WarehouseSetting")
+      .upsert({
+        id,
+        tenantId: payload.tenantId,
+        notificationPreferences,
+        updatedAt: now
+      }, { onConflict: "tenantId" })
+      .select()
+      .single();
+
+    if (!error && data) {
+      return {
+        id: data.id,
+        tenantId: data.tenantId,
+        enabled: notificationPreferences.enabled,
+        eventConfig: notificationPreferences.eventConfig,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    }
+  } catch {
+    // Ignore
+  }
+
+  return null;
 }
 
 // Get or create notification settings with safe defaults
