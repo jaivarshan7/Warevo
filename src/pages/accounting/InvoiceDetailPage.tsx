@@ -45,7 +45,8 @@ export const InvoiceDetailPage: React.FC = () => {
         id,
         user?.tenant?.id,
         user?.client?.id,
-        role
+        role,
+        user?.id
       );
       setInvoice(data);
     } catch (err) {

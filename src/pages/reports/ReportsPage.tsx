@@ -32,7 +32,7 @@ export const ReportsPage: React.FC = () => {
         setLoading(true);
         const [o, inv, i] = await Promise.all([
           fetchOrders(tenant?.id, role, user?.client?.id),
-          fetchInvoices(tenant?.id, user?.client?.id),
+          fetchInvoices(tenant?.id, user?.client?.id, role, user?.id),
           fetchInventory(tenant?.id)
         ]);
         setOrders(o);

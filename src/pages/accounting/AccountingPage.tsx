@@ -43,7 +43,7 @@ export const AccountingPage: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const list = await fetchInvoices(tenant?.id, user?.client?.id);
+      const list = await fetchInvoices(tenant?.id, user?.client?.id, role, user?.id);
       setInvoices(list);
     } catch (err) {
       console.error("Error loading accounting data:", err);

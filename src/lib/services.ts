@@ -22,6 +22,74 @@ export function isClientRole(role?: Role | null): boolean {
   return role === "CLIENT" || role === "CLIENT_ACCOUNTANT";
 }
 
+/**
+ * Shared helper: resolves the full set of Client IDs that a user should have access to.
+ * If the user's Client record has a companyGroupId, returns ALL Client IDs in that
+ * company group (within the same tenant). Otherwise returns just the single clientId.
+ *
+ * This is the SINGLE SOURCE OF TRUTH for company-level access resolution.
+ * Used by fetchOrders, fetchOrderById, fetchInvoices, fetchInvoiceById, fetchDashboardSummary.
+ */
+async function resolveCompanyClientIds(
+  userId?: string | null,
+  fallbackClientId?: string | null
+): Promise<string[]> {
+  if (!userId) return fallbackClientId ? [fallbackClientId] : [];
+
+  const { data: userClient } = await supabase
+    .from("Client")
+    .select("id, companyGroupId, tenantId")
+    .eq("userId", userId)
+    .single();
+
+  if (userClient?.companyGroupId) {
+    // Find all Client records in the same company group and tenant
+    const { data: companyClients } = await supabase
+      .from("Client")
+      .select("id")
+      .eq("companyGroupId", userClient.companyGroupId)
+      .eq("tenantId", userClient.tenantId);
+
+    const ids = companyClients?.map(c => c.id) || [];
+    if (ids.length > 0) return ids;
+  }
+
+  // Fallback: no companyGroup or no members found — use single clientId
+  return fallbackClientId ? [fallbackClientId] : (userClient ? [userClient.id] : []);
+}
+
+/**
+ * Shared helper: verifies that a given record's clientId belongs to the user's company group.
+ * Used as defense-in-depth post-fetch ownership check in fetchOrderById, fetchInvoiceById.
+ */
+async function verifyCompanyOwnership(
+  recordClientId: string,
+  userId?: string | null,
+  fallbackClientId?: string | null
+): Promise<boolean> {
+  if (!userId) return recordClientId === fallbackClientId;
+
+  const { data: userClient } = await supabase
+    .from("Client")
+    .select("companyGroupId")
+    .eq("userId", userId)
+    .single();
+
+  if (userClient?.companyGroupId) {
+    // Verify the record's client belongs to the same company group
+    const { data: recordClient } = await supabase
+      .from("Client")
+      .select("companyGroupId")
+      .eq("id", recordClientId)
+      .single();
+
+    return recordClient?.companyGroupId === userClient.companyGroupId;
+  }
+
+  // No companyGroupId — strict clientId match required
+  return recordClientId === fallbackClientId;
+}
+
 export async function fetchDashboardSummary(
   tenantId?: string | null,
   role?: Role,
@@ -59,8 +127,15 @@ export async function fetchDashboardSummary(
         orderQuery = orderQuery.eq("id", "none");
         invoiceQuery = invoiceQuery.eq("id", "none");
       } else {
-        orderQuery = orderQuery.eq("clientId", clientId);
-        invoiceQuery = invoiceQuery.eq("clientId", clientId);
+        // Resolve company-wide client IDs for proper company group visibility
+        const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+        if (companyClientIds.length > 0) {
+          orderQuery = orderQuery.in("clientId", companyClientIds);
+          invoiceQuery = invoiceQuery.in("clientId", companyClientIds);
+        } else {
+          orderQuery = orderQuery.eq("clientId", clientId);
+          invoiceQuery = invoiceQuery.eq("clientId", clientId);
+        }
       }
     }
 
@@ -110,32 +185,11 @@ export async function fetchOrders(
       return [];
     }
     
-    // Resolve companyGroupId to enable company-wide order visibility
-    const { data: userClient } = await supabase
-      .from("Client")
-      .select("companyGroupId, tenantId")
-      .eq("userId", userId)
-      .single();
-    
-    if (userClient?.companyGroupId) {
-      // Find all Client records in the same company group and tenant
-      const { data: companyClients } = await supabase
-        .from("Client")
-        .select("id")
-        .eq("companyGroupId", userClient.companyGroupId)
-        .eq("tenantId", userClient.tenantId);
-      
-      const clientIds = companyClients?.map(c => c.id) || [];
-      
-      if (clientIds.length > 0) {
-        // Allow access to all orders belonging to any employee of this company
-        query = query.in("clientId", clientIds);
-      } else {
-        // Fallback to single clientId if no company members found
-        query = query.eq("clientId", clientId);
-      }
+    // Resolve company-wide client IDs using shared helper
+    const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+    if (companyClientIds.length > 0) {
+      query = query.in("clientId", companyClientIds);
     } else {
-      // No companyGroupId - fall back to single clientId
       query = query.eq("clientId", clientId);
     }
   } else if (clientId) {
@@ -179,32 +233,11 @@ export async function fetchOrderById(
   // SECURITY: Client users can ONLY see their own company orders
   // This prevents Client A from seeing Client B orders in the same tenant
   if (isClientRole(userRole) && clientId) {
-    // Resolve companyGroupId to enable company-wide order visibility
-    const { data: userClient } = await supabase
-      .from("Client")
-      .select("companyGroupId, tenantId")
-      .eq("userId", userId)
-      .single();
-    
-    if (userClient?.companyGroupId) {
-      // Find all Client records in the same company group and tenant
-      const { data: companyClients } = await supabase
-        .from("Client")
-        .select("id")
-        .eq("companyGroupId", userClient.companyGroupId)
-        .eq("tenantId", userClient.tenantId);
-      
-      const clientIds = companyClients?.map(c => c.id) || [];
-      
-      if (clientIds.length > 0) {
-        // Allow access to all orders belonging to any employee of this company
-        query = query.in("clientId", clientIds);
-      } else {
-        // Fallback to single clientId if no company members found
-        query = query.eq("clientId", clientId);
-      }
+    // Resolve company-wide client IDs using shared helper
+    const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+    if (companyClientIds.length > 0) {
+      query = query.in("clientId", companyClientIds);
     } else {
-      // No companyGroupId - fall back to single clientId
       query = query.eq("clientId", clientId);
     }
   }
@@ -220,27 +253,8 @@ export async function fetchOrderById(
   // Post-fetch ownership verification as defense-in-depth
   // For company-group users, verify order belongs to their company
   if (isClientRole(userRole) && clientId) {
-    const { data: userClient } = await supabase
-      .from("Client")
-      .select("companyGroupId")
-      .eq("userId", userId)
-      .single();
-    
-    if (userClient?.companyGroupId) {
-      // Verify the order's client belongs to the same company group
-      const { data: orderClient } = await supabase
-        .from("Client")
-        .select("companyGroupId")
-        .eq("id", data.clientId)
-        .single();
-      
-      if (orderClient?.companyGroupId !== userClient.companyGroupId) {
-        return null;
-      }
-    } else if (data.clientId !== clientId) {
-      // No companyGroupId - strict clientId match required
-      return null;
-    }
+    const isOwner = await verifyCompanyOwnership(data.clientId, userId, clientId);
+    if (!isOwner) return null;
   }
   
   if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
@@ -1045,7 +1059,8 @@ export async function fetchPendingVerificationOrders(
 export async function fetchInvoices(
   tenantId?: string | null,
   clientId?: string | null,
-  role?: Role
+  role?: Role,
+  userId?: string | null
 ): Promise<Invoice[]> {
   let query = supabase
     .from("Invoice")
@@ -1061,7 +1076,13 @@ export async function fetchInvoices(
       // Client users must never see all invoices if clientId is absent
       return [];
     }
-    query = query.eq("clientId", clientId);
+    // Resolve company-wide client IDs using shared helper
+    const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+    if (companyClientIds.length > 0) {
+      query = query.in("clientId", companyClientIds);
+    } else {
+      query = query.eq("clientId", clientId);
+    }
   } else if (clientId) {
     query = query.eq("clientId", clientId);
   }
@@ -1075,7 +1096,8 @@ export async function fetchInvoiceById(
   invoiceId: string,
   tenantId?: string | null,
   clientId?: string | null,
-  userRole?: Role
+  userRole?: Role,
+  userId?: string | null
 ): Promise<Invoice | null> {
   // If client user doesn't have a valid clientId, immediately reject
   if (isClientRole(userRole) && !clientId) {
@@ -1100,8 +1122,14 @@ export async function fetchInvoiceById(
   }
 
   // SECURITY: Client users can ONLY see their own company invoices
+  // Uses company group resolution so Employee B in Company A can see Company A invoices
   if (isClientRole(userRole) && clientId) {
-    query = query.eq("clientId", clientId);
+    const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+    if (companyClientIds.length > 0) {
+      query = query.in("clientId", companyClientIds);
+    } else {
+      query = query.eq("clientId", clientId);
+    }
   }
 
   const { data, error } = await query.maybeSingle();
@@ -1113,8 +1141,9 @@ export async function fetchInvoiceById(
   if (!data) return null;
 
   // Post-fetch ownership verification as defense-in-depth
-  if (isClientRole(userRole) && data.clientId !== clientId) {
-    return null;
+  if (isClientRole(userRole) && clientId) {
+    const isOwner = await verifyCompanyOwnership(data.clientId, userId, clientId);
+    if (!isOwner) return null;
   }
   if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
     return null;
