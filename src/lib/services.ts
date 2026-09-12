@@ -59,8 +59,38 @@ export async function fetchDashboardSummary(
         orderQuery = orderQuery.eq("id", "none");
         invoiceQuery = invoiceQuery.eq("id", "none");
       } else {
-        orderQuery = orderQuery.eq("clientId", clientId);
-        invoiceQuery = invoiceQuery.eq("clientId", clientId);
+        // Resolve company-wide client IDs for order visibility
+        const {  userClient } = await supabase
+          .from("Client")
+          .select("companyGroupId, tenantId")
+          .eq("userId", userId)
+          .single();
+
+        let accessibleClientIds: string[] = [];
+        
+        if (userClient?.companyGroupId) {
+          const {  companyClients } = await supabase
+            .from("Client")
+            .select("id")
+            .eq("companyGroupId", userClient.companyGroupId)
+            .eq("tenantId", userClient.tenantId);
+          
+          accessibleClientIds = companyClients?.map(c => c.id) || [];
+        }
+
+        // Apply company-wide filtering for orders
+        if (accessibleClientIds.length > 0) {
+          orderQuery = orderQuery.in("clientId", accessibleClientIds);
+        } else {
+          orderQuery = orderQuery.eq("clientId", clientId);
+        }
+
+        // Apply company-wide filtering for invoices
+        if (accessibleClientIds.length > 0) {
+          invoiceQuery = invoiceQuery.in("clientId", accessibleClientIds);
+        } else {
+          invoiceQuery = invoiceQuery.eq("clientId", clientId);
+        }
       }
     }
 
@@ -1061,7 +1091,32 @@ export async function fetchInvoices(
       // Client users must never see all invoices if clientId is absent
       return [];
     }
-    query = query.eq("clientId", clientId);
+    
+    // Resolve company-wide client IDs for invoice visibility
+    const {  userClient } = await supabase
+      .from("Client")
+      .select("companyGroupId, tenantId")
+      .eq("userId", userId)
+      .single();
+
+    let accessibleClientIds: string[] = [];
+    
+    if (userClient?.companyGroupId) {
+      const {  companyClients } = await supabase
+        .from("Client")
+        .select("id")
+        .eq("companyGroupId", userClient.companyGroupId)
+        .eq("tenantId", userClient.tenantId);
+      
+      accessibleClientIds = companyClients?.map(c => c.id) || [];
+    }
+
+    // Apply company-wide filtering
+    if (accessibleClientIds.length > 0) {
+      query = query.in("clientId", accessibleClientIds);
+    } else {
+      query = query.eq("clientId", clientId);
+    }
   } else if (clientId) {
     query = query.eq("clientId", clientId);
   }
@@ -1101,7 +1156,31 @@ export async function fetchInvoiceById(
 
   // SECURITY: Client users can ONLY see their own company invoices
   if (isClientRole(userRole) && clientId) {
-    query = query.eq("clientId", clientId);
+    // Resolve company-wide client IDs for invoice access
+    const {  userClient } = await supabase
+      .from("Client")
+      .select("companyGroupId, tenantId")
+      .eq("userId", userId)
+      .single();
+
+    let accessibleClientIds: string[] = [];
+    
+    if (userClient?.companyGroupId) {
+      const {  companyClients } = await supabase
+        .from("Client")
+        .select("id")
+        .eq("companyGroupId", userClient.companyGroupId)
+        .eq("tenantId", userClient.tenantId);
+      
+      accessibleClientIds = companyClients?.map(c => c.id) || [];
+    }
+
+    // Apply company-wide filtering
+    if (accessibleClientIds.length > 0) {
+      query = query.in("clientId", accessibleClientIds);
+    } else {
+      query = query.eq("clientId", clientId);
+    }
   }
 
   const { data, error } = await query.maybeSingle();
@@ -1113,9 +1192,26 @@ export async function fetchInvoiceById(
   if (!data) return null;
 
   // Post-fetch ownership verification as defense-in-depth
-  if (isClientRole(userRole) && data.clientId !== clientId) {
-    return null;
+  if (isClientRole(userRole)) {
+    // Verify invoice belongs to user's company group
+    if (userClient?.companyGroupId) {
+      const invoiceClient = await supabase
+        .from("Client")
+        .select("companyGroupId")
+        .eq("id", data.clientId)
+        .single();
+      
+      if (invoiceClient?.companyGroupId !== userClient.companyGroupId) {
+        return null;
+      }
+    } else {
+      // Fallback: strict clientId match for users without companyGroupId
+      if (data.clientId !== clientId) {
+        return null;
+      }
+    }
   }
+  
   if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
     return null;
   }
