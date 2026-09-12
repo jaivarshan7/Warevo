@@ -81,7 +81,7 @@ export const OrdersPage: React.FC = () => {
     try {
       setLoading(true);
       const [oList, cList, pList] = await Promise.all([
-        fetchOrders(tenant?.id, role, user?.client?.id),
+        fetchOrders(tenant?.id, role, user?.client?.id, user?.id),
         fetchClients(tenant?.id),
         fetchProducts(tenant?.id)
       ]);
