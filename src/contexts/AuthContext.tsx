@@ -21,6 +21,28 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export { AuthProvider };
 
+// Normalizes User objects returned from Supabase where 1-to-1 reverse relations
+// (like client:Client(*)) may be returned as single-element arrays by PostgREST.
+export function normalizeUser(u: any): User {
+  if (!u) return u;
+  const rawClient = u.client;
+  const client = Array.isArray(rawClient)
+    ? (rawClient.length > 0 ? rawClient[0] : null)
+    : (rawClient || null);
+  const rawTenant = u.tenant;
+  const tenant = Array.isArray(rawTenant)
+    ? (rawTenant.length > 0 ? rawTenant[0] : null)
+    : (rawTenant || null);
+
+  return {
+    ...u,
+    client,
+    clientId: client?.id || u.clientId || null,
+    tenant,
+    tenantId: u.tenantId || tenant?.id || null,
+  };
+}
+
 // Refresh users from Supabase - returns the users list
 export async function refreshUsersFromSupabase() {
   try {
@@ -28,7 +50,7 @@ export async function refreshUsersFromSupabase() {
       .from("User")
       .select("*, tenant:Tenant(*), client:Client(*)");
     if (users && users.length > 0) {
-      return users as User[];
+      return (users as any[]).map(normalizeUser);
     }
     return [];
   } catch (err) {
@@ -53,7 +75,7 @@ async function resolveWmsUserByEmail(
   const inMemory = allUsers.find(
     (u) => u.email?.trim().toLowerCase() === normalizedEmail
   );
-  if (inMemory) return inMemory;
+  if (inMemory) return normalizeUser(inMemory);
 
   // Fall back to DB lookup
   try {
@@ -62,7 +84,7 @@ async function resolveWmsUserByEmail(
       .select("*, tenant:Tenant(*), client:Client(*)")
       .ilike("email", normalizedEmail)
       .limit(1);
-    return (data?.[0] as User) || null;
+    return data?.[0] ? normalizeUser(data[0]) : null;
   } catch {
     return null;
   }
@@ -105,7 +127,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           .from("User")
           .select("*, tenant:Tenant(*), client:Client(*)");
 
-        const userList = (users as User[]) || [];
+        const userList = ((users as any[]) || []).map(normalizeUser);
         if (isMounted) {
           setAllUsers(userList);
           allUsersRef.current = userList;
@@ -265,13 +287,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         allUsersRef.current.find((u) => u.id === userId) ||
         allUsers.find((u) => u.id === userId);
       if (selected) {
-        setUser(selected);
-        localStorage.setItem("warehouse_os_user_id", selected.id);
+        const normalizedSelected = normalizeUser(selected);
+        setUser(normalizedSelected);
+        localStorage.setItem("warehouse_os_user_id", normalizedSelected.id);
 
         const matchingTenant =
-          allTenantsRef.current.find((t) => t.id === selected.tenantId) ||
-          allTenants.find((t) => t.id === selected.tenantId) ||
-          (selected.tenant as Tenant) ||
+          allTenantsRef.current.find((t) => t.id === normalizedSelected.tenantId) ||
+          allTenants.find((t) => t.id === normalizedSelected.tenantId) ||
+          (normalizedSelected.tenant as Tenant) ||
           null;
         setTenant(matchingTenant || null);
       }

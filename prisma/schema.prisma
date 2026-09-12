@@ -7,18 +7,594 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Tenant {
+  id                    String                 @id @default(dbgenerated("(gen_random_uuid())::text"))
+  name                  String
+  slug                  String                 @unique
+  gstNumber             String?
+  logoUrl               String?
+  status                TenantStatus           @default(PENDING)
+  address               String?
+  phone                 String?
+  email                 String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @default(now()) @updatedAt
+  auditLogs             AuditLog[]
+  categories            Category[]
+  clients               Client[]
+  companyGroups         CompanyGroup[]
+  deliveryVerifications DeliveryVerification[]
+  documents             Document[]
+  eWayBills             EWayBill[]
+  importedInvoices      ImportedInvoice[]
+  invoices              Invoice[]
+  notifications         Notification[]
+  orders                Order[]
+  payments              Payment[]
+  platformSetting       PlatformSetting?
+  products              Product[]
+  users                 User[]
+  warehouses            Warehouse[]
+  settings              WarehouseSetting?
+}
+
+model CompanyGroup {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId    String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  clients     Client[]
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Warehouse {
+  id        String              @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId  String
+  name      String
+  code      String
+  address   String
+  status    TenantStatus        @default(ACTIVE)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @default(now()) @updatedAt
+  inventory Inventory[]
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  locations WarehouseLocation[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model User {
+  id               String            @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId         String?
+  supabaseUserId   String?           @unique
+  role             Role
+  name             String
+  email            String?           @unique
+  mobile           String?
+  status           UserStatus        @default(ACTIVE)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @default(now()) @updatedAt
+  avatarUrl        String?
+  auditLogs        AuditLog[]
+  client           Client?
+  importedInvoices ImportedInvoice[] @relation("InvoiceImportUploadedBy")
+  notifications    Notification[]
+  assignedOrders   Order[]           @relation("OrderAssignedStaff")
+  createdOrders    Order[]           @relation("OrderCreatedBy")
+  tenant           Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, role])
+}
+
+model Client {
+  id                    String                 @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId              String
+  userId                String?                @unique
+  companyName           String
+  contactPerson         String
+  mobile                String
+  email                 String?
+  gstNumber             String?
+  billingAddress        String
+  shippingAddress       String
+  status                ClientStatus           @default(ACTIVE)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @default(now()) @updatedAt
+  companyGroupId        String?
+  employeeRole          ClientEmployeeRole?
+  companyGroup          CompanyGroup?          @relation(fields: [companyGroupId], references: [id])
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user                  User?                  @relation(fields: [userId], references: [id])
+  deliveryVerifications DeliveryVerification[]
+  importedInvoices      ImportedInvoice[]
+  invoices              Invoice[]
+  orders                Order[]
+
+  @@unique([tenantId, mobile])
+  @@index([tenantId])
+  @@index([companyGroupId])
+}
+
+model Category {
+  id        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId  String
+  name      String
+  createdAt DateTime  @default(now())
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@unique([tenantId, name])
+}
+
+model Product {
+  id            String              @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId      String
+  categoryId    String?
+  sku           String
+  name          String
+  brand         String?
+  description   String?
+  unit          String
+  purchasePrice Decimal             @db.Decimal(12, 2)
+  sellingPrice  Decimal             @db.Decimal(12, 2)
+  gstRate       Decimal             @db.Decimal(5, 2)
+  barcode       String?
+  minimumStock  Int                 @default(0)
+  reorderLevel  Int                 @default(0)
+  status        ProductStatus       @default(ACTIVE)
+  imageUrl      String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @default(now()) @updatedAt
+  inventory     Inventory[]
+  movements     InventoryMovement[]
+  invoiceItems  InvoiceItem[]
+  orderItems    OrderItem[]
+  category      Category?           @relation(fields: [categoryId], references: [id])
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, name])
+}
+
+model WarehouseLocation {
+  id          String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId    String
+  warehouseId String
+  zone        String
+  rack        String?
+  shelf       String?
+  bin         String?
+  active      Boolean     @default(true)
+  inventory   Inventory[]
+  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, warehouseId])
+}
+
+model Inventory {
+  id                String              @id @default(cuid())
+  tenantId          String
+  warehouseId       String
+  locationId        String?
+  productId         String
+  totalQuantity     Int                 @default(0)
+  availableQuantity Int                 @default(0)
+  reservedQuantity  Int                 @default(0)
+  damagedQuantity   Int                 @default(0)
+  updatedAt         DateTime            @updatedAt
+  location          WarehouseLocation?  @relation(fields: [locationId], references: [id])
+  product           Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse         Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  movements         InventoryMovement[]
+
+  @@unique([tenantId, warehouseId, locationId, productId])
+  @@index([tenantId, productId])
+}
+
+model InventoryMovement {
+  id               String                @id @default(cuid())
+  tenantId         String
+  inventoryId      String
+  productId        String
+  orderId          String?
+  type             InventoryMovementType
+  quantity         Int
+  previousQuantity Int
+  newQuantity      Int
+  notes            String?
+  createdById      String?
+  createdAt        DateTime              @default(now())
+  inventory        Inventory             @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  order            Order?                @relation(fields: [orderId], references: [id])
+  product          Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+}
+
+model Order {
+  id                    String                 @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId              String
+  clientId              String
+  orderNumber           String
+  orderDate             DateTime               @default(now())
+  expectedDelivery      DateTime?
+  status                OrderStatus            @default(DRAFT)
+  verificationStatus    VerificationStatus     @default(PENDING)
+  subtotal              Decimal                @db.Decimal(12, 2)
+  taxTotal              Decimal                @db.Decimal(12, 2)
+  discountTotal         Decimal                @db.Decimal(12, 2)
+  totalAmount           Decimal                @db.Decimal(12, 2)
+  notes                 String?
+  createdById           String
+  assignedStaffId       String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @default(now()) @updatedAt
+  deliveryVerifications DeliveryVerification[]
+  documents             Document[]
+  importedInvoices      ImportedInvoice[]
+  movements             InventoryMovement[]
+  invoices              Invoice[]
+  notifications         Notification[]
+  assignedStaff         User?                  @relation("OrderAssignedStaff", fields: [assignedStaffId], references: [id])
+  client                Client                 @relation(fields: [clientId], references: [id])
+  createdBy             User                   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items                 OrderItem[]
+  statusHistory         OrderStatusHistory[]
+  verification          VerificationResponse?
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId, status])
+  @@index([clientId])
+}
+
+model OrderItem {
+  id        String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  orderId   String
+  productId String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(12, 2)
+  taxRate   Decimal @db.Decimal(5, 2)
+  discount  Decimal @default(0) @db.Decimal(12, 2)
+  total     Decimal @db.Decimal(12, 2)
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model OrderStatusHistory {
+  id             String       @id @default(cuid())
+  tenantId       String
+  orderId        String
+  previousStatus OrderStatus?
+  newStatus      OrderStatus
+  changedById    String
+  notes          String?
+  createdAt      DateTime     @default(now())
+  order          Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, orderId, createdAt])
+}
+
+model VerificationChecklist {
+  id       String             @id @default(cuid())
+  tenantId String
+  name     String
+  active   Boolean            @default(true)
+  items    VerificationItem[]
+}
+
+model VerificationItem {
+  id          String                @id @default(cuid())
+  checklistId String
+  text        String
+  required    Boolean               @default(true)
+  active      Boolean               @default(true)
+  sortOrder   Int
+  checklist   VerificationChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+}
+
+model VerificationResponse {
+  id          String             @id @default(cuid())
+  tenantId    String
+  orderId     String             @unique
+  clientId    String
+  userId      String?
+  status      VerificationStatus
+  responses   Json
+  comments    String?
+  attachments Json?
+  createdAt   DateTime           @default(now())
+  order       Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model Invoice {
+  id                    String                 @id @default(cuid())
+  tenantId              String
+  orderId               String
+  clientId              String
+  invoiceNumber         String
+  invoiceDate           DateTime               @default(now())
+  status                InvoiceStatus          @default(DRAFT)
+  paymentStatus         PaymentStatus          @default(UNPAID)
+  subtotal              Decimal                @db.Decimal(12, 2)
+  cgst                  Decimal                @db.Decimal(12, 2)
+  sgst                  Decimal                @db.Decimal(12, 2)
+  igst                  Decimal                @db.Decimal(12, 2)
+  discountTotal         Decimal                @db.Decimal(12, 2)
+  total                 Decimal                @db.Decimal(12, 2)
+  pdfUrl                String?
+  finalizedAt           DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  deliveryVerifications DeliveryVerification[]
+  eWayBills             EWayBill[]
+  importedSources       ImportedInvoice[]
+  client                Client                 @relation(fields: [clientId], references: [id])
+  order                 Order                  @relation(fields: [orderId], references: [id])
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items                 InvoiceItem[]
+  payments              Payment[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, status, paymentStatus])
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoiceId String
+  productId String
+  quantity  Int
+  rate      Decimal @db.Decimal(12, 2)
+  discount  Decimal @default(0) @db.Decimal(12, 2)
+  cgst      Decimal @db.Decimal(12, 2)
+  sgst      Decimal @db.Decimal(12, 2)
+  igst      Decimal @db.Decimal(12, 2)
+  total     Decimal @db.Decimal(12, 2)
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  tenantId  String
+  invoiceId String
+  amount    Decimal       @db.Decimal(12, 2)
+  status    PaymentStatus
+  method    String
+  reference String?
+  paidAt    DateTime?
+  createdAt DateTime      @default(now())
+  proofUrl  String?
+  invoice   Invoice       @relation(fields: [invoiceId], references: [id])
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+}
+
+model Notification {
+  id          String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId    String
+  userId      String?
+  orderId     String?
+  type        NotificationType
+  title       String
+  message     String
+  read        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  actionUrl   String?
+  metadata    Json             @default("{}")
+  priority    String           @default("normal")
+  readAt      DateTime?
+  warehouseId String?
+  order       Order?           @relation(fields: [orderId], references: [id])
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User?            @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, userId, read])
+  @@index([tenantId, warehouseId, read])
+  @@index([tenantId, createdAt])
+}
+
+model Document {
+  id              String           @id @default(cuid())
+  tenantId        String
+  orderId         String?
+  type            DocumentType
+  name            String
+  url             String
+  mimeType        String
+  sizeBytes       Int
+  createdAt       DateTime         @default(now())
+  order           Order?           @relation(fields: [orderId], references: [id])
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  importedInvoice ImportedInvoice?
+
+  @@index([tenantId, type])
+}
+
+model AuditLog {
+  id            String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId      String?
+  userId        String?
+  userRole      Role
+  action        String
+  entity        String
+  entityId      String
+  previousValue Json?
+  newValue      Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id])
+  user          User?    @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([entity, entityId])
+}
+
+model PlatformSetting {
+  id                   String   @id @default(cuid())
+  tenantId             String?  @unique
+  platformName         String   @default("WarehouseOS")
+  platformLogo         String?
+  featureFlags         Json     @default("{}")
+  notificationSettings Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  tenant               Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model WarehouseSetting {
+  id                      String   @id @default(cuid())
+  tenantId                String   @unique
+  orderPrefix             String   @default("ORD")
+  invoicePrefix           String   @default("INV")
+  gstSettings             Json     @default("{}")
+  notificationPreferences Json     @default("{}")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  tenant                  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model ImportedInvoice {
+  id                   String                @id @default(cuid())
+  tenantId             String
+  originalDocumentId   String                @unique
+  invoiceId            String?
+  orderId              String?
+  clientId             String?
+  uploadedById         String
+  importNumber         String
+  status               InvoiceImportStatus   @default(UPLOADED)
+  extractedData        Json                  @default("{}")
+  correctedData        Json                  @default("{}")
+  missingFields        Json                  @default("[]")
+  confidence           Decimal?              @db.Decimal(5, 2)
+  failureReason        String?
+  confirmedAt          DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  deliveryVerification DeliveryVerification?
+  eWayBill             EWayBill?
+  client               Client?               @relation(fields: [clientId], references: [id])
+  invoice              Invoice?              @relation(fields: [invoiceId], references: [id])
+  order                Order?                @relation(fields: [orderId], references: [id])
+  originalDocument     Document              @relation(fields: [originalDocumentId], references: [id])
+  tenant               Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  uploadedBy           User                  @relation("InvoiceImportUploadedBy", fields: [uploadedById], references: [id])
+  items                ImportedInvoiceItem[]
+
+  @@unique([tenantId, importNumber])
+  @@index([tenantId, status, createdAt])
+}
+
+model ImportedInvoiceItem {
+  id                String                     @id @default(cuid())
+  importedInvoiceId String
+  productName       String
+  sku               String?
+  hsnSac            String?
+  quantity          Decimal                    @db.Decimal(12, 3)
+  unit              String?
+  rate              Decimal?                   @db.Decimal(12, 2)
+  discount          Decimal                    @default(0) @db.Decimal(12, 2)
+  taxableValue      Decimal?                   @db.Decimal(12, 2)
+  gstRate           Decimal?                   @db.Decimal(5, 2)
+  cgst              Decimal                    @default(0) @db.Decimal(12, 2)
+  sgst              Decimal                    @default(0) @db.Decimal(12, 2)
+  igst              Decimal                    @default(0) @db.Decimal(12, 2)
+  total             Decimal?                   @db.Decimal(12, 2)
+  requiresReview    Boolean                    @default(false)
+  verificationItems DeliveryVerificationItem[]
+  importedInvoice   ImportedInvoice            @relation(fields: [importedInvoiceId], references: [id], onDelete: Cascade)
+}
+
+model EWayBill {
+  id                String           @id @default(cuid())
+  tenantId          String
+  invoiceId         String?
+  importedInvoiceId String?          @unique
+  ewayBillNumber    String?
+  documentNumber    String
+  documentDate      DateTime
+  supplierGstin     String?
+  recipientGstin    String?
+  dispatchFrom      Json             @default("{}")
+  shipTo            Json             @default("{}")
+  transporterId     String?
+  vehicleNumber     String?
+  transportMode     String?
+  distance          Int?
+  status            EWayBillStatus   @default(DRAFT)
+  missingFields     Json             @default("[]")
+  requestData       Json             @default("{}")
+  responseData      Json             @default("{}")
+  generatedAt       DateTime?
+  expiryDate        DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  importedInvoice   ImportedInvoice? @relation(fields: [importedInvoiceId], references: [id])
+  invoice           Invoice?         @relation(fields: [invoiceId], references: [id])
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status, createdAt])
+}
+
+model DeliveryVerification {
+  id                String                     @id @default(cuid())
+  tenantId          String
+  orderId           String?
+  invoiceId         String?
+  importedInvoiceId String?                    @unique
+  clientId          String
+  status            VerificationStatus         @default(PENDING)
+  confirmationText  String?
+  comments          String?
+  attachments       Json?
+  ipAddress         String?
+  userAgent         String?
+  verifiedAt        DateTime?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  client            Client                     @relation(fields: [clientId], references: [id])
+  importedInvoice   ImportedInvoice?           @relation(fields: [importedInvoiceId], references: [id])
+  invoice           Invoice?                   @relation(fields: [invoiceId], references: [id])
+  order             Order?                     @relation(fields: [orderId], references: [id])
+  tenant            Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items             DeliveryVerificationItem[]
+
+  @@index([tenantId, status, createdAt])
+}
+
+model DeliveryVerificationItem {
+  id                    String                         @id @default(cuid())
+  verificationId        String
+  importedInvoiceItemId String?
+  expectedQuantity      Decimal                        @db.Decimal(12, 3)
+  receivedQuantity      Decimal                        @default(0) @db.Decimal(12, 3)
+  status                DeliveryVerificationItemStatus @default(PENDING)
+  comment               String?
+  attachment            Json?
+  verifiedAt            DateTime?
+  importedInvoiceItem   ImportedInvoiceItem?           @relation(fields: [importedInvoiceItemId], references: [id])
+  verification          DeliveryVerification           @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+}
+
 enum Role {
   PLATFORM_ADMIN
-  MANAGER
-  GM
   WAREHOUSE_OWNER
   WAREHOUSE_MODERATOR
-  ACCOUNTS_TEAM
-  WAREHOUSE_STAFF
-  PRODUCT_RECEIVER
   ACCOUNTANT
+  WAREHOUSE_STAFF
   CLIENT
   CLIENT_ACCOUNTANT
+  ACCOUNTS_TEAM
 }
 
 enum ClientEmployeeRole {
@@ -164,601 +740,4 @@ enum DeliveryVerificationItemStatus {
   DAMAGED
   MISSING
   REJECTED
-}
-
-model Tenant {
-  id              String             @id @default(cuid())
-  name            String
-  slug            String             @unique
-  gstNumber       String?
-  logoUrl         String?
-  status          TenantStatus       @default(PENDING)
-  address         String?
-  phone           String?
-  email           String?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-  users           User[]
-  clients         Client[]
-  warehouses      Warehouse[]
-  categories      Category[]
-  products        Product[]
-  orders          Order[]
-  orderContacts   OrderContact[]
-  invoices        Invoice[]
-  payments        Payment[]
-  notifications   Notification[]
-  auditLogs       AuditLog[]
-  settings        WarehouseSetting?
-  platformSetting PlatformSetting?
-  documents       Document[]
-  importedInvoices ImportedInvoice[]
-  eWayBills       EWayBill[]
-  deliveryVerifications DeliveryVerification[]
-  companyGroups   CompanyGroup[]
-}
-
-model CompanyGroup {
-  id          String    @id @default(cuid())
-  tenantId    String
-  name        String
-  description String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  clients     Client[]
-
-  @@unique([tenantId, name])
-  @@index([tenantId])
-}
-
-model Warehouse {
-  id          String              @id @default(cuid())
-  tenantId    String
-  name        String
-  code        String
-  address     String
-  status      TenantStatus        @default(ACTIVE)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  locations   WarehouseLocation[]
-  inventory   Inventory[]
-
-  @@unique([tenantId, code])
-  @@index([tenantId])
-}
-
-model User {
-  id             String         @id @default(cuid())
-  tenantId       String?
-  supabaseUserId String?        @unique
-  role           Role
-  name           String
-  email          String?        @unique
-  mobile         String?
-  avatarUrl      String?
-  status         UserStatus     @default(ACTIVE)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  tenant         Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  client         Client?
-  createdOrders  Order[]        @relation("OrderCreatedBy")
-  assignedOrders Order[]        @relation("OrderAssignedStaff")
-  notifications  Notification[]
-  auditLogs      AuditLog[]
-  importedInvoices ImportedInvoice[] @relation("InvoiceImportUploadedBy")
-
-  @@index([tenantId, role])
-}
-
-model Client {
-  id             String            @id @default(cuid())
-  tenantId       String
-  userId         String?           @unique
-  companyGroupId String?
-  companyName    String
-  contactPerson  String
-  mobile         String
-  email          String?
-  gstNumber      String?
-  billingAddress String
-  shippingAddress String
-  employeeRole   ClientEmployeeRole?
-  status         ClientStatus      @default(ACTIVE)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  companyGroup   CompanyGroup?     @relation(fields: [companyGroupId], references: [id], onDelete: SetNull)
-  user           User?             @relation(fields: [userId], references: [id])
-  orders         Order[]
-  orderContacts  OrderContact[]
-  invoices       Invoice[]
-  importedInvoices ImportedInvoice[]
-  deliveryVerifications DeliveryVerification[]
-
-  @@unique([tenantId, mobile])
-  @@index([tenantId])
-  @@index([companyGroupId])
-}
-
-model Category {
-  id        String    @id @default(cuid())
-  tenantId  String
-  name      String
-  createdAt DateTime  @default(now())
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  products  Product[]
-
-  @@unique([tenantId, name])
-}
-
-model Product {
-  id               String              @id @default(cuid())
-  tenantId         String
-  categoryId       String?
-  sku              String
-  name             String
-  brand            String?
-  description      String?
-  unit             String
-  purchasePrice    Decimal             @db.Decimal(12, 2)
-  sellingPrice     Decimal             @db.Decimal(12, 2)
-  gstRate          Decimal             @db.Decimal(5, 2)
-  barcode          String?
-  minimumStock     Int                 @default(0)
-  reorderLevel     Int                 @default(0)
-  status           ProductStatus       @default(ACTIVE)
-  imageUrl         String?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  category         Category?           @relation(fields: [categoryId], references: [id])
-  inventory        Inventory[]
-  movements        InventoryMovement[]
-  orderItems       OrderItem[]
-  invoiceItems     InvoiceItem[]
-
-  @@unique([tenantId, sku])
-  @@index([tenantId, name])
-}
-
-model WarehouseLocation {
-  id          String      @id @default(cuid())
-  tenantId    String
-  warehouseId String
-  zone        String
-  rack        String?
-  shelf       String?
-  bin         String?
-  active      Boolean     @default(true)
-  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
-  inventory   Inventory[]
-
-  @@index([tenantId, warehouseId])
-}
-
-model Inventory {
-  id               String              @id @default(cuid())
-  tenantId         String
-  warehouseId      String
-  locationId       String?
-  productId        String
-  totalQuantity    Int                 @default(0)
-  availableQuantity Int                @default(0)
-  reservedQuantity Int                 @default(0)
-  damagedQuantity  Int                 @default(0)
-  updatedAt        DateTime            @updatedAt
-  warehouse        Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
-  location         WarehouseLocation?  @relation(fields: [locationId], references: [id])
-  product          Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
-  movements        InventoryMovement[]
-
-  @@unique([tenantId, warehouseId, locationId, productId])
-  @@index([tenantId, productId])
-}
-
-model InventoryMovement {
-  id               String                @id @default(cuid())
-  tenantId         String
-  inventoryId      String
-  productId        String
-  orderId          String?
-  type             InventoryMovementType
-  quantity         Int
-  previousQuantity Int
-  newQuantity      Int
-  notes            String?
-  createdById      String?
-  createdAt        DateTime              @default(now())
-  inventory        Inventory             @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
-  product          Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
-  order            Order?                @relation(fields: [orderId], references: [id])
-
-  @@index([tenantId, createdAt])
-}
-
-model Order {
-  id                 String                @id @default(cuid())
-  tenantId           String
-  clientId           String
-  orderNumber        String
-  orderDate          DateTime              @default(now())
-  expectedDelivery   DateTime?
-  status             OrderStatus           @default(DRAFT)
-  verificationStatus VerificationStatus     @default(PENDING)
-  subtotal           Decimal               @db.Decimal(12, 2)
-  taxTotal           Decimal               @db.Decimal(12, 2)
-  discountTotal      Decimal               @db.Decimal(12, 2)
-  totalAmount        Decimal               @db.Decimal(12, 2)
-  notes              String?
-  createdById        String
-  assignedStaffId    String?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  client             Client                @relation(fields: [clientId], references: [id])
-  createdBy          User                  @relation("OrderCreatedBy", fields: [createdById], references: [id])
-  assignedStaff      User?                 @relation("OrderAssignedStaff", fields: [assignedStaffId], references: [id])
-  contacts           OrderContact[]
-  items              OrderItem[]
-  statusHistory      OrderStatusHistory[]
-  verification       VerificationResponse?
-  invoices           Invoice[]
-  importedInvoices   ImportedInvoice[]
-  deliveryVerifications DeliveryVerification[]
-  movements          InventoryMovement[]
-  notifications      Notification[]
-  documents          Document[]
-
-  @@unique([tenantId, orderNumber])
-  @@index([tenantId, status])
-  @@index([clientId])
-}
-
-model OrderContact {
-  id        String   @id @default(cuid())
-  tenantId  String
-  orderId   String
-  clientId  String
-  createdAt DateTime @default(now())
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-
-  @@unique([orderId, clientId])
-  @@index([tenantId, orderId])
-  @@index([clientId])
-}
-
-model OrderItem {
-  id        String  @id @default(cuid())
-  orderId   String
-  productId String
-  quantity  Int
-  unitPrice Decimal @db.Decimal(12, 2)
-  taxRate   Decimal @db.Decimal(5, 2)
-  discount  Decimal @default(0) @db.Decimal(12, 2)
-  total     Decimal @db.Decimal(12, 2)
-  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product   Product @relation(fields: [productId], references: [id])
-}
-
-model OrderStatusHistory {
-  id             String      @id @default(cuid())
-  tenantId       String
-  orderId        String
-  previousStatus OrderStatus?
-  newStatus      OrderStatus
-  changedById    String
-  notes          String?
-  createdAt      DateTime    @default(now())
-  order          Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId, orderId, createdAt])
-}
-
-model VerificationChecklist {
-  id        String             @id @default(cuid())
-  tenantId  String
-  name      String
-  active    Boolean            @default(true)
-  items     VerificationItem[]
-}
-
-model VerificationItem {
-  id          String                @id @default(cuid())
-  checklistId String
-  text        String
-  required    Boolean               @default(true)
-  active      Boolean               @default(true)
-  sortOrder   Int
-  checklist   VerificationChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
-}
-
-model VerificationResponse {
-  id          String             @id @default(cuid())
-  tenantId    String
-  orderId     String             @unique
-  clientId    String
-  userId      String?
-  status      VerificationStatus
-  responses   Json
-  comments    String?
-  attachments Json?
-  createdAt   DateTime           @default(now())
-  order       Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
-}
-
-model Invoice {
-  id             String        @id @default(cuid())
-  tenantId       String
-  orderId        String
-  clientId       String
-  invoiceNumber  String
-  invoiceDate    DateTime      @default(now())
-  status         InvoiceStatus @default(DRAFT)
-  paymentStatus  PaymentStatus @default(UNPAID)
-  subtotal       Decimal       @db.Decimal(12, 2)
-  cgst           Decimal       @db.Decimal(12, 2)
-  sgst           Decimal       @db.Decimal(12, 2)
-  igst           Decimal       @db.Decimal(12, 2)
-  discountTotal  Decimal       @db.Decimal(12, 2)
-  total          Decimal       @db.Decimal(12, 2)
-  pdfUrl         String?
-  finalizedAt    DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  order          Order         @relation(fields: [orderId], references: [id])
-  client         Client        @relation(fields: [clientId], references: [id])
-  items          InvoiceItem[]
-  payments       Payment[]
-  importedSources ImportedInvoice[]
-  eWayBills      EWayBill[]
-  deliveryVerifications DeliveryVerification[]
-
-  @@unique([tenantId, invoiceNumber])
-  @@index([tenantId, status, paymentStatus])
-}
-
-model InvoiceItem {
-  id        String  @id @default(cuid())
-  invoiceId String
-  productId String
-  quantity  Int
-  rate      Decimal @db.Decimal(12, 2)
-  discount  Decimal @default(0) @db.Decimal(12, 2)
-  cgst      Decimal @db.Decimal(12, 2)
-  sgst      Decimal @db.Decimal(12, 2)
-  igst      Decimal @db.Decimal(12, 2)
-  total     Decimal @db.Decimal(12, 2)
-  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product   Product @relation(fields: [productId], references: [id])
-}
-
-model Payment {
-  id          String        @id @default(cuid())
-  tenantId    String
-  invoiceId   String
-  amount      Decimal       @db.Decimal(12, 2)
-  status      PaymentStatus
-  method      String
-  reference   String?
-  proofUrl    String?
-  paidAt      DateTime?
-  createdAt   DateTime      @default(now())
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoice     Invoice       @relation(fields: [invoiceId], references: [id])
-
-  @@index([tenantId, status])
-}
-
-model Notification {
-  id          String           @id @default(cuid())
-  tenantId    String
-  userId      String?
-  orderId     String?
-  warehouseId String?
-  type        NotificationType
-  title       String
-  message     String
-  priority    String           @default("normal")
-  actionUrl   String?
-  metadata    Json             @default("{}")
-  read        Boolean          @default(false)
-  readAt      DateTime?
-  createdAt   DateTime         @default(now())
-  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user        User?            @relation(fields: [userId], references: [id])
-  order       Order?           @relation(fields: [orderId], references: [id])
-
-  @@index([tenantId, userId, read])
-  @@index([tenantId, warehouseId, read])
-  @@index([tenantId, createdAt])
-}
-
-model Document {
-  id        String       @id @default(cuid())
-  tenantId  String
-  orderId   String?
-  type      DocumentType
-  name      String
-  url       String
-  mimeType  String
-  sizeBytes Int
-  createdAt DateTime     @default(now())
-  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  order     Order?       @relation(fields: [orderId], references: [id])
-  importedInvoice ImportedInvoice?
-
-  @@index([tenantId, type])
-}
-
-model AuditLog {
-  id            String   @id @default(cuid())
-  tenantId      String?
-  userId        String?
-  userRole      Role
-  action        String
-  entity        String
-  entityId      String
-  previousValue Json?
-  newValue      Json?
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
-  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId, createdAt])
-  @@index([entity, entityId])
-}
-
-model PlatformSetting {
-  id          String   @id @default(cuid())
-  tenantId    String?  @unique
-  platformName String  @default("WarehouseOS")
-  platformLogo String?
-  featureFlags Json    @default("{}")
-  notificationSettings Json @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-}
-
-model WarehouseSetting {
-  id                     String   @id @default(cuid())
-  tenantId               String   @unique
-  orderPrefix            String   @default("ORD")
-  invoicePrefix          String   @default("INV")
-  gstSettings            Json     @default("{}")
-  notificationPreferences Json    @default("{}")
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  tenant                 Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-}
-
-model ImportedInvoice {
-  id                   String              @id @default(cuid())
-  tenantId             String
-  originalDocumentId   String              @unique
-  invoiceId            String?
-  orderId              String?
-  clientId             String?
-  uploadedById         String
-  importNumber         String
-  status               InvoiceImportStatus @default(UPLOADED)
-  extractedData        Json                @default("{}")
-  correctedData        Json                @default("{}")
-  missingFields        Json                @default("[]")
-  confidence           Decimal?            @db.Decimal(5, 2)
-  failureReason        String?
-  confirmedAt          DateTime?
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  originalDocument     Document            @relation(fields: [originalDocumentId], references: [id])
-  invoice              Invoice?            @relation(fields: [invoiceId], references: [id])
-  order                Order?              @relation(fields: [orderId], references: [id])
-  client               Client?             @relation(fields: [clientId], references: [id])
-  uploadedBy           User                @relation("InvoiceImportUploadedBy", fields: [uploadedById], references: [id])
-  items                ImportedInvoiceItem[]
-  eWayBill             EWayBill?
-  deliveryVerification DeliveryVerification?
-
-  @@unique([tenantId, importNumber])
-  @@index([tenantId, status, createdAt])
-}
-
-model ImportedInvoiceItem {
-  id                String          @id @default(cuid())
-  importedInvoiceId String
-  productName       String
-  sku               String?
-  hsnSac            String?
-  quantity          Decimal         @db.Decimal(12, 3)
-  unit              String?
-  rate              Decimal?        @db.Decimal(12, 2)
-  discount          Decimal         @default(0) @db.Decimal(12, 2)
-  taxableValue      Decimal?        @db.Decimal(12, 2)
-  gstRate           Decimal?        @db.Decimal(5, 2)
-  cgst              Decimal         @default(0) @db.Decimal(12, 2)
-  sgst              Decimal         @default(0) @db.Decimal(12, 2)
-  igst              Decimal         @default(0) @db.Decimal(12, 2)
-  total             Decimal?        @db.Decimal(12, 2)
-  requiresReview    Boolean         @default(false)
-  importedInvoice   ImportedInvoice @relation(fields: [importedInvoiceId], references: [id], onDelete: Cascade)
-  verificationItems DeliveryVerificationItem[]
-}
-
-model EWayBill {
-  id                String          @id @default(cuid())
-  tenantId          String
-  invoiceId         String?
-  importedInvoiceId String?         @unique
-  ewayBillNumber    String?
-  documentNumber    String
-  documentDate      DateTime
-  supplierGstin     String?
-  recipientGstin    String?
-  dispatchFrom      Json            @default("{}")
-  shipTo            Json            @default("{}")
-  transporterId     String?
-  vehicleNumber     String?
-  transportMode     String?
-  distance          Int?
-  status            EWayBillStatus  @default(DRAFT)
-  missingFields     Json            @default("[]")
-  requestData       Json            @default("{}")
-  responseData      Json            @default("{}")
-  generatedAt       DateTime?
-  expiryDate        DateTime?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoice           Invoice?        @relation(fields: [invoiceId], references: [id])
-  importedInvoice   ImportedInvoice? @relation(fields: [importedInvoiceId], references: [id])
-
-  @@index([tenantId, status, createdAt])
-}
-
-model DeliveryVerification {
-  id                String             @id @default(cuid())
-  tenantId          String
-  orderId           String?
-  invoiceId         String?
-  importedInvoiceId String?            @unique
-  clientId          String
-  status            VerificationStatus @default(PENDING)
-  confirmationText  String?
-  comments          String?
-  attachments       Json?
-  ipAddress         String?
-  userAgent         String?
-  verifiedAt        DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  order             Order?             @relation(fields: [orderId], references: [id])
-  invoice           Invoice?           @relation(fields: [invoiceId], references: [id])
-  importedInvoice   ImportedInvoice?   @relation(fields: [importedInvoiceId], references: [id])
-  client            Client             @relation(fields: [clientId], references: [id])
-  items             DeliveryVerificationItem[]
-
-  @@index([tenantId, status, createdAt])
-}
-
-model DeliveryVerificationItem {
-  id                   String                         @id @default(cuid())
-  verificationId       String
-  importedInvoiceItemId String?
-  expectedQuantity     Decimal                        @db.Decimal(12, 3)
-  receivedQuantity     Decimal                        @default(0) @db.Decimal(12, 3)
-  status               DeliveryVerificationItemStatus @default(PENDING)
-  comment              String?
-  attachment           Json?
-  verifiedAt           DateTime?
-  verification         DeliveryVerification           @relation(fields: [verificationId], references: [id], onDelete: Cascade)
-  importedInvoiceItem  ImportedInvoiceItem?           @relation(fields: [importedInvoiceItemId], references: [id])
 }

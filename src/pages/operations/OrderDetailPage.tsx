@@ -28,7 +28,7 @@ import {
 
 export const OrderDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { user, role } = useAuth();
+  const { user, role, tenant } = useAuth();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,8 +59,8 @@ export const OrderDetailPage: React.FC = () => {
       // SECURITY: Pass tenantId, clientId, and role to verify client ownership
       const data = await fetchOrderById(
         id,
-        user?.tenant?.id,
-        user?.client?.id,
+        tenant?.id || user?.tenantId,
+        user?.clientId || user?.client?.id,
         role
       );
       setOrder(data);
@@ -135,7 +135,7 @@ export const OrderDetailPage: React.FC = () => {
   }
 
   const canVerify =
-    ["RECEIVED", "VERIFICATION_PENDING", "DISPATCHED"].includes(order.status) &&
+    ["RECEIVED", "VERIFICATION_PENDING"].includes(order.status) &&
     (role === "CLIENT" || role === "PRODUCT_RECEIVER");
 
   const canGenerateInvoice =

@@ -143,7 +143,7 @@ export const InvoiceImportPage: React.FC = () => {
     if (!orderItems.length) { setError("Add at least one invoice line item."); return; }
     setIsSubmitting(true); setError(null);
     try {
-      await createEnhancedOrder({ tenantId: tenant.id, clientId: primaryClient.id, selectedContactIds: selectedContactIds.length ? selectedContactIds : [primaryClient.id], createdById: user.id, status: "DISPATCHED", notes: `${invoiceNumber ? `Imported invoice ${invoiceNumber}. ` : ""}${notes}`, generateInvoice: true, eWayBill: transporterName || vehicleNumber ? { transporterName, vehicleNumber, distanceKm, transportMode: "ROAD" } : undefined, items: orderItems });
+      await createEnhancedOrder({ tenantId: tenant.id, clientId: primaryClient.id, selectedContactIds: selectedContactIds.length ? selectedContactIds : [primaryClient.id], createdById: user.id, status: "DISPATCHED", notes: `${invoiceNumber ? `Imported invoice ${invoiceNumber}. ` : ""}${notes}`, eWayBill: transporterName || vehicleNumber ? { transporterName, vehicleNumber, distanceKm, transportMode: "ROAD" } : undefined, items: orderItems });
       navigate("/operations/orders", { state: { successMsg: `Order created successfully with ${orderItems.length} items.` } });
     } catch (submitError: any) { setError(submitError?.message || "Failed to create order."); } finally { setIsSubmitting(false); }
   };

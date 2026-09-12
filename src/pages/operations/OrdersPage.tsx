@@ -61,7 +61,6 @@ export const OrdersPage: React.FC = () => {
   const [transporterName, setTransporterName] = useState("");
   const [vehicleNumber, setVehicleNumber] = useState("");
   const [distanceKm, setDistanceKm] = useState<number>(0);
-  const [autoGenerateInvoice, setAutoGenerateInvoice] = useState(true);
 
   // Invoice OCR / Import state
   const [invoiceRawText, setInvoiceRawText] = useState("");
@@ -272,10 +271,9 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
       await createEnhancedOrder({
         tenantId: tenant.id,
         clientId: primaryClient.id,
-        selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : [primaryClient.id],
+        selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : null,
         createdById: user.id,
         notes: orderNotes,
-        generateInvoice: autoGenerateInvoice,
         eWayBill: transporterName || vehicleNumber ? {
           transporterName,
           vehicleNumber,
@@ -795,16 +793,6 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
             </div>
 
             {/* Auto Generate Invoice Checkbox */}
-            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pt-1">
-              <input
-                type="checkbox"
-                checked={autoGenerateInvoice}
-                onChange={(e) => setAutoGenerateInvoice(e.target.checked)}
-                className="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
-              />
-              <span>Automatically generate Tax Invoice and email notified contacts upon creation</span>
-            </label>
-
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
                 Order Instructions / Delivery Notes

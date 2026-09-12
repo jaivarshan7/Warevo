@@ -18,6 +18,10 @@ import {
   ClientEmployeeRole
 } from "@/types";
 
+export function isClientRole(role?: Role | null): boolean {
+  return role === "CLIENT" || role === "CLIENT_ACCOUNTANT";
+}
+
 export async function fetchDashboardSummary(
   tenantId?: string | null,
   role?: Role,
@@ -50,9 +54,14 @@ export async function fetchDashboardSummary(
       clientQuery = clientQuery.eq("tenantId", tenantId);
     }
 
-    if (role === "CLIENT" && clientId) {
-      orderQuery = orderQuery.eq("clientId", clientId);
-      invoiceQuery = invoiceQuery.eq("clientId", clientId);
+    if (isClientRole(role)) {
+      if (!clientId) {
+        orderQuery = orderQuery.eq("id", "none");
+        invoiceQuery = invoiceQuery.eq("id", "none");
+      } else {
+        orderQuery = orderQuery.eq("clientId", clientId);
+        invoiceQuery = invoiceQuery.eq("clientId", clientId);
+      }
     }
 
     if (role === "WAREHOUSE_STAFF" && userId) {
@@ -94,7 +103,13 @@ export async function fetchOrders(
   if (role !== "PLATFORM_ADMIN" && tenantId) {
     query = query.eq("tenantId", tenantId);
   }
-  if (role === "CLIENT" && clientId) {
+  if (isClientRole(role)) {
+    if (!clientId) {
+      // Client users must never see all orders if clientId is absent
+      return [];
+    }
+    query = query.eq("clientId", clientId);
+  } else if (clientId) {
     query = query.eq("clientId", clientId);
   }
 
@@ -109,6 +124,11 @@ export async function fetchOrderById(
   clientId?: string | null,
   userRole?: Role
 ): Promise<Order | null> {
+  // If client user doesn't have a valid clientId, immediately reject
+  if (isClientRole(userRole) && !clientId) {
+    return null;
+  }
+
   let query = supabase
     .from("Order")
     .select(`
@@ -128,7 +148,7 @@ export async function fetchOrderById(
 
   // SECURITY: Client users can ONLY see their own company orders
   // This prevents Client A from seeing Client B orders in the same tenant
-  if (userRole === "CLIENT" && clientId) {
+  if (isClientRole(userRole) && clientId) {
     query = query.eq("clientId", clientId);
   }
 
@@ -139,6 +159,14 @@ export async function fetchOrderById(
     return null;
   }
   if (!data) return null;
+
+  // Post-fetch ownership verification as defense-in-depth
+  if (isClientRole(userRole) && data.clientId !== clientId) {
+    return null;
+  }
+  if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
+    return null;
+  }
 
   const [historyResult, verificationResult] = await Promise.all([
     supabase
@@ -258,95 +286,24 @@ export async function createOrder(payload: {
   if (itemErr) throw itemErr;
 
   // 4. Create invoice automatically (new feature)
-  await createInvoiceForOrder(orderId, payload.tenantId, payload.clientId, taxTotal);
+  try {
+    await createInvoiceForOrder(orderId, payload.tenantId, payload.clientId, taxTotal);
+  } catch (err) {
+    console.error(
+      `Invoice creation failed for order ${orderId}:`,
+      err
+    );
+    // Re-throw as a user-friendly error rather than silently ignoring
+    throw new Error(
+      `Order created successfully, but invoice generation failed. Order ID: ${orderId}. Please contact support if this issue persists.`
+    );
+  }
 
   return order;
 }
 
-async function createInvoiceForOrder(orderId: string, tenantId: string, clientId: string, taxTotal: number): Promise<void> {
-  // Check if invoice already exists for this order
-  const existingInvoice = await supabase
-    .from("Invoice")
-    .select("id")
-    .eq("orderId", orderId)
-    .maybeSingle();
-
-  if (existingInvoice.data) {
-    // Invoice already exists, skip creation
-    return;
-  }
-
-  // Get tenant settings for prefix
-  const settings = await fetchTenantSettings(tenantId);
-
-  // Generate invoice number
-  const invoiceNumber = await generateNextInvoiceNumber(tenantId, settings);
-
-  // Get order to calculate invoice totals
-  const orderRes = await supabase
-    .from("Order")
-    .select("subtotal, discountTotal, totalAmount, createdAt")
-    .eq("id", orderId)
-    .maybeSingle();
-
-  if (!orderRes.data) {
-    throw new Error("Order not found for invoice creation");
-  }
-
-  const order = orderRes.data;
-  const invoiceId = `inv_${Math.random().toString(36).substring(2, 11)}`;
-
-  // Calculate CGST/SGST (assuming intra-state GST, split equally)
-  const cgst = taxTotal / 2;
-  const sgst = taxTotal / 2;
-  const igst = 0; // Default to 0, set to taxTotal for inter-state
-
-  // Insert invoice
-  const invoiceDate = new Date().toISOString().split("T")[0];
-  const { error: invoiceErr } = await supabase.from("Invoice").insert({
-    id: invoiceId,
-    tenantId,
-    orderId,
-    clientId,
-    invoiceNumber,
-    invoiceDate,
-    status: "DRAFT",
-    paymentStatus: "UNPAID",
-    subtotal: order.subtotal,
-    cgst,
-    sgst,
-    igst,
-    discountTotal: order.discountTotal,
-    total: order.totalAmount,
-    createdAt: new Date().toISOString()
-  });
-
-  if (invoiceErr) throw invoiceErr;
-
-  // Insert invoice items from order items
-  const orderItemsRes = await supabase
-    .from("OrderItem")
-    .select("*")
-    .eq("orderId", orderId);
-
-  const invoiceItemsToInsert = (orderItemsRes.data || []).map((item, index) => ({
-    id: `ii_${Math.random().toString(36).substring(2, 11)}`,
-    invoiceId,
-    productId: item.productId,
-    quantity: item.quantity,
-    rate: item.unitPrice,
-    discount: item.discount,
-    cgst: (item.total - item.quantity * item.unitPrice) / 2,
-    sgst: (item.total - item.quantity * item.unitPrice) / 2,
-    igst: 0,
-    total: item.total
-  }));
-
-  if (invoiceItemsToInsert.length > 0) {
-    const { error: itemsErr } = await supabase.from("InvoiceItem").insert(invoiceItemsToInsert);
-    if (itemsErr) throw itemsErr;
-  }
-}
+// createInvoiceForOrder function removed - invoice creation now happens
+// atomically within rpc_create_order_with_invoice to ensure transactional integrity
 
 export async function createEnhancedOrder(payload: {
   tenantId: string;
@@ -357,7 +314,6 @@ export async function createEnhancedOrder(payload: {
   expectedDelivery?: string;
   notes?: string;
   status?: OrderStatus;
-  generateInvoice?: boolean;
   eWayBill?: {
     transporterName?: string;
     vehicleNumber?: string;
@@ -372,152 +328,52 @@ export async function createEnhancedOrder(payload: {
     discount?: number;
   }>;
 }) {
-  const latestRes = await supabase
-    .from("Order")
-    .select("orderNumber")
-    .eq("tenantId", payload.tenantId)
-    .order("createdAt", { ascending: false })
-    .limit(1);
+  const initialStatus: OrderStatus = payload.status || "DRAFT";
 
-  const lastNum = latestRes.data?.[0]?.orderNumber
-    ? parseInt(latestRes.data[0].orderNumber.replace(/[^0-9]/g, "").slice(-6), 10) || 0
-    : 0;
-
-  const orderNumber = `ORD-2026-${String(lastNum + 1).padStart(6, "0")}`;
-  const subtotal = payload.items.reduce(
-    (sum, item) => sum + item.quantity * item.unitPrice - (item.discount || 0),
-    0
-  );
-  const taxTotal = payload.items.reduce(
-    (sum, item) => sum + ((item.quantity * item.unitPrice - (item.discount || 0)) * item.taxRate) / 100,
-    0
-  );
-  const discountTotal = payload.items.reduce((sum, item) => sum + (item.discount || 0), 0);
-  const totalAmount = subtotal + taxTotal;
-
-  const orderId = `ord_${Math.random().toString(36).substring(2, 11)}`;
-  const initialStatus: OrderStatus = payload.status || (payload.generateInvoice ? "ISSUED" : "DRAFT");
-
-  // 1. Insert Order
-  const { data: order, error: orderErr } = await supabase
-    .from("Order")
-    .insert({
-      id: orderId,
-      tenantId: payload.tenantId,
-      clientId: payload.clientId,
-      orderNumber,
-      status: initialStatus,
-      verificationStatus: "PENDING",
-      subtotal,
-      taxTotal,
-      discountTotal,
-      totalAmount,
-      notes: payload.notes || null,
-      createdById: payload.createdById,
-      assignedStaffId: payload.assignedStaffId || null,
-      expectedDelivery: payload.expectedDelivery || null
-    })
-    .select()
-    .single();
-
-  if (orderErr) throw orderErr;
-
-  // 2. Insert Order Items
-  const itemsToInsert = payload.items.map((item) => {
-    const itemSub = item.quantity * item.unitPrice - (item.discount || 0);
-    const itemTax = (itemSub * item.taxRate) / 100;
-    return {
-      id: `oi_${Math.random().toString(36).substring(2, 11)}`,
-      orderId,
-      productId: item.productId,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      taxRate: item.taxRate,
-      discount: item.discount || 0,
-      total: itemSub + itemTax
-    };
+  // Use atomic RPC to create order + invoice in a single database transaction
+  // This ensures that either both are created or neither is created
+  const { data, error } = await supabase.rpc("rpc_create_order_with_invoice", {
+    p_tenant_id: payload.tenantId,
+    p_client_id: payload.clientId,
+    p_created_by_id: payload.createdById,
+    p_selected_contact_ids: payload.selectedContactIds || null,
+    p_assigned_staff_id: payload.assignedStaffId || null,
+    p_expected_delivery: payload.expectedDelivery || null,
+    p_notes: payload.notes || null,
+    p_status: initialStatus,
+    p_eway_bill: payload.eWayBill || null,
+    p_items: payload.items
   });
 
-  const { error: itemErr } = await supabase.from("OrderItem").insert(itemsToInsert);
-  if (itemErr) throw itemErr;
-
-  // 3. Status History
-  await supabase.from("OrderStatusHistory").insert({
-    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
-    tenantId: payload.tenantId,
-    orderId,
-    newStatus: initialStatus,
-    changedById: payload.createdById,
-    notes: payload.status === "DISPATCHED" ? "Imported and dispatched" : "Initial order created"
-  });
-
-  // 4. Auto-generate Invoice if requested or if status is DISPATCHED
-  if (payload.generateInvoice) {
-    const invCountRes = await supabase
-      .from("Invoice")
-      .select("invoiceNumber")
-      .eq("tenantId", payload.tenantId)
-      .order("createdAt", { ascending: false })
-      .limit(1);
-
-    const lastInvNum = invCountRes.data?.[0]?.invoiceNumber
-      ? parseInt(invCountRes.data[0].invoiceNumber.replace(/[^0-9]/g, "").slice(-6), 10) || 0
-      : 0;
-
-    const invoiceNumber = `INV-2026-${String(lastInvNum + 1).padStart(6, "0")}`;
-    const invoiceId = `inv_${Math.random().toString(36).substring(2, 11)}`;
-
-    await supabase.from("Invoice").insert({
-      id: invoiceId,
-      tenantId: payload.tenantId,
-      orderId,
-      clientId: payload.clientId,
-      invoiceNumber,
-      invoiceDate: new Date().toISOString().split("T")[0],
-      status: "FINAL",
-      paymentStatus: "UNPAID",
-      subtotal,
-      cgst: taxTotal / 2,
-      sgst: taxTotal / 2,
-      igst: 0,
-      discountTotal,
-      total: totalAmount
-    });
-
-    // Insert invoice items
-    const invItems = itemsToInsert.map((item) => ({
-      id: `ii_${Math.random().toString(36).substring(2, 11)}`,
-      invoiceId,
-      productId: item.productId,
-      quantity: item.quantity,
-      rate: item.unitPrice,
-      discount: item.discount,
-      cgst: (item.total - item.quantity * item.unitPrice) / 2,
-      sgst: (item.total - item.quantity * item.unitPrice) / 2,
-      igst: 0,
-      total: item.total
-    }));
-
-    await supabase.from("InvoiceItem").insert(invItems);
+  if (error) {
+    console.error("Atomic order creation failed:", error);
+    throw new Error(
+      `Failed to create order with invoice: ${error.message}. The operation was rolled back and no records were created.`
+    );
   }
 
-  // 5. Send notifications to selected contacts
-  const contactIds = (payload.selectedContactIds && payload.selectedContactIds.length > 0)
-    ? payload.selectedContactIds
-    : [payload.clientId];
+  if (!data || !data.success) {
+    throw new Error("Order creation failed: RPC returned unsuccessful result");
+  }
 
-  for (const _cId of contactIds) {
-    await supabase.from("Notification").insert({
-      id: `notif_${Math.random().toString(36).substring(2, 10)}`,
+  // Fetch the created order to return in the same format as before
+  const { data: order, error: fetchErr } = await supabase
+    .from("Order")
+    .select("*")
+    .eq("id", data.orderId)
+    .single();
+
+  if (fetchErr) {
+    console.error("Failed to fetch created order:", fetchErr);
+    // Order was created successfully, but we can't fetch it
+    // Return a minimal object with the data from RPC
+    return {
+      id: data.orderId,
+      orderNumber: data.orderNumber,
       tenantId: payload.tenantId,
-      orderId,
-      type: "ORDER_ISSUED",
-      title: `New Order Issued: ${orderNumber}`,
-      message: `Commercial order ${orderNumber} has been issued and assigned for fulfillment.`,
-      priority: "NORMAL",
-      actionUrl: `/operations/orders/${orderId}`,
-      read: false
-    });
+      clientId: payload.clientId,
+      status: initialStatus
+    };
   }
 
   return order;
@@ -1081,8 +937,13 @@ export async function submitClientReceiverVerification(payload: {
 
 export async function fetchPendingVerificationOrders(
   clientId?: string | null,
-  tenantId?: string | null
+  tenantId?: string | null,
+  role?: Role
 ): Promise<Order[]> {
+  if (isClientRole(role) && !clientId) {
+    return [];
+  }
+
   let query = supabase
     .from("Order")
     .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
@@ -1105,15 +966,27 @@ export async function fetchPendingVerificationOrders(
 
 export async function fetchInvoices(
   tenantId?: string | null,
-  clientId?: string | null
+  clientId?: string | null,
+  role?: Role
 ): Promise<Invoice[]> {
   let query = supabase
     .from("Invoice")
     .select("*, client:Client(*), order:Order(*), items:InvoiceItem(*, product:Product(*)), payments:Payment(*)")
     .order("createdAt", { ascending: false });
 
-  if (tenantId) query = query.eq("tenantId", tenantId);
-  if (clientId) query = query.eq("clientId", clientId);
+  if (role !== "PLATFORM_ADMIN" && tenantId) {
+    query = query.eq("tenantId", tenantId);
+  }
+
+  if (isClientRole(role)) {
+    if (!clientId) {
+      // Client users must never see all invoices if clientId is absent
+      return [];
+    }
+    query = query.eq("clientId", clientId);
+  } else if (clientId) {
+    query = query.eq("clientId", clientId);
+  }
 
   const { data, error } = await query;
   if (error) throw error;
@@ -1126,6 +999,11 @@ export async function fetchInvoiceById(
   clientId?: string | null,
   userRole?: Role
 ): Promise<Invoice | null> {
+  // If client user doesn't have a valid clientId, immediately reject
+  if (isClientRole(userRole) && !clientId) {
+    return null;
+  }
+
   let query = supabase
     .from("Invoice")
     .select(`
@@ -1144,16 +1022,26 @@ export async function fetchInvoiceById(
   }
 
   // SECURITY: Client users can ONLY see their own company invoices
-  if (userRole === "CLIENT" && clientId) {
+  if (isClientRole(userRole) && clientId) {
     query = query.eq("clientId", clientId);
   }
 
-  const { data, error } = await query.single();
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     console.error("Error fetching invoice:", error);
     return null;
   }
+  if (!data) return null;
+
+  // Post-fetch ownership verification as defense-in-depth
+  if (isClientRole(userRole) && data.clientId !== clientId) {
+    return null;
+  }
+  if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
+    return null;
+  }
+
   return data as Invoice;
 }
 
@@ -1474,7 +1362,8 @@ export async function recordPartialPaymentWithProof(
 export async function getPaymentProofUrl(
   paymentId: string,
   tenantId: string,
-  clientId: string
+  clientId?: string | null,
+  role?: Role
 ): Promise<string | null> {
   // First find the payment and its invoice
   const { data: payment, error: paymentError } = await supabase
@@ -1503,8 +1392,12 @@ export async function getPaymentProofUrl(
     return null;
   }
 
-  // If role = CLIENT, verify invoice clientId matches
-  if (invoice.clientId && invoice.clientId !== clientId) {
+  // If role is CLIENT, verify invoice clientId matches
+  if (isClientRole(role)) {
+    if (!clientId || invoice.clientId !== clientId) {
+      return null;
+    }
+  } else if (clientId && invoice.clientId !== clientId) {
     return null;
   }
 
@@ -1528,32 +1421,45 @@ export async function getPaymentProofUrl(
 export async function fetchUserNotifications(
   tenantId?: string | null,
   userId?: string | null,
-  clientId?: string | null
+  clientId?: string | null,
+  role?: Role
 ): Promise<Notification[]> {
   let query = supabase
     .from("Notification")
-    .select("*")
+    .select("*, order:Order(id, clientId)")
     .order("createdAt", { ascending: false })
-    .limit(30);
+    .limit(50);
 
   if (tenantId) query = query.eq("tenantId", tenantId);
-  if (userId) query = query.eq("userId", userId);
-  if (clientId) query = query.eq("clientId", clientId);
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data as Notification[]) || [];
+  const allNotifs = (data as any[]) || [];
+
+  if (isClientRole(role)) {
+    if (!clientId) return [];
+    // For CLIENT users: only include notifications addressed to this user or belonging to client's order
+    return allNotifs.filter((n) => {
+      if (n.userId && userId && n.userId === userId) return true;
+      if (n.order && n.order.clientId === clientId) return true;
+      return false;
+    }) as Notification[];
+  }
+
+  return allNotifs as Notification[];
 }
 
 export async function markNotificationRead(
   notificationId: string,
   tenantId: string,
-  clientId: string
+  clientId?: string | null,
+  userId?: string | null,
+  role?: Role
 ) {
   // First verify the notification belongs to the user's tenant and client
   const { data: notif, error: fetchError } = await supabase
     .from("Notification")
-    .select("tenantId, clientId, userId")
+    .select("tenantId, userId, orderId, order:Order(id, clientId)")
     .eq("id", notificationId)
     .single();
 
@@ -1567,16 +1473,13 @@ export async function markNotificationRead(
     return null;
   }
 
-  // For CLIENT users, verify client ownership
-  // If notif.clientId is set, it must match; if null, notification is user-specific
-  if (notif.clientId && notif.clientId !== clientId) {
-    return null;
-  }
-
-  // If notification is user-specific (no clientId), verify userId
-  if (!notif.clientId && notif.userId && notif.userId !== undefined) {
-    // User-specific notification - verify it belongs to the authenticated user
-    // This is handled at the call site by passing user context
+  // For CLIENT users, verify client/user ownership
+  if (isClientRole(role)) {
+    const belongsToClient = notif.order && (notif.order as any).clientId === clientId;
+    const belongsToUser = notif.userId && notif.userId === userId;
+    if (!belongsToClient && !belongsToUser) {
+      return null;
+    }
   }
 
   // Now mark as read if ownership verified
@@ -2725,10 +2628,12 @@ export async function getOrCreateNotificationSettings(tenantId: string) {
  * Sends a client email notification
  * This function respects the notification settings and tenant isolation.
  * In a production environment, this would integrate with an email provider.
+ * If notification.userId is set, email is sent to that specific user;
+ * otherwise, email is sent to the client contact person.
  *
  * @param notification - The notification record containing event details
  * @param tenantId - The tenant ID for security validation
- * @param clientId - The client ID to receive the email
+ * @param clientId - The client ID to receive the email (used as fallback)
  * @returns true if email was queued/sent, false if skipped due to settings
  */
 export async function sendClientEmail(
@@ -2753,29 +2658,55 @@ export async function sendClientEmail(
   }
 
   // Security: Verify client belongs to tenant
-  const { data: client } = await supabase
+  const { data: client, error: clientError } = await supabase
     .from("Client")
-    .select("tenantId")
+    .select("*")
     .eq("id", clientId)
-    .maybeSingle();
+    .single();
 
-  if (!client || client.tenantId !== tenantId) {
+  if (clientError || !client || client.tenantId !== tenantId) {
     console.error(`Security: Client ${clientId} does not belong to tenant ${tenantId}`);
     return false;
   }
 
-  // Build email payload
-  const emailPayload = buildClientEmailPayload(notification, client);
+  // Determine who to send the email to:
+  // If notification.userId is set, send to that specific user's email
+  // Otherwise, send to the client contact person (existing behavior)
+  let emailRecipient: string | null = null;
+
+  if (notification.userId) {
+    // Fetch the specific user's email by userId
+    const { data: user } = await supabase
+      .from("User")
+      .select("email")
+      .eq("id", notification.userId)
+      .single();
+
+    if (user?.email) {
+      emailRecipient = user.email;
+    } else {
+      // Fall back to client contact if user has no email
+      emailRecipient = client.email ?? client.contactPerson;
+    }
+  } else {
+    // No userId selected — send to client contact (existing behavior)
+    emailRecipient = client.email ?? client.contactPerson;
+  }
+
+  // Build email payload - cast client to access email/contactPerson
+  const emailClient = client as { email?: string; contactPerson?: string; tenantId: string };
+  const emailPayload = buildClientEmailPayload(notification, emailClient);
 
   // Simulate email sending (replace with actual email provider integration)
   // In production, you would use a service like SendGrid, Mailgun, etc.
   try {
-    console.log(`[Email Simulation] Sending to ${client.email || client.contactPerson}:`, {
+    console.log(`[Email Simulation] Sending to ${emailRecipient}:`, {
       subject: emailPayload.subject,
-      to: client.email || client.contactPerson,
+      to: emailRecipient,
       event: notification.type,
       tenantId,
-      clientId
+      clientId,
+      sentToUserId: notification.userId || null
     });
 
     // Return true to indicate email would be sent

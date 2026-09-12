@@ -1,0 +1,2 @@
+- [bug-1-verification-workflow](memory/bug-1-verification-workflow.md) — Fix client verification status inconsistency between frontend and backend
+- [bug-2-invoice-generation](memory/bug-2-invoice-generation.md) — Fix silent invoice creation failure in createOrder
