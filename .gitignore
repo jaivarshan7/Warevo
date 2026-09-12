@@ -1,61 +1,53 @@
-```
-# Database migrations
-supabase/migrations/*.sql
-
-# Dependencies
-node_modules/
-.venv/
-venv/
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.egg-info/
+*.o
+*.obj
 dist/
 build/
 target/
-.gradle/
 
-# Environment variables
+# Dependencies
+node_modules/
+venv/
+.venv/
 .env
 .env.local
-.env.*
+*.env.*
 
-# IDE files
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
+<<<<<<< HEAD
 *.tmp
 .claude
+=======
+>>>>>>> e75431e2b4131d8179e2440a7d530f428bedd2d6
 
-# Logs
-*.log
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Coverage reports
+# Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Python specific
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.manifest
-*.spec
+# OS
+.DS_Store
+Thumbs.db
 
-# Build outputs
-*.o
-*.obj
-*.exe
-*.dll
-*.so
-*.a
-*.out
+# MyPy
+.mypy_cache/
+
+# Pytest
+.pytest_cache/
+
+# Gradle
+.gradle/
 
 # Compressed files
 *.zip
@@ -80,4 +72,3 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```

@@ -93,13 +93,14 @@ export async function fetchDashboardSummary(
 export async function fetchOrders(
   tenantId?: string | null,
   role?: Role,
-  clientId?: string | null
+  clientId?: string | null,
+  userId?: string | null
 ): Promise<Order[]> {
   let query = supabase
     .from("Order")
     .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*))")
     .order("createdAt", { ascending: false });
-
+  
   if (role !== "PLATFORM_ADMIN" && tenantId) {
     query = query.eq("tenantId", tenantId);
   }
@@ -108,7 +109,35 @@ export async function fetchOrders(
       // Client users must never see all orders if clientId is absent
       return [];
     }
-    query = query.eq("clientId", clientId);
+    
+    // Resolve companyGroupId to enable company-wide order visibility
+    const { data: userClient } = await supabase
+      .from("Client")
+      .select("companyGroupId, tenantId")
+      .eq("userId", userId)
+      .single();
+    
+    if (userClient?.companyGroupId) {
+      // Find all Client records in the same company group and tenant
+      const { data: companyClients } = await supabase
+        .from("Client")
+        .select("id")
+        .eq("companyGroupId", userClient.companyGroupId)
+        .eq("tenantId", userClient.tenantId);
+      
+      const clientIds = companyClients?.map(c => c.id) || [];
+      
+      if (clientIds.length > 0) {
+        // Allow access to all orders belonging to any employee of this company
+        query = query.in("clientId", clientIds);
+      } else {
+        // Fallback to single clientId if no company members found
+        query = query.eq("clientId", clientId);
+      }
+    } else {
+      // No companyGroupId - fall back to single clientId
+      query = query.eq("clientId", clientId);
+    }
   } else if (clientId) {
     query = query.eq("clientId", clientId);
   }
@@ -122,7 +151,8 @@ export async function fetchOrderById(
   orderId: string,
   tenantId?: string | null,
   clientId?: string | null,
-  userRole?: Role
+  userRole?: Role,
+  userId?: string | null
 ): Promise<Order | null> {
   // If client user doesn't have a valid clientId, immediately reject
   if (isClientRole(userRole) && !clientId) {
@@ -149,7 +179,34 @@ export async function fetchOrderById(
   // SECURITY: Client users can ONLY see their own company orders
   // This prevents Client A from seeing Client B orders in the same tenant
   if (isClientRole(userRole) && clientId) {
-    query = query.eq("clientId", clientId);
+    // Resolve companyGroupId to enable company-wide order visibility
+    const { data: userClient } = await supabase
+      .from("Client")
+      .select("companyGroupId, tenantId")
+      .eq("userId", userId)
+      .single();
+    
+    if (userClient?.companyGroupId) {
+      // Find all Client records in the same company group and tenant
+      const { data: companyClients } = await supabase
+        .from("Client")
+        .select("id")
+        .eq("companyGroupId", userClient.companyGroupId)
+        .eq("tenantId", userClient.tenantId);
+      
+      const clientIds = companyClients?.map(c => c.id) || [];
+      
+      if (clientIds.length > 0) {
+        // Allow access to all orders belonging to any employee of this company
+        query = query.in("clientId", clientIds);
+      } else {
+        // Fallback to single clientId if no company members found
+        query = query.eq("clientId", clientId);
+      }
+    } else {
+      // No companyGroupId - fall back to single clientId
+      query = query.eq("clientId", clientId);
+    }
   }
 
   const { data, error } = await query.maybeSingle();
@@ -161,9 +218,31 @@ export async function fetchOrderById(
   if (!data) return null;
 
   // Post-fetch ownership verification as defense-in-depth
-  if (isClientRole(userRole) && data.clientId !== clientId) {
-    return null;
+  // For company-group users, verify order belongs to their company
+  if (isClientRole(userRole) && clientId) {
+    const { data: userClient } = await supabase
+      .from("Client")
+      .select("companyGroupId")
+      .eq("userId", userId)
+      .single();
+    
+    if (userClient?.companyGroupId) {
+      // Verify the order's client belongs to the same company group
+      const { data: orderClient } = await supabase
+        .from("Client")
+        .select("companyGroupId")
+        .eq("id", data.clientId)
+        .single();
+      
+      if (orderClient?.companyGroupId !== userClient.companyGroupId) {
+        return null;
+      }
+    } else if (data.clientId !== clientId) {
+      // No companyGroupId - strict clientId match required
+      return null;
+    }
   }
+  
   if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && data.tenantId !== tenantId) {
     return null;
   }
@@ -187,7 +266,6 @@ export async function fetchOrderById(
     verification: (verificationResult.data || null) as Order["verification"]
   };
 }
-
 export async function transitionOrderStatus(
   orderId: string,
   nextStatus: OrderStatus,
