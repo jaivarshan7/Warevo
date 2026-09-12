@@ -123,7 +123,8 @@ export const InvoiceDetailPage: React.FC = () => {
 
   const isVerified = invoice.order?.verificationStatus === "VERIFIED";
   const isPartiallyVerified = invoice.order?.verificationStatus === "PARTIALLY_VERIFIED";
-  const canMarkPaid = invoice.paymentStatus !== "PAID" && role !== "CLIENT";
+  // CLIENT and CLIENT_ACCOUNTANT roles can mark invoices as paid by uploading proof
+  const canMarkPaid = invoice.paymentStatus !== "PAID" && (role === "CLIENT" || role === "CLIENT_ACCOUNTANT");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 pb-16">
