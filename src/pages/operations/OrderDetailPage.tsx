@@ -61,7 +61,8 @@ export const OrderDetailPage: React.FC = () => {
         id,
         tenant?.id || user?.tenantId,
         user?.clientId || user?.client?.id,
-        role
+        role,
+        user?.id
       );
       setOrder(data);
     } catch (err: any) {
