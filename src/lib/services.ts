@@ -2080,6 +2080,56 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
     isNewlyCreatedUser = true;
   }
 
+  // Resolve or create CompanyGroup for automatic assignment
+  let resolvedCompanyGroupId: string | null = null;
+  
+  if (payload.companyGroupId) {
+    // Validate explicit companyGroupId
+    const { data: existingGroup } = await supabase
+      .from("CompanyGroup")
+      .select("id, tenantId")
+      .eq("id", payload.companyGroupId)
+      .eq("tenantId", payload.tenantId)
+      .single();
+    
+    if (!existingGroup) {
+      throw new Error("Invalid CompanyGroup ID or tenant mismatch.");
+    }
+    resolvedCompanyGroupId = existingGroup.id;
+  } else {
+    // Auto-resolve by tenantId + companyName
+    const normalizedCompanyName = payload.companyName.trim();
+    
+    // Try to find existing CompanyGroup
+    const { data: existingGroup } = await supabase
+      .from("CompanyGroup")
+      .select("id")
+      .eq("tenantId", payload.tenantId)
+      .eq("name", normalizedCompanyName)
+      .single();
+    
+    if (existingGroup?.id) {
+      resolvedCompanyGroupId = existingGroup.id;
+    } else {
+      // Create new CompanyGroup
+      const groupId = `cg_${crypto.randomUUID().replace(/-/g, '').substring(0, 16)}`;
+      const { data: createdGroup, error: groupError } = await supabase
+        .from("CompanyGroup")
+        .insert({
+          id: groupId,
+          tenantId: payload.tenantId,
+          name: normalizedCompanyName
+        })
+        .select("id")
+        .single();
+      
+      if (groupError || !createdGroup?.id) {
+        throw new Error(`Failed to create CompanyGroup: ${groupError?.message || 'Unknown error'}`);
+      }
+      resolvedCompanyGroupId = createdGroup.id;
+    }
+  }
+
   // Create Client record linked to targetUserId
   const { data: clientRecord, error: clientError } = await supabase
     .from("Client")
@@ -2092,7 +2142,7 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
         billingAddress: payload.billingAddress?.trim() || payload.shippingAddress?.trim() || "Main Office",
         shippingAddress: payload.shippingAddress?.trim() || payload.billingAddress?.trim() || "Main Office",
         tenantId: payload.tenantId,
-        companyGroupId: payload.companyGroupId || null,
+        companyGroupId: resolvedCompanyGroupId,
         employeeRole: payload.employeeRole,
         userId: targetUserId,
         status: "ACTIVE"
