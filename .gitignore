@@ -4,6 +4,8 @@
 __pycache__/
 *.o
 *.obj
+*.o
+*.obj
 dist/
 build/
 target/
@@ -30,7 +32,7 @@ htmlcov/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Editors
 .vscode/
@@ -65,4 +67,3 @@ Thumbs.db
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```
