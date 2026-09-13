@@ -1242,7 +1242,7 @@ export async function uploadPaymentProofFile(
   const fileExt = file.name.split(".").pop();
   const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
   const safeFileName = `${uniqueId}.${fileExt}`;
-  const storagePath = `payment-proofs/${tenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
+  const storagePath = `${tenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
 
   const { error } = await supabase.storage
     .from("payment-proofs")
