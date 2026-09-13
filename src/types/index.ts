@@ -11,6 +11,15 @@ export type Role =
   | "CLIENT"
   | "CLIENT_ACCOUNTANT";
 
+export const ALLOWED_EMPLOYEE_ROLES: Role[] = [
+  "WAREHOUSE_STAFF",
+  "ACCOUNTS_TEAM",
+  "ACCOUNTANT",
+  "WAREHOUSE_MODERATOR",
+];
+
+export type EmployeeRole = (typeof ALLOWED_EMPLOYEE_ROLES)[number];
+
 export type ClientEmployeeRole =
   | "RECEIVER"
   | "STORE"

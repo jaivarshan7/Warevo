@@ -4,9 +4,10 @@ import {
   fetchEmployees,
   createEmployee,
   updateEmployee,
+  updateEmployeeSecure,
   createAuditLogRecord
 } from "@/lib/services";
-import { User, Role, UserStatus } from "@/types";
+import { User, Role, UserStatus, ALLOWED_EMPLOYEE_ROLES } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -46,16 +47,9 @@ const ROLE_LABELS: Record<string, string> = {
   WAREHOUSE_STAFF: "Warehouse Staff",
   PRODUCT_RECEIVER: "Product Receiver",
   ACCOUNTS_TEAM: "Accounts Team",
-  ACCOUNTANT: "Accountant"
+  ACCOUNTANT: "Accountant",
+  WAREHOUSE_MODERATOR: "Warehouse Moderator"
 };
-
-// Allowed roles for warehouse employees (excluding admin/owner roles)
-const ALLOWED_EMPLOYEE_ROLES: Role[] = [
-  "WAREHOUSE_STAFF",
-  "PRODUCT_RECEIVER",
-  "ACCOUNTS_TEAM",
-  "ACCOUNTANT"
-];
 
 export const EmployeesPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
@@ -90,7 +84,12 @@ export const EmployeesPage: React.FC = () => {
     }
     try {
       setLoading(true);
+      console.log(`[EmployeesPage] Loading employees for tenant: ${tenant.id}`);
       const list = await fetchEmployees(tenant.id);
+      console.log(
+        `[EmployeesPage] Supabase returned ${list.length} rows:`,
+        list.map((u) => ({ id: u.id, name: u.name, role: u.role }))
+      );
       setEmployees(list);
     } catch (err) {
       console.error("Error loading employees:", err);
@@ -105,6 +104,8 @@ export const EmployeesPage: React.FC = () => {
 
   // Filter employees
   const filteredEmployees = employees.filter((emp) => {
+    // Secondary defensive filter: ensure only allowed warehouse employee roles are rendered
+    if (!ALLOWED_EMPLOYEE_ROLES.includes(emp.role)) return false;
     const term = searchTerm.toLowerCase();
     return (
       emp.name.toLowerCase().includes(term) ||
@@ -183,6 +184,11 @@ export const EmployeesPage: React.FC = () => {
       // Don't allow editing self through this modal
       return;
     }
+    // Defensive guard: prevent opening edit modal for non-employee roles
+    if (!ALLOWED_EMPLOYEE_ROLES.includes(employee.role as Role)) {
+      console.warn("Attempted to edit non-employee user via EmployeesPage:", employee.role);
+      return;
+    }
     setEditingEmployee(employee);
     setEditFullName(employee.name || "");
     setEditEmail(employee.email || "");
@@ -207,13 +213,13 @@ export const EmployeesPage: React.FC = () => {
     setFormError(null);
 
     try {
-      const updates: Partial<{
-        name: string;
-        email: string;
-        mobile: string;
-        role: string;
-        status: string;
-      }> = {};
+      const updates: {
+        name?: string;
+        email?: string;
+        mobile?: string;
+        role?: Role;
+        status?: UserStatus;
+      } = {};
 
       if (editFullName.trim() !== (editingEmployee.name || "")) {
         updates.name = editFullName.trim();
@@ -235,25 +241,22 @@ export const EmployeesPage: React.FC = () => {
       const hasChanges = Object.keys(updates).length > 0;
 
       if (hasChanges) {
-        const updated = await updateEmployee(editingEmployee.id, updates);
-
-        // Create audit log
-        try {
-          await createAuditLogRecord({
-            tenantId: tenant.id,
-            userId: user?.id,
-            userRole: role,
-            action: "Updated employee",
-            entity: "User",
-            entityId: editingEmployee.id,
-            previousValue: editingEmployee,
-            newValue: updated
-          });
-        } catch (auditErr) {
-          console.error("Failed to create audit log:", auditErr);
+        if (!user?.id || !role) {
+          throw new Error("User session information is missing. Please refresh.");
         }
 
-        setSuccessMsg(`${updated.name} updated successfully!`);
+        await updateEmployeeSecure({
+          actorId: user.id,
+          actorRole: role,
+          targetId: editingEmployee.id,
+          name: updates.name,
+          email: updates.email,
+          mobile: updates.mobile,
+          role: updates.role,
+          status: updates.status
+        });
+
+        setSuccessMsg(`${updates.name || editingEmployee.name} updated successfully!`);
       } else {
         setSuccessMsg("No changes to save.");
       }
@@ -281,22 +284,15 @@ export const EmployeesPage: React.FC = () => {
     setFormError(null);
 
     try {
-      await updateEmployee(employee.id, { status: newStatus });
-
-      // Create audit log
-      try {
-        await createAuditLogRecord({
-          tenantId: tenant.id,
-          userId: user?.id,
-          userRole: role,
-          action: newStatus === "ACTIVE" ? "Activated employee" : "Deactivated employee",
-          entity: "User",
-          entityId: employee.id,
-          previousValue: { status: employee.status },
-          newValue: { status: newStatus }
+      if (user?.id && role) {
+        await updateEmployeeSecure({
+          actorId: user.id,
+          actorRole: role,
+          targetId: employee.id,
+          status: newStatus as UserStatus
         });
-      } catch (auditErr) {
-        console.error("Failed to create audit log:", auditErr);
+      } else {
+        await updateEmployee(employee.id, { status: newStatus });
       }
 
       setSuccessMsg(`${employee.name} ${newStatus === "ACTIVE" ? "activated" : "deactivated"} successfully!`);

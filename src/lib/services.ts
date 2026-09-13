@@ -15,7 +15,8 @@ import {
   User,
   UserStatus,
   TenantSettings,
-  ClientEmployeeRole
+  ClientEmployeeRole,
+  ALLOWED_EMPLOYEE_ROLES
 } from "@/types";
 
 export function isClientRole(role?: Role | null): boolean {
@@ -2169,7 +2170,22 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
   if (existingTenantUsers && existingTenantUsers.length > 0) {
     const existingUser = existingTenantUsers[0];
     targetUserId = existingUser.id;
-    // If the existing user is not ACTIVE or has a different role, ensure active CLIENT role
+
+    // Guard against downgrading employees or warehouse/platform admin roles to CLIENT
+    const protectedRoles: Role[] = [
+      ...ALLOWED_EMPLOYEE_ROLES,
+      "WAREHOUSE_OWNER",
+      "MANAGER",
+      "GM",
+      "PLATFORM_ADMIN"
+    ];
+    if (protectedRoles.includes(existingUser.role)) {
+      throw new Error(
+        `Cannot convert employee '${existingUser.name}' (${existingUser.role}) to a CLIENT. Please use a separate account for client access.`
+      );
+    }
+
+    // If the existing user is not ACTIVE or has a different role (e.g. CLIENT_ACCOUNTANT), ensure active CLIENT role
     if (existingUser.role !== "CLIENT" || existingUser.status !== "ACTIVE") {
       await supabase.from("User").update({ role: "CLIENT", status: "ACTIVE" }).eq("id", targetUserId);
     }
@@ -2494,18 +2510,43 @@ export async function deleteAdminCompanyGroup(id: string) {
 // ======================== EMPLOYEES ========================
 
 export async function fetchEmployees(tenantId?: string | null) {
-  let query = supabase
+  if (!tenantId) return [];
+
+  const { data, error } = await supabase
     .from("User")
     .select("*, tenant:Tenant(*)")
+    .eq("tenantId", tenantId)
+    .in("role", ALLOWED_EMPLOYEE_ROLES)
     .order("createdAt", { ascending: false });
 
-  if (tenantId) {
-    query = query.eq("tenantId", tenantId);
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
   return (data as User[]) || [];
+}
+
+export async function updateEmployeeSecure(params: {
+  actorId: string;
+  actorRole: Role;
+  targetId: string;
+  name?: string;
+  email?: string;
+  mobile?: string;
+  role?: Role;
+  status?: UserStatus;
+}): Promise<{ success: boolean; targetId: string; previousRole: string; newRole: string }> {
+  const { data, error } = await supabase.rpc("rpc_update_employee", {
+    p_actor_id: params.actorId,
+    p_actor_role: params.actorRole,
+    p_target_id: params.targetId,
+    p_name: params.name ?? null,
+    p_email: params.email ?? null,
+    p_mobile: params.mobile ?? null,
+    p_new_role: params.role ?? null,
+    p_new_status: params.status ?? null
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error("Employee update failed");
+  return data;
 }
 
 export async function createEmployee(payload: {
