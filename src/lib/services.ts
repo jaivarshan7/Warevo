@@ -1244,6 +1244,26 @@ export async function uploadPaymentProofFile(
   const safeFileName = `${uniqueId}.${fileExt}`;
   const storagePath = `${tenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
 
+  // PAYMENT PROOF RLS DIAGNOSTIC - log values before upload attempt
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const dbUser = await supabase
+    .from("User")
+    .select("supabaseUserId, tenantId")
+    .eq("supabaseUserId", user?.id ?? "")
+    .single();
+
+  console.group("PAYMENT PROOF RLS DIAGNOSTIC");
+  console.log("1. authenticated user ID:", user?.id);
+  console.log("2. tenantId:", tenantId);
+  console.log("3. storagePath:", storagePath);
+  console.log("4. storagePath.split('/')[0]:", storagePath.split('/')[0]);
+  console.log("5. dbUser record:", dbUser);
+  console.log("   comparisons:");
+  console.log("   - user.id === dbUser.supabaseUserId:", user?.id === dbUser.supabaseUserId);
+  console.log("   - tenantId === dbUser.tenantId:", tenantId === dbUser.tenantId);
+  console.log("   - storagePath.split('/')[0] === dbUser.tenantId:", storagePath.split('/')[0] === dbUser.tenantId);
+  console.groupEnd();
+
   const { error } = await supabase.storage
     .from("payment-proofs")
     .upload(storagePath, file, {
@@ -1252,7 +1272,13 @@ export async function uploadPaymentProofFile(
     });
 
   if (error) {
-    console.error("Payment proof storage upload error:", error);
+    console.error("PAYMENT PROOF RLS UPLOAD FAILURE:");
+    console.error("  error.message:", error.message);
+    console.error("  error.status:", error.status);
+    console.error("  error.name:", error.name);
+    console.error("  error.details:", error.details);
+    console.error("  error.cause:", error.cause ?? "not available");
+    console.groupEnd();
     throw new Error(`Failed to upload payment proof: ${error.message}`);
   }
 
