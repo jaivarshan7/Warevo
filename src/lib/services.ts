@@ -1256,9 +1256,57 @@ export async function uploadPaymentProofFile(
     throw new Error(`Failed to upload payment proof: ${error.message}`);
   }
 
-  // Get public URL for the uploaded file
-  const { data: publicUrlData } = supabase.storage.from("payment-proofs").getPublicUrl(storagePath);
-  return publicUrlData.publicUrl;
+  // Return the relative storage path for private storage
+  return storagePath;
+}
+
+/**
+ * Uploads a payment proof file to Supabase Storage with invoiceId, paymentId, file
+ *
+ * @param invoiceId - The invoice ID
+ * @param paymentId - The payment ID
+ * @param file - The payment proof file
+ * @param tenantId - Optional tenant ID (looked up from invoice if omitted)
+ * @returns The relative storage path of the uploaded file
+ */
+export async function uploadPaymentProof(
+  invoiceId: string,
+  paymentId: string,
+  file: File,
+  tenantId?: string
+): Promise<string> {
+  let tid = tenantId;
+  if (!tid) {
+    const { data: inv } = await supabase
+      .from("Invoice")
+      .select("tenantId")
+      .eq("id", invoiceId)
+      .single();
+    tid = inv?.tenantId || "";
+  }
+  return uploadPaymentProofFile(file, tid, invoiceId, paymentId);
+}
+
+/**
+ * Attaches a payment proof storage path to an existing payment record
+ * Strictly scoped to tenant and invoice for security.
+ */
+export async function attachPaymentProof(
+  paymentId: string,
+  invoiceId: string,
+  tenantId: string,
+  proofUrl: string
+): Promise<void> {
+  const { error } = await supabase
+    .from("Payment")
+    .update({ proofUrl })
+    .eq("id", paymentId)
+    .eq("invoiceId", invoiceId)
+    .eq("tenantId", tenantId);
+
+  if (error) {
+    throw new Error(`Failed to attach payment proof: ${error.message}`);
+  }
 }
 
 export async function markInvoiceAsPaid(
@@ -1495,32 +1543,50 @@ export async function getPaymentProofUrl(
   }
 
   // Verify invoice tenant matches
-  if (invoice.tenantId !== tenantId) {
+  if (tenantId && invoice.tenantId !== tenantId) {
     return null;
   }
 
-  // If role is CLIENT, verify invoice clientId matches
+  // If role is CLIENT, verify invoice clientId matches with company-group support
   if (isClientRole(role)) {
-    if (!clientId || invoice.clientId !== clientId) {
-      return null;
+    if (!clientId) return null;
+    if (invoice.clientId !== clientId) {
+      const isOwner = await verifyCompanyOwnership(invoice.clientId, undefined, clientId);
+      if (!isOwner) return null;
     }
-  } else if (clientId && invoice.clientId !== clientId) {
+  } else if (role !== "PLATFORM_ADMIN" && clientId && invoice.clientId !== clientId) {
     return null;
   }
 
   // Extract storage path from proofUrl
-  // proofUrl is like: https://rglumbheyypdanfpmuef.supabase.co/storage/v1/object/public/payment-proofs/...
-  const storagePath = payment.proofUrl.replace(
-    "https://rglumbheyypdanfpmuef.supabase.co/storage/v1/object/public/",
-    ""
-  );
+  let storagePath = payment.proofUrl;
+  if (storagePath.includes("/object/public/payment-proofs/")) {
+    storagePath = storagePath.substring(
+      storagePath.indexOf("/object/public/payment-proofs/") + "/object/public/payment-proofs/".length
+    );
+  } else if (storagePath.includes("/object/public/")) {
+    storagePath = storagePath.substring(
+      storagePath.indexOf("/object/public/") + "/object/public/".length
+    );
+  }
 
   // Generate a signed URL for secure access
-  const { data: signedUrlData } = await supabase.storage
+  const { data: signedUrlData, error: signedError } = await supabase.storage
     .from("payment-proofs")
     .createSignedUrl(storagePath, 60 * 60); // 1 hour expiry
 
-  return signedUrlData?.signedUrl || payment.proofUrl;
+  if (signedError || !signedUrlData?.signedUrl) {
+    // Fallback if path did or did not include payment-proofs/ prefix
+    const altPath = storagePath.startsWith("payment-proofs/")
+      ? storagePath.replace("payment-proofs/", "")
+      : `payment-proofs/${storagePath}`;
+    const { data: altData } = await supabase.storage
+      .from("payment-proofs")
+      .createSignedUrl(altPath, 60 * 60);
+    return altData?.signedUrl || null;
+  }
+
+  return signedUrlData.signedUrl;
 }
 
 // ======================== NOTIFICATIONS ========================

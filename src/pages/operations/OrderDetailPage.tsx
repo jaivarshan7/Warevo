@@ -5,7 +5,8 @@ import {
   fetchOrderById,
   transitionOrderStatus,
   submitOrderVerification,
-  generateInvoiceRecord
+  generateInvoiceRecord,
+  isClientRole
 } from "@/lib/services";
 import { Order, OrderStatus, VerificationStatus } from "@/types";
 import { Card } from "@/components/ui/Card";
@@ -48,6 +49,9 @@ export const OrderDetailPage: React.FC = () => {
   ]);
   const [isVerifying, setIsVerifying] = useState(false);
 
+  // Warehouse Transition
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
   // Invoice Generation
   const [isGeneratingInvoice, setIsGeneratingInvoice] = useState(false);
   const [invoiceMessage, setInvoiceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -76,9 +80,37 @@ export const OrderDetailPage: React.FC = () => {
     loadOrder();
   }, [id]);
 
+  const allChecklistChecked = checklist.every((item) => item.checked);
+
   const handleVerificationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!order) return;
+
+    if (role === "CLIENT" && user?.client?.employeeRole !== "RECEIVER") {
+      setInvoiceMessage({
+        type: "error",
+        text: "Only client receivers can verify deliveries."
+      });
+      return;
+    }
+
+    if (order.status !== "RECEIVED" && order.status !== "VERIFICATION_PENDING") {
+      setInvoiceMessage({
+        type: "error",
+        text: "Order must be received by the warehouse before delivery verification."
+      });
+      setIsVerifyOpen(false);
+      return;
+    }
+
+    if (!allChecklistChecked) {
+      setInvoiceMessage({
+        type: "error",
+        text: "All inspection checklist items must be checked before submission."
+      });
+      return;
+    }
+
     setIsVerifying(true);
     setInvoiceMessage(null);
 
@@ -95,9 +127,77 @@ export const OrderDetailPage: React.FC = () => {
       setInvoiceMessage({ type: "success", text: "Verification successfully submitted!" });
       await loadOrder();
     } catch (err: any) {
-      setInvoiceMessage({ type: "error", text: err?.message || "Verification submission failed" });
+      const errMsg = err?.message || "";
+      if (
+        errMsg.includes("not ready for client verification") ||
+        errMsg.includes("RECEIVED") ||
+        errMsg.includes("DISPATCHED")
+      ) {
+        setInvoiceMessage({
+          type: "error",
+          text: "Order must be received by the warehouse before delivery verification."
+        });
+      } else {
+        setInvoiceMessage({ type: "error", text: errMsg || "Verification submission failed" });
+      }
     } finally {
       setIsVerifying(false);
+    }
+  };
+
+  const handleMarkReceived = async () => {
+    if (!order) return;
+    setIsTransitioning(true);
+    setInvoiceMessage(null);
+
+    try {
+      await transitionOrderStatus(
+        order.id,
+        "RECEIVED",
+        "Order marked as received by warehouse",
+        user?.id,
+        role
+      );
+      setInvoiceMessage({
+        type: "success",
+        text: `Order ${order.orderNumber} successfully marked as RECEIVED.`
+      });
+      await loadOrder();
+    } catch (err: any) {
+      setInvoiceMessage({
+        type: "error",
+        text: err?.message || "Failed to mark order as received."
+      });
+    } finally {
+      setIsTransitioning(false);
+    }
+  };
+
+  const handleAdvanceToVerificationPending = async () => {
+    if (!order) return;
+    setIsTransitioning(true);
+    setInvoiceMessage(null);
+
+    try {
+      await transitionOrderStatus(
+        order.id,
+        "VERIFICATION_PENDING",
+        "Warehouse advanced order to verification pending",
+        user?.id,
+        role
+      );
+      setInvoiceMessage({
+        type: "success",
+        text: `Order ${order.orderNumber} advanced to VERIFICATION_PENDING.`
+      });
+      await loadOrder();
+    } catch (err: any) {
+      setInvoiceMessage({
+        type: "error",
+        text: err?.message || "Failed to advance order to verification pending."
+      });
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
@@ -135,9 +235,31 @@ export const OrderDetailPage: React.FC = () => {
     );
   }
 
+  // Only CLIENT role with employeeRole === "RECEIVER" can perform delivery verification
+  const isClientReceiver =
+    role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
+
+  const isTenantAuthorized =
+    Boolean(order) && (!tenant?.id || order.tenantId === tenant.id);
+
+  // Verification is allowed ONLY when:
+  // - authenticated WMS role = CLIENT
+  // - client.employeeRole = RECEIVER
+  // - order status = RECEIVED OR VERIFICATION_PENDING
+  // - order belongs to the authenticated user's authorized tenant/company
   const canVerify =
-    ["RECEIVED", "VERIFICATION_PENDING"].includes(order.status) &&
-    (role === "CLIENT" || role === "PRODUCT_RECEIVER");
+    Boolean(order) &&
+    isClientReceiver &&
+    Boolean(user?.client?.id) &&
+    isTenantAuthorized &&
+    (order.status === "RECEIVED" || order.status === "VERIFICATION_PENDING");
+
+  // Warehouse roles that manage order fulfillment and receipt
+  const isWarehouseUser =
+    Boolean(role) &&
+    !isClientRole(role) &&
+    role !== "ACCOUNTANT" &&
+    role !== "ACCOUNTS_TEAM";
 
   const canGenerateInvoice =
     ["WAREHOUSE_OWNER", "ACCOUNTANT", "ACCOUNTS_TEAM", "PLATFORM_ADMIN"].includes(role);
@@ -199,6 +321,30 @@ export const OrderDetailPage: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
+            {isWarehouseUser && order.status === "DISPATCHED" && (
+              <Button
+                variant="primary"
+                onClick={handleMarkReceived}
+                isLoading={isTransitioning}
+                className="bg-indigo-600 hover:bg-indigo-500 shadow-indigo-950"
+              >
+                <CheckCircle2 className="w-4 h-4 mr-1.5" />
+                Mark as Received
+              </Button>
+            )}
+
+            {isWarehouseUser && order.status === "RECEIVED" && (
+              <Button
+                variant="outline"
+                onClick={handleAdvanceToVerificationPending}
+                isLoading={isTransitioning}
+                className="border-indigo-700 text-indigo-300 hover:bg-indigo-950"
+              >
+                <CheckCircle2 className="w-4 h-4 mr-1.5" />
+                Mark as Ready for Verification
+              </Button>
+            )}
+
             {canVerify && (
               <Button
                 variant="primary"
@@ -206,7 +352,7 @@ export const OrderDetailPage: React.FC = () => {
                 className="bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950"
               >
                 <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                Submit Verification
+                Verify Delivery Order
               </Button>
             )}
 
@@ -444,11 +590,17 @@ export const OrderDetailPage: React.FC = () => {
               />
             </div>
 
+            {!allChecklistChecked && (
+              <p className="text-[11px] text-amber-400">
+                All checklist items must be checked before submitting verification.
+              </p>
+            )}
+
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setIsVerifyOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" isLoading={isVerifying}>
+              <Button type="submit" isLoading={isVerifying} disabled={!allChecklistChecked}>
                 Confirm & Record Verification
               </Button>
             </div>

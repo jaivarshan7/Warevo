@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchInvoiceById, recordPaymentWithProof } from "@/lib/services";
+import { fetchInvoiceById, recordPaymentWithProof, getPaymentProofUrl } from "@/lib/services";
 import { Invoice } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -104,6 +104,25 @@ export const InvoiceDetailPage: React.FC = () => {
     }
   };
 
+  const handleViewProof = async (paymentId: string) => {
+    try {
+      const signedUrl = await getPaymentProofUrl(
+        paymentId,
+        tenant?.id || invoice?.tenantId || "",
+        user?.client?.id,
+        role
+      );
+      if (signedUrl) {
+        window.open(signedUrl, "_blank", "noopener,noreferrer");
+      } else {
+        setActionError("Unable to access payment proof. Signed URL could not be generated.");
+      }
+    } catch (err) {
+      console.error("Error opening proof:", err);
+      setActionError("Failed to open payment proof.");
+    }
+  };
+
   if (loading) {
     return <LoadingSpinner message="Retrieving commercial tax invoice..." />;
   }
@@ -192,13 +211,17 @@ export const InvoiceDetailPage: React.FC = () => {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/jpeg,image/png,application/pdf"
+                  accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
                       // Validate file type
                       const validTypes = ["image/jpeg", "image/png", "application/pdf"];
-                      if (!validTypes.includes(file.type)) {
+                      const validExts = [".jpg", ".jpeg", ".png", ".pdf"];
+                      const hasValidExt = validExts.some((ext) =>
+                        file.name.toLowerCase().endsWith(ext)
+                      );
+                      if (!validTypes.includes(file.type) && !hasValidExt) {
                         setActionError("Please upload a JPG, PNG, or PDF payment proof.");
                         setProofFile(null);
                         if (fileInputRef.current) fileInputRef.current.value = "";
@@ -274,14 +297,13 @@ export const InvoiceDetailPage: React.FC = () => {
                 <span className="text-xs text-emerald-400 font-medium truncate max-w-[200px]">
                   {invoice.payments[0].proofUrl.split("/").pop() || "payment-proof"}
                 </span>
-                <a
-                  href={invoice.payments[0].proofUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1"
+                <button
+                  type="button"
+                  onClick={() => handleViewProof(invoice.payments![0].id)}
+                  className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1 cursor-pointer"
                 >
                   View <ExternalLink className="w-3.5 h-3.5" />
-                </a>
+                </button>
               </div>
             )}
           </div>

@@ -1,7 +1,14 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchInvoices, recordInvoicePayment } from "@/lib/services";
+import {
+  fetchInvoices,
+  recordInvoicePayment,
+  uploadPaymentProof,
+  attachPaymentProof,
+  getPaymentProofUrl
+} from "@/lib/services";
+import { supabase } from "@/lib/supabase";
 import { Invoice, Payment } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -35,7 +42,8 @@ export const AccountingPage: React.FC = () => {
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<string>("NEFT / RTGS");
   const [paymentRef, setPaymentRef] = useState<string>("");
-  const [proofUrl, setProofUrl] = useState<string>("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -60,24 +68,90 @@ export const AccountingPage: React.FC = () => {
     setSearchParams({ tab: tabId });
   };
 
+  const handleViewProof = async (paymentId: string) => {
+    try {
+      const signedUrl = await getPaymentProofUrl(
+        paymentId,
+        tenant?.id || "",
+        user?.client?.id,
+        role
+      );
+      if (signedUrl) {
+        window.open(signedUrl, "_blank", "noopener,noreferrer");
+      } else {
+        setPaymentError("Unable to access payment proof. Signed URL could not be generated.");
+      }
+    } catch (err) {
+      console.error("Error opening proof:", err);
+      setPaymentError("Failed to open payment proof.");
+    }
+  };
+
   const handleRecordPaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedInvoice) return;
+    if (!selectedInvoice || isSubmittingPayment) return;
     setIsSubmittingPayment(true);
     setPaymentError(null);
     setSuccessMsg(null);
 
+    const invoiceId = selectedInvoice.id;
+    const tenantId = selectedInvoice.tenantId || tenant?.id || "";
+
     try {
-      await recordInvoicePayment(
-        selectedInvoice.id,
+      // 1. Record payment using existing service/RPC
+      const res = await recordInvoicePayment(
+        invoiceId,
         paymentAmount,
         paymentMethod,
-        paymentRef,
-        proofUrl || undefined,
+        paymentRef || undefined,
+        undefined, // proofUrl will be set after upload if file selected
         user?.id,
         role
       );
+
+      const paymentId = res?.paymentId;
+
+      // 2. If a proof file was selected, upload and attach it
+      if (selectedFile && paymentId && tenantId) {
+        let storagePath = "";
+        try {
+          storagePath = await uploadPaymentProof(
+            invoiceId,
+            paymentId,
+            selectedFile,
+            tenantId
+          );
+        } catch (uploadErr: any) {
+          console.error("Proof upload error:", uploadErr);
+          setPaymentError(
+            `Payment recorded, but proof upload failed: ${uploadErr?.message || "Upload error"}`
+          );
+          await loadData();
+          setIsSubmittingPayment(false);
+          return;
+        }
+
+        // 3. Attach proofUrl to Payment record with tenant/invoice scoping
+        try {
+          await attachPaymentProof(paymentId, invoiceId, tenantId, storagePath);
+        } catch (attachErr: any) {
+          console.error("Proof attach error:", attachErr);
+          // Clean up the uploaded storage file so orphaned file does not linger
+          try {
+            await supabase.storage.from("payment-proofs").remove([storagePath]);
+          } catch (cleanupErr) {
+            console.warn("Failed to clean up storage file after attach failure:", cleanupErr);
+          }
+          setPaymentError("Payment was recorded, but the payment proof could not be attached.");
+          await loadData();
+          setIsSubmittingPayment(false);
+          return;
+        }
+      }
+
       setIsPaymentOpen(false);
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       setSuccessMsg(
         `Payment of ₹${paymentAmount.toLocaleString("en-IN")} recorded for ${selectedInvoice.invoiceNumber}!`
       );
@@ -351,14 +425,13 @@ export const AccountingPage: React.FC = () => {
                       </td>
                       <td className="py-3.5 px-4 text-xs">
                         {p.proofUrl ? (
-                          <a
-                            href={p.proofUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                          <button
+                            type="button"
+                            onClick={() => handleViewProof(p.id)}
+                            className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer underline text-xs"
                           >
                             View Receipt <ExternalLink className="w-3 h-3" />
-                          </a>
+                          </button>
                         ) : (
                           <span className="text-slate-500">—</span>
                         )}
@@ -480,22 +553,66 @@ export const AccountingPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Payment Proof / Receipt URL (Optional)
+                Payment Proof / Receipt
               </label>
+              <p className="text-[11px] text-slate-400 mb-1.5">
+                Optional — JPG, PNG or PDF, max 10 MB
+              </p>
               <input
-                type="url"
-                value={proofUrl}
-                onChange={(e) => setProofUrl(e.target.value)}
-                placeholder="https://... receipt image or document"
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+                ref={fileInputRef}
+                type="file"
+                accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const validTypes = ["image/jpeg", "image/png", "application/pdf"];
+                    const validExts = [".jpg", ".jpeg", ".png", ".pdf"];
+                    const hasValidExt = validExts.some((ext) =>
+                      file.name.toLowerCase().endsWith(ext)
+                    );
+                    if (!validTypes.includes(file.type) && !hasValidExt) {
+                      setPaymentError("Please select a JPG, PNG, or PDF file.");
+                      setSelectedFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                      return;
+                    }
+                    if (file.size > 10 * 1024 * 1024) {
+                      setPaymentError("File size exceeds 10 MB limit.");
+                      setSelectedFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                      return;
+                    }
+                    setPaymentError(null);
+                    setSelectedFile(file);
+                  } else {
+                    setSelectedFile(null);
+                  }
+                }}
+                disabled={isSubmittingPayment}
+                className="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-700 file:text-white hover:file:bg-slate-600 cursor-pointer"
               />
+              {selectedFile && (
+                <div className="mt-2 flex items-center justify-between p-2 rounded-lg bg-slate-800/80 border border-slate-700 text-xs text-emerald-400">
+                  <span className="truncate max-w-[280px]">Selected: {selectedFile.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                    className="text-slate-400 hover:text-rose-400 text-xs ml-2 cursor-pointer"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setIsPaymentOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" isLoading={isSubmittingPayment}>
+              <Button type="submit" isLoading={isSubmittingPayment} disabled={isSubmittingPayment}>
                 Confirm Payment
               </Button>
             </div>
