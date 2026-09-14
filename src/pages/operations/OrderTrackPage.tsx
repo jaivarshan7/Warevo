@@ -30,7 +30,6 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   ISSUED: "Order Issued",
   PROCESSING: "Processing",
   DISPATCHED: "Dispatched",
-  RECEIVED: "Received",
   VERIFIED: "Verified",
   INVOICED: "Invoiced"
 };
@@ -374,17 +373,27 @@ export const OrderTrackPage: React.FC = () => {
                 <div className="py-3">
                   <div className="relative flex items-center justify-between">
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-slate-800 z-0" />
-                    {["ISSUED", "PROCESSING", "DISPATCHED", "RECEIVED", "VERIFIED"].map((step, idx) => {
+                    {["ISSUED", "DISPATCHED", "VERIFICATION", "VERIFIED"].map((step, idx) => {
                       const stepMap: Record<string, number> = {
                         ISSUED: 1,
-                        PROCESSING: 2,
-                        DISPATCHED: 3,
-                        RECEIVED: 4,
-                        VERIFIED: 5
+                        DISPATCHED: 2,
+                        VERIFICATION: 3,
+                        VERIFIED: 4
                       };
-                      const currentIdx = stepMap[activeOrder.status] || 1;
-                      const isCompleted = currentIdx >= idx + 1;
-                      const isCurrent = currentIdx === idx + 1;
+                      // Map order status to timeline position
+                      const statusToStep: Record<string, number> = {
+                        ISSUED: 1,
+                        PROCESSING: 1,
+                        READY_FOR_DISPATCH: 1,
+                        DISPATCHED: 2,
+                        RECEIVED: 2,
+                        VERIFICATION_PENDING: 3,
+                        VERIFIED: 4
+                      };
+                      const currentIdx = statusToStep[activeOrder.status] || 1;
+                      const stepIdx = stepMap[step] || 1;
+                      const isCompleted = currentIdx >= stepIdx;
+                      const isCurrent = currentIdx === stepIdx;
 
                       return (
                         <div key={step} className="relative z-10 flex flex-col items-center">

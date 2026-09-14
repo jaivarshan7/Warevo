@@ -174,7 +174,7 @@ export const DashboardPage: React.FC = () => {
   // Specialized view for Product Receiver / Client Receiver
   if (role === "PRODUCT_RECEIVER" || (role === "CLIENT" && user?.client?.employeeRole === "RECEIVER")) {
     const readyForVerification = data.orders.filter((o) =>
-      ["DISPATCHED", "RECEIVED", "VERIFICATION_PENDING"].includes(o.status)
+      o.status === "DISPATCHED"
     );
 
     return (

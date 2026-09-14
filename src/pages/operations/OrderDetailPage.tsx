@@ -5,7 +5,6 @@ import {
   fetchOrderById,
   transitionOrderStatus,
   submitOrderVerification,
-  generateInvoiceRecord,
   isClientRole
 } from "@/lib/services";
 import { Order, OrderStatus, VerificationStatus } from "@/types";
@@ -24,7 +23,8 @@ import {
   AlertTriangle,
   FileText,
   Clock,
-  Send
+  Send,
+  Truck
 } from "lucide-react";
 
 export const OrderDetailPage: React.FC = () => {
@@ -52,8 +52,7 @@ export const OrderDetailPage: React.FC = () => {
   // Warehouse Transition
   const [isTransitioning, setIsTransitioning] = useState(false);
 
-  // Invoice Generation
-  const [isGeneratingInvoice, setIsGeneratingInvoice] = useState(false);
+  // Messages
   const [invoiceMessage, setInvoiceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const loadOrder = async () => {
@@ -94,10 +93,10 @@ export const OrderDetailPage: React.FC = () => {
       return;
     }
 
-    if (order.status !== "RECEIVED" && order.status !== "VERIFICATION_PENDING") {
+    if (order.status !== "DISPATCHED") {
       setInvoiceMessage({
         type: "error",
-        text: "Order must be received by the warehouse before delivery verification."
+        text: "Order must be dispatched before delivery verification."
       });
       setIsVerifyOpen(false);
       return;
@@ -130,12 +129,12 @@ export const OrderDetailPage: React.FC = () => {
       const errMsg = err?.message || "";
       if (
         errMsg.includes("not ready for client verification") ||
-        errMsg.includes("RECEIVED") ||
-        errMsg.includes("DISPATCHED")
+        errMsg.includes("DISPATCHED") ||
+        errMsg.includes("ISSUED")
       ) {
         setInvoiceMessage({
           type: "error",
-          text: "Order must be received by the warehouse before delivery verification."
+          text: "Order must be dispatched before delivery verification."
         });
       } else {
         setInvoiceMessage({ type: "error", text: errMsg || "Verification submission failed" });
@@ -145,7 +144,7 @@ export const OrderDetailPage: React.FC = () => {
     }
   };
 
-  const handleMarkReceived = async () => {
+  const handleDispatchOrder = async () => {
     if (!order) return;
     setIsTransitioning(true);
     setInvoiceMessage(null);
@@ -153,73 +152,23 @@ export const OrderDetailPage: React.FC = () => {
     try {
       await transitionOrderStatus(
         order.id,
-        "RECEIVED",
-        "Order marked as received by warehouse",
+        "DISPATCHED",
+        "Order dispatched for delivery",
         user?.id,
         role
       );
       setInvoiceMessage({
         type: "success",
-        text: `Order ${order.orderNumber} successfully marked as RECEIVED.`
+        text: `Order ${order.orderNumber} successfully dispatched.`
       });
       await loadOrder();
     } catch (err: any) {
       setInvoiceMessage({
         type: "error",
-        text: err?.message || "Failed to mark order as received."
+        text: err?.message || "Failed to dispatch order."
       });
     } finally {
       setIsTransitioning(false);
-    }
-  };
-
-  const handleAdvanceToVerificationPending = async () => {
-    if (!order) return;
-    setIsTransitioning(true);
-    setInvoiceMessage(null);
-
-    try {
-      await transitionOrderStatus(
-        order.id,
-        "VERIFICATION_PENDING",
-        "Warehouse advanced order to verification pending",
-        user?.id,
-        role
-      );
-      setInvoiceMessage({
-        type: "success",
-        text: `Order ${order.orderNumber} advanced to VERIFICATION_PENDING.`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to advance order to verification pending."
-      });
-    } finally {
-      setIsTransitioning(false);
-    }
-  };
-
-  const handleGenerateInvoice = async (isFinal: boolean) => {
-    if (!order) return;
-    setIsGeneratingInvoice(true);
-    setInvoiceMessage(null);
-
-    try {
-      const res = await generateInvoiceRecord(order.id, isFinal, user?.id, role);
-      setInvoiceMessage({
-        type: "success",
-        text: `Successfully generated ${isFinal ? "Final" : "Draft"} Invoice ${res.invoiceNumber}!`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to generate invoice."
-      });
-    } finally {
-      setIsGeneratingInvoice(false);
     }
   };
 
@@ -245,14 +194,14 @@ export const OrderDetailPage: React.FC = () => {
   // Verification is allowed ONLY when:
   // - authenticated WMS role = CLIENT
   // - client.employeeRole = RECEIVER
-  // - order status = RECEIVED OR VERIFICATION_PENDING
+  // - order status = DISPATCHED
   // - order belongs to the authenticated user's authorized tenant/company
   const canVerify =
     Boolean(order) &&
     isClientReceiver &&
     Boolean(user?.client?.id) &&
     isTenantAuthorized &&
-    (order.status === "RECEIVED" || order.status === "VERIFICATION_PENDING");
+    order.status === "DISPATCHED";
 
   // Warehouse roles that manage order fulfillment and receipt
   const isWarehouseUser =
@@ -321,27 +270,15 @@ export const OrderDetailPage: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
-            {isWarehouseUser && order.status === "DISPATCHED" && (
+            {isWarehouseUser && order.status === "ISSUED" && (
               <Button
                 variant="primary"
-                onClick={handleMarkReceived}
+                onClick={handleDispatchOrder}
                 isLoading={isTransitioning}
                 className="bg-indigo-600 hover:bg-indigo-500 shadow-indigo-950"
               >
-                <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                Mark as Received
-              </Button>
-            )}
-
-            {isWarehouseUser && order.status === "RECEIVED" && (
-              <Button
-                variant="outline"
-                onClick={handleAdvanceToVerificationPending}
-                isLoading={isTransitioning}
-                className="border-indigo-700 text-indigo-300 hover:bg-indigo-950"
-              >
-                <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                Mark as Ready for Verification
+                <Truck className="w-4 h-4 mr-1.5" />
+                Dispatch Order
               </Button>
             )}
 
@@ -354,30 +291,6 @@ export const OrderDetailPage: React.FC = () => {
                 <CheckCircle2 className="w-4 h-4 mr-1.5" />
                 Verify Delivery Order
               </Button>
-            )}
-
-            {canGenerateInvoice && order.status !== "INVOICED" && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => handleGenerateInvoice(false)}
-                  isLoading={isGeneratingInvoice}
-                >
-                  <FileText className="w-4 h-4 mr-1.5" /> Draft Invoice
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => handleGenerateInvoice(true)}
-                  isLoading={isGeneratingInvoice}
-                  title={
-                    order.verificationStatus !== "VERIFIED"
-                      ? "Final invoice requires VERIFIED delivery status"
-                      : undefined
-                  }
-                >
-                  <Send className="w-4 h-4 mr-1.5" /> Final Invoice
-                </Button>
-              </div>
             )}
           </div>
         </div>
