@@ -614,7 +614,7 @@ BEGIN
                     p_tenant_id,
                     v_user_id,
                     v_order_id,
-                    'ORDER_CREATED',
+                    'NEW_ORDER',
                     'New Order Created',
                     concat('Order ', v_order_number, ' has been created with final invoice.'),
                     concat('/operations/orders/', v_order_id),
