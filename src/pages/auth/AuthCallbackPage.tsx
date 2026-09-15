@@ -53,22 +53,22 @@ export const AuthCallbackPage: React.FC = () => {
           return;
         }
 
-        // 2. Resolve the authenticated email (source of truth from Supabase Auth)
-        const googleEmail = authUser.email?.trim().toLowerCase();
+        // 2. Resolve the authenticated user ID (source of truth from Supabase Auth)
+        const authUserId = authUser.id;
 
-        if (!googleEmail) {
+        if (!authUserId) {
           await supabase.auth.signOut();
-          setErrorMessage("Could not determine your Google account email.");
-          setErrorDetail("Please ensure your Google account has a verified email address.");
+          setErrorMessage("Could not determine your authenticated user ID.");
+          setErrorDetail("Authentication failed to provide a valid user ID.");
           setStatus("error");
           return;
         }
 
-        // 3. Look up the WMS User by email (case-insensitive)
+        // 3. Look up the WMS User by supabaseUserId
         const { data: wmsUsers, error: usersError } = await supabase
           .from("User")
           .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), client:Client(*)")
-          .ilike("email", googleEmail)
+          .eq("supabaseUserId", authUserId)
           .limit(1);
 
         if (cancelled) return;
@@ -90,11 +90,11 @@ export const AuthCallbackPage: React.FC = () => {
 
         // 4a. No matching WMS user
         if (!wmsUser) {
-          console.warn("[AuthCallback] No WMS user found for email:", googleEmail);
+          console.warn("[AuthCallback] No WMS user found for supabaseUserId:", authUserId);
           await supabase.auth.signOut();
-          setErrorMessage("No WMS account is associated with this Google account.");
+          setErrorMessage("No WMS account is associated with this authenticated account.");
           setErrorDetail(
-            `The Google account (${authUser.email}) is not registered in this WMS. ` +
+            `The authenticated account (${authUser.email}) is not registered in this WMS. ` +
             "Please contact your administrator."
           );
           setStatus("error");
