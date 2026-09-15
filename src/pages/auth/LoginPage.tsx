@@ -8,12 +8,10 @@ import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { config } from "@/lib/config";
 
 export const LoginPage: React.FC = () => {
-  const { user, isLoading: authLoading, allUsers, switchUser, signInWithEmail, signInWithGoogle } = useAuth();
+  const { user, isLoading: authLoading, allUsers, switchUser, signInWithEmailAndPassword, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
-  const [identifier, setIdentifier] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [googleRedirecting, setGoogleRedirecting] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   // If already authenticated, go straight to dashboard
   React.useEffect(() => {
@@ -26,7 +24,7 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
-    const res = await signInWithEmail(identifier);
+    const res = await signInWithEmailAndPassword(email, password);
     setIsLoading(false);
     if (res.error) {
       setError(res.error.message);
@@ -97,20 +95,34 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Email or Mobile Number
+                Email Address
               </label>
               <input
-                type="text"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="owner-apex@example.test or +91 98765 43210"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 required
               />
             </div>
 
             <Button type="submit" className="w-full" isLoading={isLoading}>
-              Sign In
+              Sign In with Email
             </Button>
           </form>
 
