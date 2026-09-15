@@ -1,0 +1,37 @@
+[33mcommit 96a8bc145364f9458e723cd8334f8f0bb8273d4c[m
+Author: Jaivarshan B <ts305715@gmail.com>
+Date:   Mon Sep 14 20:25:49 2026 +0530
+
+    feat: Update order workflow to transition from ISSUED to DISPATCHED and implement client verification process
+    
+    - Change default order status from DRAFT to ISSUED in createOrder and createEnhancedOrder functions.
+    - Modify submitClientReceiverVerification to enforce verification on DISPATCHED orders only, ensuring all checklist items are checked.
+    - Remove RECEIVED and VERIFICATION_PENDING statuses from the workflow, streamlining the order status transitions.
+    - Update OrderDetailPage and DashboardPage to reflect new status checks and actions for dispatching orders.
+    - Implement new RPC functions for secure order status transitions and verification submissions.
+    - Create migration script to establish new order workflow and update database schema accordingly.
+
+D	lib/audit-log.ts
+D	lib/auth.ts
+D	lib/invoice-parser.ts
+D	lib/notifications-server.ts
+D	lib/notifications.ts
+D	lib/order-contacts.ts
+D	lib/order-workflow.ts
+D	lib/pdf-text-extractor.ts
+D	lib/prisma.ts
+D	lib/rbac.ts
+D	lib/reporting.ts
+D	lib/services.ts
+D	lib/storage.ts
+D	lib/supabase-browser.ts
+D	lib/supabase.ts
+D	lib/utils.ts
+D	lib/validation.ts
+M	src/lib/orderWorkflow.ts
+M	src/lib/services.ts
+M	src/pages/dashboard/DashboardPage.tsx
+M	src/pages/operations/OrderDetailPage.tsx
+M	src/pages/operations/OrderTrackPage.tsx
+M	src/pages/operations/OrdersPage.tsx
+A	supabase/migrations/20260919_000000_target_order_workflow_verification.sql
