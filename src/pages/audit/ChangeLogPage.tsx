@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchAuditLogs } from "@/lib/services";
+import { formatAuditLogEntry } from "@/lib/auditFormatter";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { Activity, Search, Filter, RefreshCw, User, Calendar, Shield } from "lucide-react";
+import { Activity, Search, Filter, RefreshCw, User, Calendar, Shield, FileText, DollarSign, Package, Tag } from "lucide-react";
 
 export const ChangeLogPage: React.FC = () => {
   const { tenant, role } = useAuth();
