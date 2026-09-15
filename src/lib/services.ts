@@ -1162,31 +1162,61 @@ export async function uploadPaymentProofFile(
   // Validate file first
   validatePaymentProofFile(file);
 
+  // Get the authenticated user and their authoritative tenantId from the User table
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  
+  if (authError || !authData?.user) {
+    throw new Error("Authentication required. Please log in to upload payment proofs.");
+  }
+  
+  const authUserId = authData.user.id;
+  
+  // Fetch the authoritative tenantId from the User table
+  // This is the source of truth for tenant isolation in Storage RLS
+  const { data: dbUser, error: userError } = await supabase
+    .from("User")
+    .select("supabaseUserId, tenantId")
+    .eq("supabaseUserId", authUserId)
+    .single();
+
+  if (userError || !dbUser?.tenantId) {
+    console.error("Failed to fetch user tenant context:", userError);
+    throw new Error("User tenant context not found. Please contact support.");
+  }
+
+  // Use the authoritative tenantId from User table for storage path
+  // This ensures the storage path matches what the RLS policy expects
+  const authoritativeTenantId = dbUser.tenantId;
+
   // Generate unique storage path with tenant isolation
   const fileExt = file.name.split(".").pop();
   const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
   const safeFileName = `${uniqueId}.${fileExt}`;
-  const storagePath = `${tenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
+  const storagePath = `${authoritativeTenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
 
   // PAYMENT PROOF RLS DIAGNOSTIC - log values before upload attempt
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  const dbUser = await supabase
-    .from("User")
-    .select("supabaseUserId, tenantId")
-    .eq("supabaseUserId", user?.id ?? "")
-    .single();
-
   console.group("PAYMENT PROOF RLS DIAGNOSTIC");
-  console.log("1. authenticated user ID:", user?.id);
-  console.log("2. tenantId:", tenantId);
-  console.log("3. storagePath:", storagePath);
-  console.log("4. storagePath.split('/')[0]:", storagePath.split('/')[0]);
-  console.log("5. dbUser record:", dbUser);
+  console.log("1. authenticated user ID:", authUserId);
+  console.log("2. tenantId (from caller):", tenantId);
+  console.log("3. authoritative tenantId (from User table):", authoritativeTenantId);
+  console.log("4. storagePath:", storagePath);
+  console.log("5. storagePath.split('/')[0]:", storagePath.split('/')[0]);
+  console.log("6. dbUser record:", dbUser);
   console.log("   comparisons:");
-  console.log("   - user.id === dbUser.supabaseUserId:", user?.id === dbUser.supabaseUserId);
-  console.log("   - tenantId === dbUser.tenantId:", tenantId === dbUser.tenantId);
+  console.log("   - authUserId === dbUser.supabaseUserId:", authUserId === dbUser.supabaseUserId);
+  console.log("   - caller tenantId === authoritative tenantId:", tenantId === authoritativeTenantId);
+  console.log("   - storagePath.split('/')[0] === authoritativeTenantId:", storagePath.split('/')[0] === authoritativeTenantId);
   console.log("   - storagePath.split('/')[0] === dbUser.tenantId:", storagePath.split('/')[0] === dbUser.tenantId);
   console.groupEnd();
+
+  // Verify tenant consistency - if the invoice's tenantId differs from user's tenantId,
+  // this indicates a potential security issue or data inconsistency
+  if (tenantId !== authoritativeTenantId) {
+    console.warn(
+      `Tenant mismatch detected: invoice tenantId (${tenantId}) differs from user tenantId (${authoritativeTenantId}). ` +
+      `Using authoritative tenantId for storage path.`
+    );
+  }
 
   const { error } = await supabase.storage
     .from("payment-proofs")

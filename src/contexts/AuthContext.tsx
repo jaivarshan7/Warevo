@@ -11,7 +11,7 @@ interface AuthContextType {
   allTenants: Tenant[];
   switchUser: (userId: string) => Promise<void>;
   switchTenant: (tenantId: string) => Promise<void>;
-  signInWithEmail: (email: string) => Promise<{ error: Error | null }>;
+  signInWithEmailAndPassword: (email: string, password: string) => Promise<{ error: Error | null }>;
   signInWithGoogle: () => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshUsers: () => Promise<void>;
@@ -48,7 +48,7 @@ export async function refreshUsersFromSupabase() {
   try {
     const { data: users } = await supabase
       .from("User")
-      .select("*, tenant:Tenant(*), client:Client(*)");
+      .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
     if (users && users.length > 0) {
       return (users as any[]).map(normalizeUser);
     }
@@ -60,29 +60,28 @@ export async function refreshUsersFromSupabase() {
 }
 
 /**
- * Resolve a WMS User from an authenticated Supabase Auth email.
+ * Resolve a WMS User from an authenticated Supabase Auth user ID.
  * Returns the user (with tenant) if found and ACTIVE, or null otherwise.
  * Does NOT throw — callers should handle null.
  */
-async function resolveWmsUserByEmail(
-  email: string,
+async function resolveWmsUserBySupabaseUserId(
+  supabaseUserId: string,
   allUsers: User[]
 ): Promise<User | null> {
-  if (!email) return null;
-  const normalizedEmail = email.trim().toLowerCase();
+  if (!supabaseUserId) return null;
 
   // First check in-memory list (avoids extra DB round-trip)
   const inMemory = allUsers.find(
-    (u) => u.email?.trim().toLowerCase() === normalizedEmail
+    (u) => u.supabaseUserId === supabaseUserId
   );
   if (inMemory) return normalizeUser(inMemory);
 
-  // Fall back to DB lookup
+  // Fall back to DB lookup - include supabaseUserId for RLS compatibility check
   try {
     const { data } = await supabase
       .from("User")
-      .select("*, tenant:Tenant(*), client:Client(*)")
-      .ilike("email", normalizedEmail)
+      .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)")
+      .eq("supabaseUserId", supabaseUserId)
       .limit(1);
     return data?.[0] ? normalizeUser(data[0]) : null;
   } catch {
@@ -125,7 +124,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         // ─── 2. Load all WMS users ─────────────────────────────────────────
         const { data: users } = await supabase
           .from("User")
-          .select("*, tenant:Tenant(*), client:Client(*)");
+          .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
 
         const userList = ((users as any[]) || []).map(normalizeUser);
         if (isMounted) {
@@ -148,28 +147,28 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           // Explicit logout — honour it even if Supabase session exists
           setUser(null);
           setTenant(null);
-        } else if (supabaseSession?.user?.email && userList.length > 0) {
-          // ─── Case A: Returning from Google OAuth ─────────────────────────
-          // Supabase session has a verified email — map to WMS user
-          const authEmail = supabaseSession.user.email.trim().toLowerCase();
-          const googleWmsUser = userList.find(
-            (u) => u.email?.trim().toLowerCase() === authEmail
+        } else if (supabaseSession?.user && userList.length > 0) {
+          // ─── Case A: Returning from OAuth or Email/Password login ──────────
+          // Supabase session exists — map to WMS user via supabaseUserId
+          const authUserId = supabaseSession.user.id;
+          const wmsUser = userList.find(
+            (u) => u.supabaseUserId === authUserId
           );
 
-          if (googleWmsUser && googleWmsUser.status === "ACTIVE") {
+          if (wmsUser && wmsUser.status === "ACTIVE") {
             // Persist WMS user id for future page loads
-            localStorage.setItem("warehouse_os_user_id", googleWmsUser.id);
+            localStorage.setItem("warehouse_os_user_id", wmsUser.id);
             localStorage.setItem(
               "warehouse_os_supabase_uid",
               supabaseSession.user.id
             );
-            setUser(googleWmsUser);
+            setUser(normalizeUser(wmsUser));
             const userTenant = tenantList.find(
-              (t) => t.id === googleWmsUser.tenantId
+              (t) => t.id === wmsUser.tenantId
             );
-            setTenant(userTenant || (googleWmsUser.tenant as Tenant) || null);
+            setTenant(userTenant || (wmsUser.tenant as Tenant) || null);
           } else if (savedWmsUserId) {
-            // Fallback to localStorage WMS user if Google user is invalid
+            // Fallback to localStorage WMS user if supabaseUserId lookup fails
             const found = userList.find((u) => u.id === savedWmsUserId);
             if (found && found.status === "ACTIVE") {
               setUser(found);
@@ -180,7 +179,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
               setTenant(userTenant);
             }
           } else {
-            // Google session but no matching WMS user — don't auto-login
+            // Supabase session but no matching WMS user — don't auto-login
             setUser(null);
             setTenant(null);
           }
@@ -232,16 +231,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       console.debug("[AuthContext] onAuthStateChange:", event, session?.user?.email);
 
       if (event === "SIGNED_IN" && session?.user) {
-        const authEmail = session.user.email?.trim().toLowerCase();
-        if (!authEmail) return;
+        const authUserId = session.user.id;
+        if (!authUserId) return;
 
         const isLoggedOut =
           localStorage.getItem("warehouse_os_logged_out") === "true";
         if (isLoggedOut) return;
 
-        // Resolve WMS user from the authenticated email
+        // Resolve WMS user from the authenticated supabaseUserId
         const users = allUsersRef.current;
-        const wmsUser = await resolveWmsUserByEmail(authEmail, users);
+        const wmsUser = users.find((u) => u.supabaseUserId === authUserId);
 
         if (!isMounted) return;
 
@@ -250,6 +249,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           localStorage.removeItem("warehouse_os_logged_out");
           localStorage.setItem("warehouse_os_user_id", wmsUser.id);
           localStorage.setItem("warehouse_os_supabase_uid", session.user.id);
+          
+          // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
+          // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.
+          if (wmsUser.supabaseUserId !== session.user.id) {
+            const { error: updateError } = await supabase
+              .from("User")
+              .update({ supabaseUserId: session.user.id })
+              .eq("id", wmsUser.id);
+            
+            if (updateError) {
+              console.warn("[AuthContext] Failed to update User.supabaseUserId:", updateError);
+            } else {
+              console.info("[AuthContext] Updated User.supabaseUserId:", session.user.id);
+            }
+          }
 
           setUser(wmsUser);
           const userTenant =
@@ -312,43 +326,64 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
   };
 
-  const signInWithEmail = async (email: string) => {
+  const signInWithEmailAndPassword = async (email: string, password: string) => {
     setIsLoading(true);
     try {
-      const identifier = email.trim();
-      const normalizedMobile = identifier.replace(/\D/g, "");
-      const users = allUsersRef.current.length > 0 ? allUsersRef.current : allUsers;
-      const matchingUser = users.find(
-        (u) =>
-          u.email?.toLowerCase() === identifier.toLowerCase() ||
-          (normalizedMobile.length >= 7 &&
-            (() => {
-              const storedMobile = (u.mobile ?? "").replace(/\D/g, "");
-              return (
-                storedMobile === normalizedMobile ||
-                (storedMobile.length >= 10 &&
-                  normalizedMobile.length >= 10 &&
-                  storedMobile.slice(-10) === normalizedMobile.slice(-10))
-              );
-            })())
-      );
-      if (matchingUser) {
-        if (matchingUser.status !== "ACTIVE") {
-          return {
-            error: new Error(
-              "Your WMS account is inactive. Please contact your administrator."
-            ),
-          };
-        }
-        localStorage.removeItem("warehouse_os_logged_out");
-        await switchUser(matchingUser.id);
-        return { error: null };
+      // Use Supabase Auth for email/password authentication
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password
+      });
+
+      if (authError || !authData?.user) {
+        return {
+          error: new Error("Invalid email or password.")
+        };
       }
-      return {
-        error: new Error(
-          `No user found with email or mobile number "${identifier}"`
-        ),
-      };
+
+      const authUser = authData.user;
+      const authUserId = authUser.id;
+
+      // Clear any previous logout state
+      localStorage.removeItem("warehouse_os_logged_out");
+
+      // Find the WMS User by matching supabaseUserId
+      const users = allUsersRef.current.length > 0 ? allUsersRef.current : allUsers;
+      const wmsUser = users.find((u) => u.supabaseUserId === authUserId);
+
+      if (!wmsUser) {
+        // Authentication succeeded but no WMS user profile exists
+        // This is expected for new Supabase Auth users who haven't been provisioned in WMS yet
+        console.warn("[AuthContext] Auth succeeded but no WMS User found for supabaseUserId:", authUserId);
+        await supabase.auth.signOut();
+        return {
+          error: new Error("Authentication succeeded, but no WMS user profile is assigned to this account. Please contact your administrator.")
+        };
+      }
+
+      if (wmsUser.status !== "ACTIVE") {
+        await supabase.auth.signOut();
+        return {
+          error: new Error("Your WMS account is inactive. Please contact your administrator.")
+        };
+      }
+
+      // Persist WMS user id and supabase auth id
+      localStorage.setItem("warehouse_os_user_id", wmsUser.id);
+      localStorage.setItem("warehouse_os_supabase_uid", authUserId);
+
+      // Set the authenticated user
+      const normalizedWmsUser = normalizeUser(wmsUser);
+      setUser(normalizedWmsUser);
+
+      const matchingTenant =
+        allTenantsRef.current.find((t) => t.id === normalizedWmsUser.tenantId) ||
+        allTenants.find((t) => t.id === normalizedWmsUser.tenantId) ||
+        (normalizedWmsUser.tenant as Tenant) ||
+        null;
+      setTenant(matchingTenant || null);
+
+      return { error: null };
     } catch (err) {
       return { error: err as Error };
     } finally {
@@ -376,7 +411,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     try {
       const { data: users } = await supabase
         .from("User")
-        .select("*, tenant:Tenant(*), client:Client(*)");
+        .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
       const list = (users as User[]) || [];
       setAllUsers(list);
       allUsersRef.current = list;
@@ -423,7 +458,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         allTenants,
         switchUser,
         switchTenant,
-        signInWithEmail,
+        signInWithEmailAndPassword,
         signInWithGoogle,
         signOut,
         refreshUsers,
