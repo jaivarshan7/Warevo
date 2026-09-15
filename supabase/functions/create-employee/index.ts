@@ -32,16 +32,19 @@ const AUTHORIZED_CREATOR_ROLES = [
   "WAREHOUSE_MODERATOR"
 ];
 
+// CORS headers for all responses
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 serve(async (req: Request) => {
-  // CORS preflight handling
+  // CORS preflight handling - MUST be before any authentication
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-      },
+      headers: corsHeaders,
     });
   }
 
@@ -50,7 +53,7 @@ serve(async (req: Request) => {
     if (req.method !== "POST") {
       return new Response(
         JSON.stringify({ success: false, error: "Method not allowed", code: "METHOD_NOT_ALLOWED" }),
-        { status: 405, headers: { "Content-Type": "application/json" } }
+        { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -59,7 +62,7 @@ serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ success: false, error: "Missing or invalid authorization header", code: "AUTH_MISSING" }),
-        { status: 401, headers: { "Content-Type": "application/json" } }
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -73,7 +76,7 @@ serve(async (req: Request) => {
       console.error("Missing Supabase environment variables");
       return new Response(
         JSON.stringify({ success: false, error: "Server configuration error", code: "SERVER_CONFIG_ERROR" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -91,7 +94,7 @@ serve(async (req: Request) => {
       console.error("Invalid JWT:", authError?.message);
       return new Response(
         JSON.stringify({ success: false, error: "Invalid authentication token", code: "INVALID_TOKEN" }),
-        { status: 401, headers: { "Content-Type": "application/json" } }
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -112,7 +115,7 @@ serve(async (req: Request) => {
           error: "Authenticated user does not have a WMS profile", 
           code: "CALLER_NOT_FOUND" 
         }),
-        { status: 403, headers: { "Content-Type": "application/json" } }
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -120,7 +123,7 @@ serve(async (req: Request) => {
     if (callerWmsUser.status !== "ACTIVE") {
       return new Response(
         JSON.stringify({ success: false, error: "Your account is inactive", code: "CALLER_INACTIVE" }),
-        { status: 403, headers: { "Content-Type": "application/json" } }
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -132,7 +135,7 @@ serve(async (req: Request) => {
           error: `Unauthorized: ${callerWmsUser.role} cannot create employees`, 
           code: "UNAUTHORIZED_ROLE" 
         }),
-        { status: 403, headers: { "Content-Type": "application/json" } }
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -144,21 +147,21 @@ serve(async (req: Request) => {
     if (!name || !name.trim()) {
       return new Response(
         JSON.stringify({ success: false, error: "Name is required", code: "VALIDATION_ERROR" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!email || !email.trim()) {
       return new Response(
         JSON.stringify({ success: false, error: "Email is required", code: "VALIDATION_ERROR" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!password) {
       return new Response(
         JSON.stringify({ success: false, error: "Password is required", code: "VALIDATION_ERROR" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -166,14 +169,14 @@ serve(async (req: Request) => {
     if (password.length < 8) {
       return new Response(
         JSON.stringify({ success: false, error: "Password must be at least 8 characters", code: "PASSWORD_TOO_SHORT" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!role) {
       return new Response(
         JSON.stringify({ success: false, error: "Role is required", code: "VALIDATION_ERROR" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -182,7 +185,7 @@ serve(async (req: Request) => {
     if (!emailRegex.test(email.trim())) {
       return new Response(
         JSON.stringify({ success: false, error: "Invalid email format", code: "INVALID_EMAIL" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -194,7 +197,7 @@ serve(async (req: Request) => {
           error: `Invalid role. Allowed roles: ${ALLOWED_EMPLOYEE_ROLES.join(", ")}`, 
           code: "INVALID_ROLE" 
         }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -214,14 +217,14 @@ serve(async (req: Request) => {
         if (tenantError || !tenant) {
           return new Response(
             JSON.stringify({ success: false, error: "Invalid company/tenant specified", code: "INVALID_TENANT" }),
-            { status: 400, headers: { "Content-Type": "application/json" } }
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
         if (tenant.status !== "ACTIVE") {
           return new Response(
             JSON.stringify({ success: false, error: "Selected company is not active", code: "TENANT_INACTIVE" }),
-            { status: 400, headers: { "Content-Type": "application/json" } }
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
 
@@ -230,7 +233,7 @@ serve(async (req: Request) => {
         // Platform admin must specify a tenant
         return new Response(
           JSON.stringify({ success: false, error: "Company selection is required", code: "MISSING_TENANT" }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
     } else {
@@ -240,7 +243,7 @@ serve(async (req: Request) => {
       if (!targetTenantId) {
         return new Response(
           JSON.stringify({ success: false, error: "Caller does not belong to any company", code: "CALLER_NO_TENANT" }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
@@ -261,18 +264,9 @@ serve(async (req: Request) => {
     if (existingWmsUser) {
       return new Response(
         JSON.stringify({ success: false, error: "An employee with this email already exists", code: "DUPLICATE_EMAIL" }),
-        { status: 409, headers: { "Content-Type": "application/json" } }
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    // Check for duplicate email in Supabase Auth
-    const { data: existingAuthUser, error: authCheckError } = await supabaseAdmin
-      .from("users")
-      .select("id")
-      .eq("email", email.trim().toLowerCase())
-      .single();
-
-    // Note: This check may fail due to RLS, so we'll handle the error during user creation
 
     // Create Supabase Auth user using Admin API
     const { data: createdAuthUser, error: authCreateError } = await supabaseAdmin.auth.admin.createUser({
@@ -293,20 +287,20 @@ serve(async (req: Request) => {
           authCreateError.message.includes("duplicate key")) {
         return new Response(
           JSON.stringify({ success: false, error: "An account with this email already exists", code: "DUPLICATE_EMAIL" }),
-          { status: 409, headers: { "Content-Type": "application/json" } }
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
       return new Response(
         JSON.stringify({ success: false, error: "Failed to create authentication account", code: "AUTH_CREATE_FAILED" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!createdAuthUser?.user) {
       return new Response(
         JSON.stringify({ success: false, error: "Authentication account creation returned empty result", code: "AUTH_CREATE_EMPTY" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -341,13 +335,13 @@ serve(async (req: Request) => {
       if (wmsCreateError.message.includes("duplicate key") || wmsCreateError.code === "23505") {
         return new Response(
           JSON.stringify({ success: false, error: "An employee with this email already exists", code: "DUPLICATE_EMAIL" }),
-          { status: 409, headers: { "Content-Type": "application/json" } }
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
       return new Response(
         JSON.stringify({ success: false, error: "Failed to create employee record", code: "WMS_CREATE_FAILED" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -360,8 +354,8 @@ serve(async (req: Request) => {
     return new Response(JSON.stringify(response), {
       status: 201,
       headers: { 
+        ...corsHeaders,
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
       },
     });
 
@@ -369,7 +363,7 @@ serve(async (req: Request) => {
     console.error("Unexpected error in create-employee:", error);
     return new Response(
       JSON.stringify({ success: false, error: error.message || "Internal server error", code: "INTERNAL_ERROR" }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
