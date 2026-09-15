@@ -12,6 +12,9 @@ export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [googleRedirecting, setGoogleRedirecting] = useState(false);
 
   // If already authenticated, go straight to dashboard
   React.useEffect(() => {

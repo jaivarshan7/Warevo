@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabase";
 
 interface AuthContextType {
   user: User | null;
-  tenant: Tenant | null:
+  tenant: Tenant | null;
   role: Role;
   isLoading: boolean;
   allUsers: User[];
