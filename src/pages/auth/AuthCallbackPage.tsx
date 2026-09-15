@@ -67,7 +67,7 @@ export const AuthCallbackPage: React.FC = () => {
         // 3. Look up the WMS User by email (case-insensitive)
         const { data: wmsUsers, error: usersError } = await supabase
           .from("User")
-          .select("id, name, email, role, status, tenantId, tenant:Tenant(*), client:Client(*)")
+          .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), client:Client(*)")
           .ilike("email", googleEmail)
           .limit(1);
 
@@ -142,6 +142,22 @@ export const AuthCallbackPage: React.FC = () => {
         }
 
         // 5. Valid, active WMS user — persist their WMS userId so AuthContext can pick it up
+        // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
+        // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.
+        if (wmsUser.supabaseUserId !== authUser.id) {
+          const { error: updateError } = await supabase
+            .from("User")
+            .update({ supabaseUserId: authUser.id })
+            .eq("id", wmsUser.id);
+          
+          if (updateError) {
+            console.warn("[AuthCallback] Failed to update User.supabaseUserId:", updateError);
+            // Continue anyway - this is a best-effort update for Storage RLS compatibility
+          } else {
+            console.info("[AuthCallback] Updated User.supabaseUserId:", authUser.id);
+          }
+        }
+        
         localStorage.removeItem("warehouse_os_logged_out");
         localStorage.setItem("warehouse_os_user_id", wmsUser.id);
         // Also store the supabase auth user id for future session checks

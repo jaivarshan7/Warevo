@@ -48,7 +48,7 @@ export async function refreshUsersFromSupabase() {
   try {
     const { data: users } = await supabase
       .from("User")
-      .select("*, tenant:Tenant(*), client:Client(*)");
+      .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
     if (users && users.length > 0) {
       return (users as any[]).map(normalizeUser);
     }
@@ -77,11 +77,11 @@ async function resolveWmsUserByEmail(
   );
   if (inMemory) return normalizeUser(inMemory);
 
-  // Fall back to DB lookup
+  // Fall back to DB lookup - include supabaseUserId for RLS compatibility check
   try {
     const { data } = await supabase
       .from("User")
-      .select("*, tenant:Tenant(*), client:Client(*)")
+      .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)")
       .ilike("email", normalizedEmail)
       .limit(1);
     return data?.[0] ? normalizeUser(data[0]) : null;
@@ -125,7 +125,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         // ─── 2. Load all WMS users ─────────────────────────────────────────
         const { data: users } = await supabase
           .from("User")
-          .select("*, tenant:Tenant(*), client:Client(*)");
+          .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
 
         const userList = ((users as any[]) || []).map(normalizeUser);
         if (isMounted) {
@@ -250,6 +250,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           localStorage.removeItem("warehouse_os_logged_out");
           localStorage.setItem("warehouse_os_user_id", wmsUser.id);
           localStorage.setItem("warehouse_os_supabase_uid", session.user.id);
+          
+          // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
+          // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.
+          if (wmsUser.supabaseUserId !== session.user.id) {
+            const { error: updateError } = await supabase
+              .from("User")
+              .update({ supabaseUserId: session.user.id })
+              .eq("id", wmsUser.id);
+            
+            if (updateError) {
+              console.warn("[AuthContext] Failed to update User.supabaseUserId:", updateError);
+            } else {
+              console.info("[AuthContext] Updated User.supabaseUserId:", session.user.id);
+            }
+          }
 
           setUser(wmsUser);
           const userTenant =
@@ -376,7 +391,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     try {
       const { data: users } = await supabase
         .from("User")
-        .select("*, tenant:Tenant(*), client:Client(*)");
+        .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)");
       const list = (users as User[]) || [];
       setAllUsers(list);
       allUsersRef.current = list;
