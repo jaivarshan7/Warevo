@@ -2,17 +2,18 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchEmployees,
-  createEmployee,
   updateEmployee,
   updateEmployeeSecure,
   createAuditLogRecord
 } from "@/lib/services";
+import { fetchWarehouseEmployees } from "@/lib/employeeService";
 import { User, Role, UserStatus, ALLOWED_EMPLOYEE_ROLES } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { AddEmployeeModal } from "@/components/employees/AddEmployeeModal";
 // Custom badge component for UserStatus (ACTIVE/INACTIVE)
 const UserStatusBadge: React.FC<{ status: UserStatus | string }> = ({ status }) => {
   const style =
@@ -85,7 +86,8 @@ export const EmployeesPage: React.FC = () => {
     try {
       setLoading(true);
       console.log(`[EmployeesPage] Loading employees for tenant: ${tenant.id}`);
-      const list = await fetchEmployees(tenant.id);
+      // Use secure fetch that enforces tenant isolation server-side
+      const list = await fetchWarehouseEmployees(tenant.id);
       console.log(
         `[EmployeesPage] Supabase returned ${list.length} rows:`,
         list.map((u) => ({ id: u.id, name: u.name, role: u.role }))
@@ -102,7 +104,7 @@ export const EmployeesPage: React.FC = () => {
     loadEmployees();
   }, [tenant?.id]);
 
-  // Filter employees
+  // Filter employees - backend already filters by tenant and allowed roles
   const filteredEmployees = employees.filter((emp) => {
     // Secondary defensive filter: ensure only allowed warehouse employee roles are rendered
     if (!ALLOWED_EMPLOYEE_ROLES.includes(emp.role)) return false;
@@ -115,69 +117,7 @@ export const EmployeesPage: React.FC = () => {
     );
   });
 
-  const handleAddSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tenant?.id) {
-      setFormError("Tenant information is missing. Please refresh and try again.");
-      return;
-    }
-    if (!fullName.trim()) {
-      setFormError("Please provide a full name.");
-      return;
-    }
-    if (selectedRole === "WAREHOUSE_OWNER" || selectedRole === "PLATFORM_ADMIN") {
-      setFormError("Cannot create WAREHOUSE_OWNER or PLATFORM_ADMIN through this interface.");
-      return;
-    }
-
-    setIsSubmitting(true);
-    setFormError(null);
-
-    try {
-      const newEmployee = await createEmployee({
-        name: fullName.trim(),
-        email: email.trim() || undefined,
-        mobile: mobile.trim() || undefined,
-        role: selectedRole,
-        tenantId: tenant.id,
-        status: status
-      });
-
-      // Create audit log
-      try {
-        await createAuditLogRecord({
-          tenantId: tenant.id,
-          userId: user?.id,
-          userRole: role,
-          action: "Created new employee",
-          entity: "User",
-          entityId: newEmployee.id,
-          newValue: {
-            name: newEmployee.name,
-            email: newEmployee.email,
-            role: newEmployee.role,
-            status: newEmployee.status
-          }
-        });
-      } catch (auditErr) {
-        console.error("Failed to create audit log:", auditErr);
-      }
-
-      setIsAddOpen(false);
-      setSuccessMsg(`${fullName} added successfully as ${ROLE_LABELS[selectedRole] || selectedRole}!`);
-      // Reset form
-      setFullName("");
-      setEmail("");
-      setMobile("");
-      setSelectedRole("WAREHOUSE_STAFF");
-      setStatus("ACTIVE");
-      await loadEmployees();
-    } catch (err: any) {
-      setFormError(err?.message || "Failed to create employee");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  // handleAddSubmit removed - now using AddEmployeeModal component with Edge Function
 
   const startEdit = (employee: User) => {
     if (employee.id === user?.id) {
