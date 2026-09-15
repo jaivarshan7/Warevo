@@ -5,9 +5,11 @@ export const validOrderTransitions: Record<OrderStatus, OrderStatus[]> = {
   ISSUED: ["PROCESSING", "CANCELLED"],
   PROCESSING: ["READY_FOR_DISPATCH", "CANCELLED"],
   READY_FOR_DISPATCH: ["DISPATCHED"],
-  DISPATCHED: ["RECEIVED"],
-  RECEIVED: ["VERIFICATION_PENDING"],
-  VERIFICATION_PENDING: ["VERIFIED", "PARTIALLY_VERIFIED", "REJECTED"],
+  // DISPATCHED has no generic transitions - must use verification RPC
+  DISPATCHED: [],
+  // RECEIVED and VERIFICATION_PENDING are historical only - not available for new transitions
+  RECEIVED: [],
+  VERIFICATION_PENDING: [],
   VERIFIED: ["INVOICE_PENDING"],
   PARTIALLY_VERIFIED: ["PROCESSING", "CANCELLED"],
   REJECTED: ["PROCESSING", "CANCELLED"],

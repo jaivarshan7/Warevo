@@ -275,6 +275,11 @@ export async function fetchOrderById(
       .maybeSingle()
   ]);
 
+  if (historyResult.error) {
+    console.error("Failed to load OrderStatusHistory:", historyResult.error);
+    throw new Error("Failed to load status history");
+  }
+
   return {
     ...(data as Order),
     statusHistory: (historyResult.data || []) as Order["statusHistory"],

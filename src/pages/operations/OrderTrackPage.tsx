@@ -29,9 +29,9 @@ import { Link } from "react-router-dom";
 const ORDER_STATUS_LABELS: Record<string, string> = {
   ISSUED: "Order Issued",
   PROCESSING: "Processing",
+  READY_FOR_DISPATCH: "Ready for Dispatch",
   DISPATCHED: "Dispatched",
-  RECEIVED: "Received",
-  VERIFIED: "Verified",
+  VERIFIED: "Delivery Verified",
   INVOICED: "Invoiced"
 };
 
@@ -374,12 +374,12 @@ export const OrderTrackPage: React.FC = () => {
                 <div className="py-3">
                   <div className="relative flex items-center justify-between">
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-slate-800 z-0" />
-                    {["ISSUED", "PROCESSING", "DISPATCHED", "RECEIVED", "VERIFIED"].map((step, idx) => {
+                    {["ISSUED", "PROCESSING", "READY_FOR_DISPATCH", "DISPATCHED", "VERIFIED"].map((step, idx) => {
                       const stepMap: Record<string, number> = {
                         ISSUED: 1,
                         PROCESSING: 2,
-                        DISPATCHED: 3,
-                        RECEIVED: 4,
+                        READY_FOR_DISPATCH: 3,
+                        DISPATCHED: 4,
                         VERIFIED: 5
                       };
                       const currentIdx = stepMap[activeOrder.status] || 1;
