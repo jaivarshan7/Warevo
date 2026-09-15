@@ -2,17 +2,18 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchEmployees,
-  createEmployee,
   updateEmployee,
   updateEmployeeSecure,
   createAuditLogRecord
 } from "@/lib/services";
-import { User, Role, UserStatus, ALLOWED_EMPLOYEE_ROLES } from "@/types";
+import { fetchWarehouseEmployees } from "@/lib/employeeService";
+import { User, Role, UserStatus, ALLOWED_EMPLOYEE_ROLES, Tenant } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { AddEmployeeModal } from "@/components/employees/AddEmployeeModal";
 // Custom badge component for UserStatus (ACTIVE/INACTIVE)
 const UserStatusBadge: React.FC<{ status: UserStatus | string }> = ({ status }) => {
   const style =
@@ -57,16 +58,8 @@ export const EmployeesPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Add Employee Modal State
+  // Add Employee Modal State - using AddEmployeeModal component
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [mobile, setMobile] = useState("");
-  const [selectedRole, setSelectedRole] = useState<Role>("WAREHOUSE_STAFF");
-  const [status, setStatus] = useState<UserStatus>("ACTIVE");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Edit Employee Modal State
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -77,6 +70,11 @@ export const EmployeesPage: React.FC = () => {
   const [editRole, setEditRole] = useState<Role>("WAREHOUSE_STAFF");
   const [editStatus, setEditStatus] = useState<UserStatus>("ACTIVE");
 
+  // Edit form state
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
   const loadEmployees = async () => {
     if (!tenant?.id) {
       setLoading(false);
@@ -85,7 +83,8 @@ export const EmployeesPage: React.FC = () => {
     try {
       setLoading(true);
       console.log(`[EmployeesPage] Loading employees for tenant: ${tenant.id}`);
-      const list = await fetchEmployees(tenant.id);
+      // Use secure fetch that enforces tenant isolation server-side
+      const list = await fetchWarehouseEmployees(tenant.id);
       console.log(
         `[EmployeesPage] Supabase returned ${list.length} rows:`,
         list.map((u) => ({ id: u.id, name: u.name, role: u.role }))
@@ -102,7 +101,7 @@ export const EmployeesPage: React.FC = () => {
     loadEmployees();
   }, [tenant?.id]);
 
-  // Filter employees
+  // Filter employees - backend already filters by tenant and allowed roles
   const filteredEmployees = employees.filter((emp) => {
     // Secondary defensive filter: ensure only allowed warehouse employee roles are rendered
     if (!ALLOWED_EMPLOYEE_ROLES.includes(emp.role)) return false;
@@ -115,69 +114,6 @@ export const EmployeesPage: React.FC = () => {
     );
   });
 
-  const handleAddSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tenant?.id) {
-      setFormError("Tenant information is missing. Please refresh and try again.");
-      return;
-    }
-    if (!fullName.trim()) {
-      setFormError("Please provide a full name.");
-      return;
-    }
-    if (selectedRole === "WAREHOUSE_OWNER" || selectedRole === "PLATFORM_ADMIN") {
-      setFormError("Cannot create WAREHOUSE_OWNER or PLATFORM_ADMIN through this interface.");
-      return;
-    }
-
-    setIsSubmitting(true);
-    setFormError(null);
-
-    try {
-      const newEmployee = await createEmployee({
-        name: fullName.trim(),
-        email: email.trim() || undefined,
-        mobile: mobile.trim() || undefined,
-        role: selectedRole,
-        tenantId: tenant.id,
-        status: status
-      });
-
-      // Create audit log
-      try {
-        await createAuditLogRecord({
-          tenantId: tenant.id,
-          userId: user?.id,
-          userRole: role,
-          action: "Created new employee",
-          entity: "User",
-          entityId: newEmployee.id,
-          newValue: {
-            name: newEmployee.name,
-            email: newEmployee.email,
-            role: newEmployee.role,
-            status: newEmployee.status
-          }
-        });
-      } catch (auditErr) {
-        console.error("Failed to create audit log:", auditErr);
-      }
-
-      setIsAddOpen(false);
-      setSuccessMsg(`${fullName} added successfully as ${ROLE_LABELS[selectedRole] || selectedRole}!`);
-      // Reset form
-      setFullName("");
-      setEmail("");
-      setMobile("");
-      setSelectedRole("WAREHOUSE_STAFF");
-      setStatus("ACTIVE");
-      await loadEmployees();
-    } catch (err: any) {
-      setFormError(err?.message || "Failed to create employee");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   const startEdit = (employee: User) => {
     if (employee.id === user?.id) {
@@ -508,123 +444,17 @@ export const EmployeesPage: React.FC = () => {
         </div>
       )}
 
-      {/* Add Employee Modal */}
-      {isAddOpen && (
-        <Modal
-          isOpen={isAddOpen}
-          onClose={() => {
-            setIsAddOpen(false);
-            setFormError(null);
-            setSuccessMsg(null);
-            setFullName("");
-            setEmail("");
-            setMobile("");
-            setSelectedRole("WAREHOUSE_STAFF");
-            setStatus("ACTIVE");
-          }}
-          title="Add New Employee"
-          description="Create a new employee account for your warehouse tenant."
-          maxWidth="md"
-        >
-          <form onSubmit={handleAddSubmit} className="space-y-4">
-            {formError && (
-              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Full Name *
-              </label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="e.g. Ravi Kumar"
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-                required
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="ravi@email.com"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Mobile Number
-                </label>
-                <input
-                  type="tel"
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  placeholder="9876543210"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Role *
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {ALLOWED_EMPLOYEE_ROLES.map((roleOption) => (
-                  <button
-                    key={roleOption}
-                    type="button"
-                    onClick={() => setSelectedRole(roleOption)}
-                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition ${
-                      selectedRole === roleOption
-                        ? "bg-indigo-600 text-white border-indigo-500"
-                        : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600"
-                    }`}
-                  >
-                    {ROLE_LABELS[roleOption] || roleOption}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[10px] text-slate-500 mt-2">
-                Select an employee role. Admin roles (PLATFORM_ADMIN, WAREHOUSE_OWNER) are not available.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Initial Status
-              </label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as UserStatus)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
-              >
-                <option value="ACTIVE">ACTIVE</option>
-                <option value="INACTIVE">INACTIVE</option>
-              </select>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setIsAddOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" isLoading={isSubmitting}>
-                Create Employee
-              </Button>
-            </div>
-          </form>
-        </Modal>
-      )}
+      {/* Add Employee Modal - uses reusable AddEmployeeModal component */}
+      <AddEmployeeModal
+        isOpen={isAddOpen}
+        onClose={() => setIsAddOpen(false)}
+        onSuccess={() => {
+          loadEmployees();
+          setSuccessMsg("Employee created successfully!");
+        }}
+        tenantId={tenant?.id}
+        isPlatformAdmin={false}
+      />
 
       {/* Edit Employee Modal */}
       {isEditOpen && editingEmployee && (

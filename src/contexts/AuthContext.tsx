@@ -348,8 +348,33 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       localStorage.removeItem("warehouse_os_logged_out");
 
       // Find the WMS User by matching supabaseUserId
-      const users = allUsersRef.current.length > 0 ? allUsersRef.current : allUsers;
-      const wmsUser = users.find((u) => u.supabaseUserId === authUserId);
+      let users = allUsersRef.current.length > 0 ? allUsersRef.current : allUsers;
+      let wmsUser = users.find((u) => u.supabaseUserId === authUserId);
+
+      // If not found in cached list, do a fresh DB lookup
+      // This handles the case where a new employee was just created and is logging in for the first time
+      if (!wmsUser) {
+        console.info("[AuthContext] WMS user not found in cache, fetching from DB for supabaseUserId:", authUserId);
+        try {
+          const { data: freshUserData } = await supabase
+            .from("User")
+            .select("*, supabaseUserId, tenant:Tenant(*), client:Client(*)")
+            .eq("supabaseUserId", authUserId)
+            .limit(1);
+          
+          if (freshUserData && freshUserData.length > 0) {
+            wmsUser = normalizeUser(freshUserData[0]);
+            console.info("[AuthContext] Found WMS user via fresh DB lookup:", wmsUser.id);
+            
+            // Update the cached users list to include this newly-found user
+            const updatedUsers = [...users, wmsUser];
+            setAllUsers(updatedUsers);
+            allUsersRef.current = updatedUsers;
+          }
+        } catch (fetchError) {
+          console.error("[AuthContext] Failed to fetch WMS user from DB:", fetchError);
+        }
+      }
 
       if (!wmsUser) {
         // Authentication succeeded but no WMS user profile exists
