@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabase";
 
 interface AuthContextType {
   user: User | null;
-  tenant: Tenant | null;
+  tenant: Tenant | null:
   role: Role;
   isLoading: boolean;
   allUsers: User[];
@@ -76,7 +76,7 @@ async function resolveWmsUserBySupabaseUserId(
   );
   if (inMemory) return normalizeUser(inMemory);
 
-  // Fall back to DB lookup
+  // Fall back to DB lookup - include supabaseUserId for RLS compatibility check
   try {
     const { data } = await supabase
       .from("User")
@@ -249,6 +249,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           localStorage.removeItem("warehouse_os_logged_out");
           localStorage.setItem("warehouse_os_user_id", wmsUser.id);
           localStorage.setItem("warehouse_os_supabase_uid", session.user.id);
+          
+          // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
+          // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.
+          if (wmsUser.supabaseUserId !== session.user.id) {
+            const { error: updateError } = await supabase
+              .from("User")
+              .update({ supabaseUserId: session.user.id })
+              .eq("id", wmsUser.id);
+            
+            if (updateError) {
+              console.warn("[AuthContext] Failed to update User.supabaseUserId:", updateError);
+            } else {
+              console.info("[AuthContext] Updated User.supabaseUserId:", session.user.id);
+            }
+          }
 
           setUser(wmsUser);
           const userTenant =
