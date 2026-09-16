@@ -2,10 +2,15 @@ import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchPendingVerificationOrders,
-  submitClientReceiverVerification,
-  fetchOrderById
+  submitOrderVerification,
+  fetchOrderById,
 } from "@/lib/services";
-import { Order, OrderStatus, VerificationStatus, ClientEmployeeRole } from "@/types";
+import {
+  Order,
+  OrderStatus,
+  VerificationStatus,
+  ClientEmployeeRole,
+} from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -21,7 +26,7 @@ import {
   Package,
   Clock,
   Check,
-  ShieldCheck
+  ShieldCheck,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -29,10 +34,10 @@ import { Link } from "react-router-dom";
 const ORDER_STATUS_LABELS: Record<string, string> = {
   ISSUED: "Order Issued",
   PROCESSING: "Processing",
+  READY_FOR_DISPATCH: "Ready for Dispatch",
   DISPATCHED: "Dispatched",
-  RECEIVED: "Received",
-  VERIFIED: "Verified",
-  INVOICED: "Invoiced"
+  VERIFIED: "Delivery Verified",
+  INVOICED: "Invoiced",
 };
 
 export const OrderTrackPage: React.FC = () => {
@@ -40,7 +45,8 @@ export const OrderTrackPage: React.FC = () => {
 
   // Authorization check for CLIENT role users
   // Only CLIENT users with employeeRole === "RECEIVER" can perform delivery verification
-  const isClientReceiver = role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
+  const isClientReceiver =
+    role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
   const hasVerificationAccess = role === "PRODUCT_RECEIVER" || isClientReceiver;
 
   const [orders, setOrders] = useState<Order[]>([]);
@@ -52,7 +58,9 @@ export const OrderTrackPage: React.FC = () => {
   const [isVerifyOpen, setIsVerifyOpen] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationComments, setVerificationComments] = useState("");
-  const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>({});
+  const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>(
+    {},
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -66,7 +74,10 @@ export const OrderTrackPage: React.FC = () => {
     }
     try {
       setLoading(true);
-      const list = await fetchPendingVerificationOrders(user.client.id, tenant.id);
+      const list = await fetchPendingVerificationOrders(
+        user.client.id,
+        tenant.id,
+      );
       setOrders(list);
       if (list.length > 0 && !selectedOrderId) {
         setSelectedOrderId(list[0].id);
@@ -94,7 +105,7 @@ export const OrderTrackPage: React.FC = () => {
         orderId,
         user?.tenant?.id,
         user?.client?.id,
-        role
+        role,
       );
       if (order) {
         // Check if already verified
@@ -141,7 +152,7 @@ export const OrderTrackPage: React.FC = () => {
   const handleToggleItemCheckbox = (itemId: string, checked: boolean) => {
     setItemCheckboxes((prev) => ({
       ...prev,
-      [itemId]: checked
+      [itemId]: checked,
     }));
   };
 
@@ -155,21 +166,19 @@ export const OrderTrackPage: React.FC = () => {
 
     try {
       // Convert item checkboxes to orderItemId-based responses
-      const responses = activeOrder.items?.map((item) => ({
-        orderItemId: item.id,
-        checked: itemCheckboxes[item.id] || false
-      })) || [];
+      const responses =
+        activeOrder.items?.map((item) => ({
+          orderItemId: item.id,
+          checked: itemCheckboxes[item.id] || false,
+        })) || [];
 
-      await submitClientReceiverVerification({
-        orderId: activeOrder.id,
-        tenantId: activeOrder.tenantId,
-        clientId: activeOrder.clientId,
-        status: "VERIFIED", // Client Receiver only verifies (not partial/rejected)
-        responses: responses,
-        comments: verificationComments,
-        userId: user?.id,
-        userRole: role
-      });
+      await submitOrderVerification(
+        activeOrder.id,
+        "VERIFIED",
+        responses,
+        verificationComments,
+        user?.id,
+      );
 
       setIsVerifyOpen(false);
       setSuccessMsg(`Order ${activeOrder.orderNumber} verified successfully!`);
@@ -201,7 +210,8 @@ export const OrderTrackPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <Truck className="w-6 h-6 text-indigo-400" /> Order & Delivery Tracker
+            <Truck className="w-6 h-6 text-indigo-400" /> Order & Delivery
+            Tracker
           </h1>
           <p className="text-sm text-slate-400">
             Track delivery status and verify received items.
@@ -230,10 +240,13 @@ export const OrderTrackPage: React.FC = () => {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-rose-950 text-rose-400 mb-4">
             <ShieldCheck className="w-8 h-8" />
           </div>
-          <h3 className="text-base font-semibold text-white mb-2">Access Denied</h3>
+          <h3 className="text-base font-semibold text-white mb-2">
+            Access Denied
+          </h3>
           <p className="text-sm text-slate-400">
-            Only Client Receivers (employeeRole: RECEIVER) can verify deliveries.
-            Contact your warehouse manager for delivery verification access.
+            Only Client Receivers (employeeRole: RECEIVER) can verify
+            deliveries. Contact your warehouse manager for delivery verification
+            access.
           </p>
         </Card>
       )}
@@ -245,7 +258,9 @@ export const OrderTrackPage: React.FC = () => {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-indigo-950 text-indigo-400 mb-4">
             <Check className="w-8 h-8" />
           </div>
-          <h3 className="text-base font-semibold text-white mb-2">All deliveries verified</h3>
+          <h3 className="text-base font-semibold text-white mb-2">
+            All deliveries verified
+          </h3>
           <p className="text-sm text-slate-400">
             No pending deliveries waiting for verification.
           </p>
@@ -273,19 +288,20 @@ export const OrderTrackPage: React.FC = () => {
             <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
               {filteredOrders.map((order) => {
                 const isSelected = order.id === activeOrder?.id;
-                const verificationBadge = order.verificationStatus === "PENDING" ? (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
-                    Verify Pending
-                  </span>
-                ) : order.verificationStatus === "VERIFIED" ? (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
-                    Verified
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-800 text-slate-400 border border-slate-700">
-                    {order.verificationStatus}
-                  </span>
-                );
+                const verificationBadge =
+                  order.verificationStatus === "PENDING" ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
+                      Verify Pending
+                    </span>
+                  ) : order.verificationStatus === "VERIFIED" ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
+                      Verified
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-800 text-slate-400 border border-slate-700">
+                      {order.verificationStatus}
+                    </span>
+                  );
 
                 return (
                   <div
@@ -343,7 +359,11 @@ export const OrderTrackPage: React.FC = () => {
                       )}
                     </div>
                     <p className="text-xs text-slate-400 mt-1">
-                      Client: <strong className="text-slate-200">{activeOrder.client?.companyName}</strong> ({activeOrder.client?.contactPerson})
+                      Client:{" "}
+                      <strong className="text-slate-200">
+                        {activeOrder.client?.companyName}
+                      </strong>{" "}
+                      ({activeOrder.client?.contactPerson})
                     </p>
                   </div>
 
@@ -358,7 +378,9 @@ export const OrderTrackPage: React.FC = () => {
                       }`}
                     >
                       <ClipboardCheck className="w-4 h-4" />
-                      {allItemsChecked ? "Verify Delivery" : `${checkedCount} of ${totalItems} items checked`}
+                      {allItemsChecked
+                        ? "Verify Delivery"
+                        : `${checkedCount} of ${totalItems} items checked`}
                     </Button>
                   ) : (
                     <div className="flex items-center gap-2 self-start sm:self-auto">
@@ -374,38 +396,51 @@ export const OrderTrackPage: React.FC = () => {
                 <div className="py-3">
                   <div className="relative flex items-center justify-between">
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-slate-800 z-0" />
-                    {["ISSUED", "PROCESSING", "DISPATCHED", "RECEIVED", "VERIFIED"].map((step, idx) => {
+                    {[
+                      "ISSUED",
+                      "PROCESSING",
+                      "READY_FOR_DISPATCH",
+                      "DISPATCHED",
+                      "VERIFIED",
+                    ].map((step, idx) => {
                       const stepMap: Record<string, number> = {
                         ISSUED: 1,
                         PROCESSING: 2,
-                        DISPATCHED: 3,
-                        RECEIVED: 4,
-                        VERIFIED: 5
+                        READY_FOR_DISPATCH: 3,
+                        DISPATCHED: 4,
+                        VERIFIED: 5,
                       };
                       const currentIdx = stepMap[activeOrder.status] || 1;
                       const isCompleted = currentIdx >= idx + 1;
                       const isCurrent = currentIdx === idx + 1;
 
                       return (
-                        <div key={step} className="relative z-10 flex flex-col items-center">
+                        <div
+                          key={step}
+                          className="relative z-10 flex flex-col items-center"
+                        >
                           <div
                             className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition ${
                               isCompleted
                                 ? "bg-emerald-600 border-emerald-400 text-white"
                                 : isCurrent
-                                ? "bg-indigo-600 border-indigo-400 text-white animate-pulse"
-                                : "bg-slate-900 border-slate-700 text-slate-500"
+                                  ? "bg-indigo-600 border-indigo-400 text-white animate-pulse"
+                                  : "bg-slate-900 border-slate-700 text-slate-500"
                             }`}
                           >
                             {isCompleted ? (
                               <Check className="w-4 h-4" />
                             ) : (
-                              <span className="text-xs font-bold">{idx + 1}</span>
+                              <span className="text-xs font-bold">
+                                {idx + 1}
+                              </span>
                             )}
                           </div>
                           <span
                             className={`text-[10px] font-semibold mt-2 text-center max-w-[70px] leading-tight ${
-                              isCompleted || isCurrent ? "text-white" : "text-slate-500"
+                              isCompleted || isCurrent
+                                ? "text-white"
+                                : "text-slate-500"
                             }`}
                           >
                             {step}
@@ -440,7 +475,9 @@ export const OrderTrackPage: React.FC = () => {
                       <input
                         type="checkbox"
                         checked={itemCheckboxes[item.id] || false}
-                        onChange={(e) => handleToggleItemCheckbox(item.id, e.target.checked)}
+                        onChange={(e) =>
+                          handleToggleItemCheckbox(item.id, e.target.checked)
+                        }
                         disabled={activeOrder.verificationStatus === "VERIFIED"}
                         className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 focus:ring-offset-0"
                       />
@@ -451,7 +488,9 @@ export const OrderTrackPage: React.FC = () => {
                         <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
                           <span>SKU: {item.product?.sku || "N/A"}</span>
                           <span className="w-1 h-1 rounded-full bg-slate-600" />
-                          <span>Qty: {item.quantity} {item.product?.unit || "PCS"}</span>
+                          <span>
+                            Qty: {item.quantity} {item.product?.unit || "PCS"}
+                          </span>
                         </p>
                         <p className="text-[10px] text-slate-500 mt-1">
                           Unit Price: ₹{Number(item.unitPrice).toFixed(2)}
@@ -475,10 +514,13 @@ export const OrderTrackPage: React.FC = () => {
                     Delivery Address
                   </div>
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    {activeOrder.client?.shippingAddress || activeOrder.client?.billingAddress || "N/A"}
+                    {activeOrder.client?.shippingAddress ||
+                      activeOrder.client?.billingAddress ||
+                      "N/A"}
                   </p>
                   <p className="text-[11px] text-slate-400 mt-2">
-                    Contact: {activeOrder.client?.contactPerson} • {activeOrder.client?.mobile}
+                    Contact: {activeOrder.client?.contactPerson} •{" "}
+                    {activeOrder.client?.mobile}
                   </p>
                 </Card>
 
@@ -489,15 +531,24 @@ export const OrderTrackPage: React.FC = () => {
                   <div className="text-xs space-y-1 text-slate-300">
                     <div className="flex justify-between">
                       <span>Subtotal:</span>
-                      <span className="font-mono">₹{Number(activeOrder.subtotal).toLocaleString("en-IN")}</span>
+                      <span className="font-mono">
+                        ₹{Number(activeOrder.subtotal).toLocaleString("en-IN")}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span>Tax:</span>
-                      <span className="font-mono">₹{Number(activeOrder.taxTotal).toLocaleString("en-IN")}</span>
+                      <span className="font-mono">
+                        ₹{Number(activeOrder.taxTotal).toLocaleString("en-IN")}
+                      </span>
                     </div>
                     <div className="flex justify-between pt-2 border-t border-slate-800/50">
                       <span className="font-semibold">Total:</span>
-                      <span className="font-mono font-bold text-white">₹{Number(activeOrder.totalAmount).toLocaleString("en-IN")}</span>
+                      <span className="font-mono font-bold text-white">
+                        ₹
+                        {Number(activeOrder.totalAmount).toLocaleString(
+                          "en-IN",
+                        )}
+                      </span>
                     </div>
                   </div>
                 </Card>
@@ -516,7 +567,10 @@ export const OrderTrackPage: React.FC = () => {
           description="Review and confirm all items have been received in good condition."
           maxWidth="lg"
         >
-          <form onSubmit={handleVerifyDelivery} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+          <form
+            onSubmit={handleVerifyDelivery}
+            className="space-y-4 max-h-[75vh] overflow-y-auto pr-1"
+          >
             {actionError && (
               <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
                 {actionError}
@@ -527,15 +581,24 @@ export const OrderTrackPage: React.FC = () => {
             <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
               <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-indigo-400" />
-                <span>Delivery Checklist ({checkedCount} of {totalItems} items)</span>
+                <span>
+                  Delivery Checklist ({checkedCount} of {totalItems} items)
+                </span>
               </div>
               <div className="space-y-1.5">
                 {activeOrder.items?.map((item) => (
                   <label
                     key={item.id}
-                    onClick={() => handleToggleItemCheckbox(item.id, !(itemCheckboxes[item.id] || false))}
+                    onClick={() =>
+                      handleToggleItemCheckbox(
+                        item.id,
+                        !(itemCheckboxes[item.id] || false),
+                      )
+                    }
                     className={`flex items-start gap-2 text-xs cursor-pointer select-none ${
-                      activeOrder.verificationStatus === "VERIFIED" ? "opacity-50 cursor-not-allowed" : ""
+                      activeOrder.verificationStatus === "VERIFIED"
+                        ? "opacity-50 cursor-not-allowed"
+                        : ""
                     }`}
                   >
                     <input
@@ -546,8 +609,13 @@ export const OrderTrackPage: React.FC = () => {
                       className="mt-0.5 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
                     />
                     <span>
-                      <span className="font-semibold text-white">{item.product?.name}</span>
-                      <span className="text-slate-500"> • Qty: {item.quantity} {item.product?.unit}</span>
+                      <span className="font-semibold text-white">
+                        {item.product?.name}
+                      </span>
+                      <span className="text-slate-500">
+                        {" "}
+                        • Qty: {item.quantity} {item.product?.unit}
+                      </span>
                     </span>
                   </label>
                 ))}
@@ -573,14 +641,25 @@ export const OrderTrackPage: React.FC = () => {
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setIsVerifyOpen(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsVerifyOpen(false)}
+              >
                 Cancel
               </Button>
               <Button
                 type="submit"
                 isLoading={isVerifying}
-                disabled={!allItemsChecked || activeOrder.verificationStatus === "VERIFIED"}
-                className={activeOrder.verificationStatus === "VERIFIED" ? "opacity-60 cursor-not-allowed" : ""}
+                disabled={
+                  !allItemsChecked ||
+                  activeOrder.verificationStatus === "VERIFIED"
+                }
+                className={
+                  activeOrder.verificationStatus === "VERIFIED"
+                    ? "opacity-60 cursor-not-allowed"
+                    : ""
+                }
               >
                 Confirm Delivery Verification
               </Button>

@@ -94,10 +94,10 @@ export const OrderDetailPage: React.FC = () => {
       return;
     }
 
-    if (order.status !== "RECEIVED" && order.status !== "VERIFICATION_PENDING") {
+    if (order.status !== "DISPATCHED") {
       setInvoiceMessage({
         type: "error",
-        text: "Order must be received by the warehouse before delivery verification."
+        text: "Order must be dispatched before delivery verification."
       });
       setIsVerifyOpen(false);
       return;
@@ -128,76 +128,16 @@ export const OrderDetailPage: React.FC = () => {
       await loadOrder();
     } catch (err: any) {
       const errMsg = err?.message || "";
-      if (
-        errMsg.includes("not ready for client verification") ||
-        errMsg.includes("RECEIVED") ||
-        errMsg.includes("DISPATCHED")
-      ) {
+      if (errMsg.includes("not ready for client verification")) {
         setInvoiceMessage({
           type: "error",
-          text: "Order must be received by the warehouse before delivery verification."
+          text: "Order must be dispatched before delivery verification."
         });
       } else {
         setInvoiceMessage({ type: "error", text: errMsg || "Verification submission failed" });
       }
     } finally {
       setIsVerifying(false);
-    }
-  };
-
-  const handleMarkReceived = async () => {
-    if (!order) return;
-    setIsTransitioning(true);
-    setInvoiceMessage(null);
-
-    try {
-      await transitionOrderStatus(
-        order.id,
-        "RECEIVED",
-        "Order marked as received by warehouse",
-        user?.id,
-        role
-      );
-      setInvoiceMessage({
-        type: "success",
-        text: `Order ${order.orderNumber} successfully marked as RECEIVED.`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to mark order as received."
-      });
-    } finally {
-      setIsTransitioning(false);
-    }
-  };
-
-  const handleAdvanceToVerificationPending = async () => {
-    if (!order) return;
-    setIsTransitioning(true);
-    setInvoiceMessage(null);
-
-    try {
-      await transitionOrderStatus(
-        order.id,
-        "VERIFICATION_PENDING",
-        "Warehouse advanced order to verification pending",
-        user?.id,
-        role
-      );
-      setInvoiceMessage({
-        type: "success",
-        text: `Order ${order.orderNumber} advanced to VERIFICATION_PENDING.`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to advance order to verification pending."
-      });
-    } finally {
-      setIsTransitioning(false);
     }
   };
 
@@ -245,14 +185,14 @@ export const OrderDetailPage: React.FC = () => {
   // Verification is allowed ONLY when:
   // - authenticated WMS role = CLIENT
   // - client.employeeRole = RECEIVER
-  // - order status = RECEIVED OR VERIFICATION_PENDING
+  // - order status = DISPATCHED
   // - order belongs to the authenticated user's authorized tenant/company
   const canVerify =
     Boolean(order) &&
     isClientReceiver &&
     Boolean(user?.client?.id) &&
     isTenantAuthorized &&
-    (order.status === "RECEIVED" || order.status === "VERIFICATION_PENDING");
+    (order.status === "DISPATCHED");
 
   // Warehouse roles that manage order fulfillment and receipt
   const isWarehouseUser =
@@ -321,30 +261,6 @@ export const OrderDetailPage: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
-            {isWarehouseUser && order.status === "DISPATCHED" && (
-              <Button
-                variant="primary"
-                onClick={handleMarkReceived}
-                isLoading={isTransitioning}
-                className="bg-indigo-600 hover:bg-indigo-500 shadow-indigo-950"
-              >
-                <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                Mark as Received
-              </Button>
-            )}
-
-            {isWarehouseUser && order.status === "RECEIVED" && (
-              <Button
-                variant="outline"
-                onClick={handleAdvanceToVerificationPending}
-                isLoading={isTransitioning}
-                className="border-indigo-700 text-indigo-300 hover:bg-indigo-950"
-              >
-                <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                Mark as Ready for Verification
-              </Button>
-            )}
-
             {canVerify && (
               <Button
                 variant="primary"
