@@ -39,7 +39,7 @@ env/
 # Coverage reports
 coverage/
 htmlcov/
-.coverage
+*.coverage
 
 # Test cache
 .jest/
