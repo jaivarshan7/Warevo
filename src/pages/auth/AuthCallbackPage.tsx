@@ -113,34 +113,6 @@ export const AuthCallbackPage: React.FC = () => {
           return;
         }
 
-        // 4c. Verify this is a CLIENT user with a linked Client record
-        //    (required for Google Sign-In and email/mobile login as a client employee)
-        if (wmsUser.role !== "CLIENT") {
-          console.warn("[AuthCallback] WMS user is not a CLIENT role:", wmsUser.id, wmsUser.role);
-          await supabase.auth.signOut();
-          setErrorMessage("Access denied. This Google account is associated with a " +
-            "non-client WMS role. Please contact your administrator.");
-          setErrorDetail(
-            "The authenticated Google account does not have the CLIENT role required " +
-            "for client employee access. Only users with role=CLIENT can sign in with Google."
-          );
-          setStatus("error");
-          return;
-        }
-
-        // Verify the user has a linked Client record with employeeRole
-        if (!wmsUser.client || !wmsUser.client.id || !wmsUser.client.employeeRole) {
-          console.warn("[AuthCallback] CLIENT user missing linked Client record:", wmsUser.id);
-          await supabase.auth.signOut();
-          setErrorMessage("Access denied. Your WMS user is missing a linked Client record.");
-          setErrorDetail(
-            "Your WMS user account has role=CLIENT but is not linked to a Client company. " +
-            "Please contact your administrator to complete the client employee setup."
-          );
-          setStatus("error");
-          return;
-        }
-
         // 5. Valid, active WMS user — persist their WMS userId so AuthContext can pick it up
         // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
         // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.

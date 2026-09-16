@@ -1,14 +1,30 @@
 import { OrderStatus, VerificationStatus } from "@/types";
 
+// Active workflow stages displayed in the transition modal (excludes historical RECEIVED and VERIFICATION_PENDING)
+export const ORDER_ACTIVE_WORKFLOW: OrderStatus[] = [
+  "ISSUED",
+  "PROCESSING",
+  "READY_FOR_DISPATCH",
+  "DISPATCHED",
+  "VERIFIED",
+  "INVOICE_PENDING",
+  "INVOICED",
+  "PAYMENT_PENDING",
+  "PAID",
+  "COMPLETED"
+];
+
 export const validOrderTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ["ISSUED", "CANCELLED"],
   ISSUED: ["DISPATCHED", "PROCESSING", "CANCELLED"],
   PROCESSING: ["READY_FOR_DISPATCH", "CANCELLED"],
-  READY_FOR_DISPATCH: ["DISPATCHED", "CANCELLED"],
-  DISPATCHED: ["CANCELLED"],
+  READY_FOR_DISPATCH: ["DISPATCHED"],
+  // DISPATCHED has no generic transitions - must use verification RPC
+  DISPATCHED: [],
+  // RECEIVED and VERIFICATION_PENDING are historical only - not available for new transitions
   RECEIVED: [],
   VERIFICATION_PENDING: [],
-  VERIFIED: ["INVOICE_PENDING", "INVOICED"],
+  VERIFIED: ["INVOICE_PENDING"],
   PARTIALLY_VERIFIED: ["PROCESSING", "CANCELLED"],
   REJECTED: ["PROCESSING", "CANCELLED"],
   INVOICE_PENDING: ["INVOICED"],

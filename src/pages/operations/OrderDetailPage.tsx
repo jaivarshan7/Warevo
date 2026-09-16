@@ -21,10 +21,7 @@ import {
   Building,
   CheckCircle2,
   AlertTriangle,
-  FileText,
-  Clock,
-  Send,
-  Truck
+  Clock
 } from "lucide-react";
 
 export const OrderDetailPage: React.FC = () => {
@@ -52,8 +49,8 @@ export const OrderDetailPage: React.FC = () => {
   // Warehouse Transition
   const [isTransitioning, setIsTransitioning] = useState(false);
 
-  // Messages
-  const [invoiceMessage, setInvoiceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // Generic action message state for verification/dispatch feedback
+  const [actionMessage, setActionMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const loadOrder = async () => {
     if (!id) return;
@@ -86,7 +83,7 @@ export const OrderDetailPage: React.FC = () => {
     if (!order) return;
 
     if (role === "CLIENT" && user?.client?.employeeRole !== "RECEIVER") {
-      setInvoiceMessage({
+      setActionMessage({
         type: "error",
         text: "Only client receivers can verify deliveries."
       });
@@ -94,7 +91,7 @@ export const OrderDetailPage: React.FC = () => {
     }
 
     if (order.status !== "DISPATCHED") {
-      setInvoiceMessage({
+      setActionMessage({
         type: "error",
         text: "Order must be dispatched before delivery verification."
       });
@@ -103,15 +100,16 @@ export const OrderDetailPage: React.FC = () => {
     }
 
     if (!allChecklistChecked) {
-      setInvoiceMessage({
+      setActionMessage({
         type: "error",
         text: "All inspection checklist items must be checked before submission."
       });
       return;
     }
 
+    setActionMessage(null);
+
     setIsVerifying(true);
-    setInvoiceMessage(null);
 
     try {
       await submitOrderVerification(
@@ -123,52 +121,20 @@ export const OrderDetailPage: React.FC = () => {
         user?.id
       );
       setIsVerifyOpen(false);
-      setInvoiceMessage({ type: "success", text: "Verification successfully submitted!" });
+      setActionMessage({ type: "success", text: "Verification successfully submitted!" });
       await loadOrder();
     } catch (err: any) {
       const errMsg = err?.message || "";
-      if (
-        errMsg.includes("not ready for client verification") ||
-        errMsg.includes("DISPATCHED") ||
-        errMsg.includes("ISSUED")
-      ) {
-        setInvoiceMessage({
+      if (errMsg.includes("not ready for client verification")) {
+        setActionMessage({
           type: "error",
           text: "Order must be dispatched before delivery verification."
         });
       } else {
-        setInvoiceMessage({ type: "error", text: errMsg || "Verification submission failed" });
+        setActionMessage({ type: "error", text: errMsg || "Verification submission failed" });
       }
     } finally {
       setIsVerifying(false);
-    }
-  };
-
-  const handleDispatchOrder = async () => {
-    if (!order) return;
-    setIsTransitioning(true);
-    setInvoiceMessage(null);
-
-    try {
-      await transitionOrderStatus(
-        order.id,
-        "DISPATCHED",
-        "Order dispatched for delivery",
-        user?.id,
-        role
-      );
-      setInvoiceMessage({
-        type: "success",
-        text: `Order ${order.orderNumber} successfully dispatched.`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to dispatch order."
-      });
-    } finally {
-      setIsTransitioning(false);
     }
   };
 
@@ -201,17 +167,7 @@ export const OrderDetailPage: React.FC = () => {
     isClientReceiver &&
     Boolean(user?.client?.id) &&
     isTenantAuthorized &&
-    order.status === "DISPATCHED";
-
-  // Warehouse roles that manage order fulfillment and receipt
-  const isWarehouseUser =
-    Boolean(role) &&
-    !isClientRole(role) &&
-    role !== "ACCOUNTANT" &&
-    role !== "ACCOUNTS_TEAM";
-
-  const canGenerateInvoice =
-    ["WAREHOUSE_OWNER", "ACCOUNTANT", "ACCOUNTS_TEAM", "PLATFORM_ADMIN"].includes(role);
+    (order.status === "DISPATCHED");
 
   return (
     <div className="space-y-6">
@@ -222,24 +178,6 @@ export const OrderDetailPage: React.FC = () => {
       >
         <ArrowLeft className="w-4 h-4" /> Back to Orders
       </Link>
-
-      {/* Invoice alert message */}
-      {invoiceMessage && (
-        <div
-          className={`p-4 rounded-xl text-xs flex items-center gap-2 border ${
-            invoiceMessage.type === "success"
-              ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-              : "bg-rose-950/60 border-rose-800 text-rose-300"
-          }`}
-        >
-          {invoiceMessage.type === "success" ? (
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-          ) : (
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-          )}
-          <span>{invoiceMessage.text}</span>
-        </div>
-      )}
 
       {/* Header Banner */}
       <Card className="p-6">
@@ -270,18 +208,6 @@ export const OrderDetailPage: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
-            {isWarehouseUser && order.status === "ISSUED" && (
-              <Button
-                variant="primary"
-                onClick={handleDispatchOrder}
-                isLoading={isTransitioning}
-                className="bg-indigo-600 hover:bg-indigo-500 shadow-indigo-950"
-              >
-                <Truck className="w-4 h-4 mr-1.5" />
-                Dispatch Order
-              </Button>
-            )}
-
             {canVerify && (
               <Button
                 variant="primary"
