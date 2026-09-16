@@ -15,7 +15,7 @@ import { Modal } from "@/components/ui/Modal";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { validOrderTransitions } from "@/lib/orderWorkflow";
+import { validOrderTransitions, ORDER_ACTIVE_WORKFLOW } from "@/lib/orderWorkflow";
 import {
   Plus,
   Search,
@@ -271,7 +271,7 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
       await createEnhancedOrder({
         tenantId: tenant.id,
         clientId: primaryClient.id,
-        selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : null,
+        selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : undefined,
         createdById: user.id,
         notes: orderNotes,
         eWayBill: transporterName || vehicleNumber ? {
@@ -499,24 +499,93 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
           onClose={() => setTransitioningOrder(null)}
           title={`Advance Order ${transitioningOrder.orderNumber}`}
           description={`Current Status: ${transitioningOrder.status}`}
+          maxWidth="md"
         >
           <form onSubmit={handleTransition} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Select Next Valid Status (Strict State Machine)
+              <label className="block text-xs font-medium text-slate-300 mb-2">
+                Complete Order Workflow
               </label>
-              <select
-                value={targetStatus}
-                onChange={(e) => setTargetStatus(e.target.value as OrderStatus)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                required
-              >
-                {validOrderTransitions[transitioningOrder.status]?.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+                {ORDER_ACTIVE_WORKFLOW.map((status) => {
+                  const currentIndex = ORDER_ACTIVE_WORKFLOW.indexOf(transitioningOrder.status);
+                  const statusIndex = ORDER_ACTIVE_WORKFLOW.indexOf(status);
+                  const isCurrent = transitioningOrder.status === status;
+                  const isCompleted = statusIndex < currentIndex;
+                  const isValidNext = validOrderTransitions[transitioningOrder.status]?.includes(status);
+
+                  // Special handling for VERIFIED when current status is DISPATCHED
+                  // VERIFIED is handled through client RECEIVER verification, not generic transition
+                  const isDispatchedToVerified = transitioningOrder.status === "DISPATCHED" && status === "VERIFIED";
+
+                  let isDisabled = false;
+                  if (isCompleted) {
+                    isDisabled = true;
+                  } else if (!isCurrent && !isValidNext) {
+                    isDisabled = true;
+                  }
+                  // Keep VERIFIED disabled when DISPATCHED because it uses special verification flow
+                  if (isDispatchedToVerified) {
+                    isDisabled = true;
+                  }
+
+                  return (
+                    <label
+                      key={status}
+                      className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                        isCurrent
+                          ? "bg-indigo-950/60 border-indigo-600 ring-1 ring-indigo-500"
+                          : isCompleted
+                            ? "bg-emerald-950/30 border-emerald-800/50"
+                            : isDisabled
+                              ? "bg-slate-900/30 border-slate-800 opacity-50 cursor-not-allowed"
+                              : "bg-slate-800/50 border-slate-700 hover:border-indigo-600 hover:bg-indigo-950/30"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="targetStatus"
+                        value={status}
+                        checked={targetStatus === status}
+                        onChange={(e) => setTargetStatus(e.target.value as OrderStatus)}
+                        disabled={isDisabled}
+                        className="w-4 h-4 text-indigo-600 bg-slate-800 border-slate-600 focus:ring-indigo-500"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-sm font-medium ${
+                            isCurrent
+                              ? "text-indigo-300"
+                              : isCompleted
+                                ? "text-emerald-300"
+                                : "text-slate-300"
+                          }`}>
+                            {status.replace(/_/g, " ")}
+                          </span>
+                          {isCurrent && (
+                            <span className="px-2 py-0.5 bg-indigo-600 text-white text-[10px] rounded-full font-semibold">
+                              CURRENT
+                            </span>
+                          )}
+                          {isCompleted && (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          )}
+                          {isValidNext && !isCurrent && (
+                            <span className="px-2 py-0.5 bg-emerald-600 text-white text-[10px] rounded-full font-semibold">
+                              AVAILABLE
+                            </span>
+                          )}
+                        </div>
+                        {isDispatchedToVerified && (
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            Use "Verify Delivery Order" button for client receiver verification
+                          </p>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
 
             <div>

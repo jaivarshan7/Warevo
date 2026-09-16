@@ -165,10 +165,10 @@ export const OrderTrackPage: React.FC = () => {
     setActionError(null);
 
     try {
-      // Convert item checkboxes to orderItemId-based responses
+      // Convert item checkboxes to text-based responses for submitOrderVerification
       const responses =
         activeOrder.items?.map((item) => ({
-          orderItemId: item.id,
+          text: item.product?.name || `Item ${item.product?.sku || item.id}`,
           checked: itemCheckboxes[item.id] || false,
         })) || [];
 
