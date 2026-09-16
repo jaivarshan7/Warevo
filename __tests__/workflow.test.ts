@@ -91,7 +91,7 @@ describe("notification helpers", () => {
 
 describe("order state machine", () => {
   it("accepts configured forward transitions", () => {
-    expect(() => assertValidTransition(OrderStatus.DISPATCHED, OrderStatus.RECEIVED)).not.toThrow();
+    expect(() => assertValidTransition(OrderStatus.DISPATCHED, OrderStatus.RECEIVED)).toThrow("Invalid order status transition");
   });
 
   it("rejects arbitrary jumps", () => {
