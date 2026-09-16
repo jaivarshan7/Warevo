@@ -16,7 +16,7 @@ export const ORDER_ACTIVE_WORKFLOW: OrderStatus[] = [
 
 export const validOrderTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ["ISSUED", "CANCELLED"],
-  ISSUED: ["PROCESSING", "CANCELLED"],
+  ISSUED: ["DISPATCHED", "PROCESSING", "CANCELLED"],
   PROCESSING: ["READY_FOR_DISPATCH", "CANCELLED"],
   READY_FOR_DISPATCH: ["DISPATCHED"],
   // DISPATCHED has no generic transitions - must use verification RPC

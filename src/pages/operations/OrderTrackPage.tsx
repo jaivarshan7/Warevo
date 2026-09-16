@@ -410,9 +410,20 @@ export const OrderTrackPage: React.FC = () => {
                         DISPATCHED: 4,
                         VERIFIED: 5,
                       };
-                      const currentIdx = stepMap[activeOrder.status] || 1;
-                      const isCompleted = currentIdx >= idx + 1;
-                      const isCurrent = currentIdx === idx + 1;
+                      // Map order status to timeline position
+                      const statusToStep: Record<string, number> = {
+                        ISSUED: 1,
+                        PROCESSING: 1,
+                        READY_FOR_DISPATCH: 1,
+                        DISPATCHED: 2,
+                        RECEIVED: 2,
+                        VERIFICATION_PENDING: 3,
+                        VERIFIED: 4
+                      };
+                      const currentIdx = statusToStep[activeOrder.status] || 1;
+                      const stepIdx = stepMap[step] || 1;
+                      const isCompleted = currentIdx >= stepIdx;
+                      const isCurrent = currentIdx === stepIdx;
 
                       return (
                         <div

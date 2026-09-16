@@ -273,6 +273,7 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
         clientId: primaryClient.id,
         selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : undefined,
         createdById: user.id,
+        status: "ISSUED",
         notes: orderNotes,
         eWayBill: transporterName || vehicleNumber ? {
           transporterName,
@@ -398,8 +399,6 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
               <option value="PROCESSING">PROCESSING</option>
               <option value="READY_FOR_DISPATCH">READY FOR DISPATCH</option>
               <option value="DISPATCHED">DISPATCHED</option>
-              <option value="RECEIVED">RECEIVED</option>
-              <option value="VERIFICATION_PENDING">VERIFICATION PENDING</option>
               <option value="VERIFIED">VERIFIED</option>
               <option value="INVOICE_PENDING">INVOICE PENDING</option>
               <option value="INVOICED">INVOICED</option>

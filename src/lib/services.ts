@@ -347,7 +347,7 @@ export async function createOrder(payload: {
       tenantId: payload.tenantId,
       clientId: payload.clientId,
       orderNumber,
-      status: "DRAFT",
+      status: "ISSUED",
       verificationStatus: "PENDING",
       subtotal,
       taxTotal,
@@ -421,7 +421,7 @@ export async function createEnhancedOrder(payload: {
     discount?: number;
   }>;
 }) {
-  const initialStatus: OrderStatus = payload.status || "DRAFT";
+  const initialStatus: OrderStatus = payload.status || "ISSUED";
 
   // Use atomic RPC to create order + invoice in a single database transaction
   // This ensures that either both are created or neither is created
@@ -916,116 +916,38 @@ async function generateNextInvoiceNumber(tenantId: string, settings?: TenantSett
 
 export async function submitClientReceiverVerification(payload: {
   orderId: string;
-  tenantId: string;
-  clientId: string;
+  tenantId?: string;
+  clientId?: string;
   status: VerificationStatus;
-  responses: Array<{ orderItemId: string; checked: boolean }>;
+  responses: Array<{ text?: string; orderItemId?: string; checked: boolean }>;
   comments?: string;
+  attachments?: any;
   userId?: string | null;
   userRole?: Role;
-}): Promise<{ updatedOrder: any; responseId: string }> {
+}): Promise<{ updatedOrder?: any; responseId?: string; success?: boolean; [key: string]: any }> {
   // Validate all items are checked when status is VERIFIED
   if (payload.status === "VERIFIED") {
-    const allChecked = payload.responses.every((r) => r.checked);
+    const allChecked =
+      payload.responses &&
+      payload.responses.length >= 7 &&
+      payload.responses.every((r) => r.checked);
     if (!allChecked) {
-      throw new Error("All order items must be checked to verify delivery as VERIFIED.");
+      throw new Error("All inspection checklist items must be checked to verify delivery as VERIFIED.");
     }
   }
 
-  // Check if verification already exists for this order
-  const existingVerification = await supabase
-    .from("VerificationResponse")
-    .select("id, status")
-    .eq("orderId", payload.orderId)
-    .maybeSingle();
-
-  if (existingVerification.data && existingVerification.data.status === "VERIFIED") {
-    throw new Error("Delivery has already been verified. Cannot verify again.");
-  }
-
-  // Insert or update verification response
-  const respId = existingVerification.data?.id || `vr_${Math.random().toString(36).substring(2, 10)}`;
-  const { data: verification, error: verificationError } = await supabase
-    .from("VerificationResponse")
-    .upsert({
-      id: respId,
-      tenantId: payload.tenantId,
-      orderId: payload.orderId,
-      clientId: payload.clientId,
-      userId: payload.userId || null,
-      status: payload.status,
-      responses: payload.responses,
-      comments: payload.comments || null
-    }, { onConflict: "orderId" })
-    .select()
-    .single();
-
-  if (verificationError) throw verificationError;
-
-  // Determine order status based on verification status
-  const nextOrderStatus: OrderStatus =
-    payload.status === "VERIFIED"
-      ? "VERIFIED"
-      : payload.status === "PARTIALLY_VERIFIED"
-      ? "PARTIALLY_VERIFIED"
-      : "REJECTED";
-
-  // Update order verification status
-  const { data: updatedOrder, error: orderErr } = await supabase
-    .from("Order")
-    .update({
-      verificationStatus: payload.status,
-      status: nextOrderStatus,
-      updatedAt: new Date().toISOString()
-    })
-    .eq("id", payload.orderId)
-    .select()
-    .single();
-
-  if (orderErr) throw orderErr;
-
-  // Create status history
-  await supabase.from("OrderStatusHistory").insert({
-    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
-    tenantId: payload.tenantId,
-    orderId: payload.orderId,
-    newStatus: nextOrderStatus,
-    changedById: payload.userId || null,
-    notes: payload.comments || `Delivery verification marked as ${payload.status}`
+  // Use secure RPC for server-side verification and status transition
+  const { data, error } = await supabase.rpc("rpc_submit_verification", {
+    p_order_id: payload.orderId,
+    p_status: payload.status,
+    p_responses: payload.responses,
+    p_comments: payload.comments || null,
+    p_attachments: payload.attachments || null,
+    p_user_id: payload.userId || null
   });
 
-  // Create audit log
-  if (payload.userId) {
-    await supabase.from("AuditLog").insert({
-      id: `al_${Math.random().toString(36).substring(2, 10)}`,
-      tenantId: payload.tenantId,
-      userId: payload.userId,
-      userRole: payload.userRole || "PRODUCT_RECEIVER",
-      action: "Submitted delivery verification",
-      entity: "Order",
-      entityId: payload.orderId,
-      newValue: {
-        verificationStatus: payload.status,
-        status: nextOrderStatus,
-        responses: payload.responses
-      }
-    });
-  }
-
-  // Create notification
-  await supabase.from("Notification").insert({
-    id: `notif_${Math.random().toString(36).substring(2, 10)}`,
-    tenantId: payload.tenantId,
-    orderId: payload.orderId,
-    type: "CLIENT_COMPLETED_VERIFICATION",
-    title: "Delivery Inspection Submitted",
-    message: `Order delivery verification completed with status: ${payload.status}`,
-    priority: "HIGH",
-    actionUrl: `/operations/orders/${payload.orderId}`,
-    read: false
-  });
-
-  return { updatedOrder, responseId: respId };
+  if (error) throw error;
+  return data;
 }
 
 export async function fetchPendingVerificationOrders(
@@ -1040,6 +962,7 @@ export async function fetchPendingVerificationOrders(
   let query = supabase
     .from("Order")
     .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
+    .eq("status", "DISPATCHED")
     .eq("verificationStatus", "PENDING")
     .order("createdAt", { ascending: false });
 
@@ -1390,8 +1313,7 @@ export async function markInvoiceAsPaid(
     .from("Invoice")
     .update({
       paymentStatus: "PAID",
-      status: "FINAL",
-      finalizedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString()
     })
     .eq("id", invoiceId)
     .select()
@@ -1459,8 +1381,7 @@ export async function recordPaymentWithProof(
       .from("Invoice")
       .update({
         paymentStatus: "PAID",
-        status: "FINAL",
-        finalizedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString()
       })
       .eq("id", invoiceId)
       .select()
@@ -1543,16 +1464,13 @@ export async function recordPartialPaymentWithProof(
       .single();
 
     let newPaymentStatus: PaymentStatus = "PARTIALLY_PAID";
-    let newInvoiceStatus: InvoiceStatus = "DRAFT";
 
     if (invoice && totalPaid >= invoice.total) {
       newPaymentStatus = "PAID";
-      newInvoiceStatus = "FINAL";
     }
 
     await supabase.from("Invoice").update({
       paymentStatus: newPaymentStatus,
-      status: newInvoiceStatus,
       updatedAt: new Date().toISOString()
     }).eq("id", invoiceId);
 
