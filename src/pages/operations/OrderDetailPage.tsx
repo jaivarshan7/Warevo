@@ -5,7 +5,6 @@ import {
   fetchOrderById,
   transitionOrderStatus,
   submitOrderVerification,
-  generateInvoiceRecord,
   isClientRole
 } from "@/lib/services";
 import { Order, OrderStatus, VerificationStatus } from "@/types";
@@ -22,9 +21,7 @@ import {
   Building,
   CheckCircle2,
   AlertTriangle,
-  FileText,
-  Clock,
-  Send
+  Clock
 } from "lucide-react";
 
 export const OrderDetailPage: React.FC = () => {
@@ -51,10 +48,6 @@ export const OrderDetailPage: React.FC = () => {
 
   // Warehouse Transition
   const [isTransitioning, setIsTransitioning] = useState(false);
-
-  // Invoice Generation
-  const [isGeneratingInvoice, setIsGeneratingInvoice] = useState(false);
-  const [invoiceMessage, setInvoiceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const loadOrder = async () => {
     if (!id) return;
@@ -141,28 +134,6 @@ export const OrderDetailPage: React.FC = () => {
     }
   };
 
-  const handleGenerateInvoice = async (isFinal: boolean) => {
-    if (!order) return;
-    setIsGeneratingInvoice(true);
-    setInvoiceMessage(null);
-
-    try {
-      const res = await generateInvoiceRecord(order.id, isFinal, user?.id, role);
-      setInvoiceMessage({
-        type: "success",
-        text: `Successfully generated ${isFinal ? "Final" : "Draft"} Invoice ${res.invoiceNumber}!`
-      });
-      await loadOrder();
-    } catch (err: any) {
-      setInvoiceMessage({
-        type: "error",
-        text: err?.message || "Failed to generate invoice."
-      });
-    } finally {
-      setIsGeneratingInvoice(false);
-    }
-  };
-
   if (loading) return <LoadingSpinner message="Loading order details and timeline..." />;
   if (!order) {
     return (
@@ -194,16 +165,6 @@ export const OrderDetailPage: React.FC = () => {
     isTenantAuthorized &&
     (order.status === "DISPATCHED");
 
-  // Warehouse roles that manage order fulfillment and receipt
-  const isWarehouseUser =
-    Boolean(role) &&
-    !isClientRole(role) &&
-    role !== "ACCOUNTANT" &&
-    role !== "ACCOUNTS_TEAM";
-
-  const canGenerateInvoice =
-    ["WAREHOUSE_OWNER", "ACCOUNTANT", "ACCOUNTS_TEAM", "PLATFORM_ADMIN"].includes(role);
-
   return (
     <div className="space-y-6">
       {/* Back button */}
@@ -213,24 +174,6 @@ export const OrderDetailPage: React.FC = () => {
       >
         <ArrowLeft className="w-4 h-4" /> Back to Orders
       </Link>
-
-      {/* Invoice alert message */}
-      {invoiceMessage && (
-        <div
-          className={`p-4 rounded-xl text-xs flex items-center gap-2 border ${
-            invoiceMessage.type === "success"
-              ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-              : "bg-rose-950/60 border-rose-800 text-rose-300"
-          }`}
-        >
-          {invoiceMessage.type === "success" ? (
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-          ) : (
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-          )}
-          <span>{invoiceMessage.text}</span>
-        </div>
-      )}
 
       {/* Header Banner */}
       <Card className="p-6">
@@ -270,30 +213,6 @@ export const OrderDetailPage: React.FC = () => {
                 <CheckCircle2 className="w-4 h-4 mr-1.5" />
                 Verify Delivery Order
               </Button>
-            )}
-
-            {canGenerateInvoice && order.status !== "INVOICED" && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => handleGenerateInvoice(false)}
-                  isLoading={isGeneratingInvoice}
-                >
-                  <FileText className="w-4 h-4 mr-1.5" /> Draft Invoice
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => handleGenerateInvoice(true)}
-                  isLoading={isGeneratingInvoice}
-                  title={
-                    order.verificationStatus !== "VERIFIED"
-                      ? "Final invoice requires VERIFIED delivery status"
-                      : undefined
-                  }
-                >
-                  <Send className="w-4 h-4 mr-1.5" /> Final Invoice
-                </Button>
-              </div>
             )}
           </div>
         </div>

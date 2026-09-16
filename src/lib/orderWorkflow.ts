@@ -1,5 +1,19 @@
 import { OrderStatus, VerificationStatus } from "@/types";
 
+// Active workflow stages displayed in the transition modal (excludes historical RECEIVED and VERIFICATION_PENDING)
+export const ORDER_ACTIVE_WORKFLOW: OrderStatus[] = [
+  "ISSUED",
+  "PROCESSING",
+  "READY_FOR_DISPATCH",
+  "DISPATCHED",
+  "VERIFIED",
+  "INVOICE_PENDING",
+  "INVOICED",
+  "PAYMENT_PENDING",
+  "PAID",
+  "COMPLETED"
+];
+
 export const validOrderTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ["ISSUED", "CANCELLED"],
   ISSUED: ["PROCESSING", "CANCELLED"],
