@@ -1102,17 +1102,26 @@ export async function recordInvoicePayment(
   userId?: string | null,
   userRole?: Role
 ) {
-  const { data, error } = await supabase.rpc("rpc_record_payment", {
+  const { data, error } = await supabase.rpc("rpc_record_payment_secure", {
     p_invoice_id: invoiceId,
     p_amount: amount,
     p_method: method,
-    p_reference: reference || null,
-    p_proof_url: proofUrl || null,
-    p_user_id: userId || null,
-    p_user_role: userRole || "ACCOUNTS_TEAM"
+    p_reference: reference || null
   });
 
   if (error) throw error;
+
+  if (proofUrl && (data as any)?.paymentId) {
+    const { data: inv } = await supabase
+      .from("Invoice")
+      .select("tenantId")
+      .eq("id", invoiceId)
+      .single();
+    if (inv?.tenantId) {
+      await attachPaymentProof((data as any).paymentId, invoiceId, inv.tenantId, proofUrl);
+    }
+  }
+
   return data;
 }
 
@@ -1296,36 +1305,29 @@ export async function markInvoiceAsPaid(
   totalAmount: number,
   userId?: string | null
 ) {
-  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
-  await supabase.from("Payment").insert({
-    id: paymentId,
-    tenantId,
-    invoiceId,
-    amount: totalAmount,
-    status: "PAID",
-    method: "BANK_TRANSFER",
-    reference: `PAY-${Date.now().toString().slice(-6)}`,
-    proofUrl: proofUrl || null,
-    paidAt: new Date().toISOString()
+  const { data, error } = await supabase.rpc("rpc_record_payment_secure", {
+    p_invoice_id: invoiceId,
+    p_amount: totalAmount,
+    p_method: "BANK_TRANSFER",
+    p_reference: `PAY-${Date.now().toString().slice(-6)}`
   });
 
-  const { data, error } = await supabase
-    .from("Invoice")
-    .update({
-      paymentStatus: "PAID",
-      updatedAt: new Date().toISOString()
-    })
-    .eq("id", invoiceId)
-    .select()
-    .single();
-
   if (error) throw error;
+
+  if (proofUrl && (data as any)?.paymentId) {
+    try {
+      await attachPaymentProof((data as any).paymentId, invoiceId, tenantId, proofUrl);
+    } catch (attachError) {
+      console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
+    }
+  }
+
   return data;
 }
 
 /**
  * Records a payment and uploads a payment proof file
- * Creates payment record first, then uploads file, then updates proofUrl
+ * Creates payment record via secure RPC first, then uploads file, then updates proofUrl
  *
  * @param invoiceId - The invoice to record payment for
  * @param file - The payment proof file
@@ -1340,66 +1342,38 @@ export async function recordPaymentWithProof(
   totalAmount: number,
   userId?: string | null
 ): Promise<{ paymentId: string; proofUrl: string }> {
-  // First create the payment record
-  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
-
-  // We'll get the proofUrl after upload
-  // Insert payment record with temporary proofUrl (will be updated after upload)
-  await supabase.from("Payment").insert({
-    id: paymentId,
-    tenantId,
-    invoiceId,
-    amount: totalAmount,
-    status: "PAID",
-    method: "BANK_TRANSFER",
-    reference: `PAY-${Date.now().toString().slice(-6)}`,
-    proofUrl: null, // Will be updated after upload
-    paidAt: new Date().toISOString()
+  // 1. Create payment record via secure RPC
+  const { data, error: rpcError } = await supabase.rpc("rpc_record_payment_secure", {
+    p_invoice_id: invoiceId,
+    p_amount: totalAmount,
+    p_method: "BANK_TRANSFER",
+    p_reference: `PAY-${Date.now().toString().slice(-6)}`
   });
 
-  try {
-    // Get invoiceId if not passed (for storage path)
-    // Actually we need it to be passed, so we can build the path
-
-    // Upload the payment proof file
-    const proofUrl = await uploadPaymentProofFile(file, tenantId, invoiceId, paymentId);
-
-    // Update payment record with the actual proofUrl
-    const { error: updateError } = await supabase
-      .from("Payment")
-      .update({ proofUrl })
-      .eq("id", paymentId);
-
-    if (updateError) {
-      console.warn("Failed to update payment proof URL:", updateError);
-      // Don't throw - payment is recorded, just proofUrl update failed
-      // The file is still in storage
-    }
-
-    // Update invoice payment status
-    const { data, error } = await supabase
-      .from("Invoice")
-      .update({
-        paymentStatus: "PAID",
-        updatedAt: new Date().toISOString()
-      })
-      .eq("id", invoiceId)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    return { paymentId, proofUrl };
-  } catch (uploadError) {
-    // If upload fails, clean up the payment record
-    await supabase.from("Payment").delete().eq("id", paymentId);
-    throw uploadError;
+  if (rpcError) throw rpcError;
+  const paymentId = (data as any)?.paymentId;
+  if (!paymentId) {
+    throw new Error("Failed to record payment: no payment ID returned from database");
   }
+
+  // 2. Upload the payment proof file using the authoritative payment ID
+  // Note: If upload fails, client rollback DELETE is removed (Phase 2A).
+  // Phase 2B will implement secure payment cancellation/cleanup.
+  const proofUrl = await uploadPaymentProofFile(file, tenantId, invoiceId, paymentId);
+
+  // 3. Attach proofUrl to Payment record
+  try {
+    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
+  } catch (attachError) {
+    console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
+  }
+
+  return { paymentId, proofUrl };
 }
 
 /**
  * Records a partial payment with proof
- * For partial payments, only updates payment status, doesn't mark invoice PAID
+ * Payment status calculation and Invoice/Order updates are executed atomically in Postgres
  *
  * @param invoiceId - The invoice to record payment for
  * @param file - The payment proof file
@@ -1418,68 +1392,38 @@ export async function recordPartialPaymentWithProof(
   reference?: string,
   userId?: string | null
 ): Promise<{ paymentId: string; proofUrl: string }> {
-  // First create the payment record
-  const paymentId = `pay_${Math.random().toString(36).substring(2, 10)}`;
-
-  await supabase.from("Payment").insert({
-    id: paymentId,
-    tenantId,
-    invoiceId,
-    amount,
-    status: "PAID",
-    method: method || "BANK_TRANSFER",
-    reference: reference || `PAY-${Date.now().toString().slice(-6)}`,
-    proofUrl: null, // Will be updated after upload
-    paidAt: new Date().toISOString()
+  // 1. Create payment record via secure RPC
+  const { data, error: rpcError } = await supabase.rpc("rpc_record_payment_secure", {
+    p_invoice_id: invoiceId,
+    p_amount: amount,
+    p_method: method || "BANK_TRANSFER",
+    p_reference: reference || `PAY-${Date.now().toString().slice(-6)}`
   });
 
-  try {
-    // Upload the payment proof file
-    const proofUrl = await uploadPaymentProofFile(
-      file,
-      tenantId,
-      invoiceId,
-      paymentId
-    );
-
-    // Update payment record with the actual proofUrl
-    await supabase.from("Payment").update({ proofUrl }).eq("id", paymentId);
-
-    // Update invoice payment status based on total paid vs invoice total
-    // Calculate total paid
-    const { data: payments, error: paymentsError } = await supabase
-      .from("Payment")
-      .select("amount")
-      .eq("invoiceId", invoiceId)
-      .eq("status", "PAID");
-
-    if (paymentsError) throw paymentsError;
-
-    const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
-
-    const { data: invoice } = await supabase
-      .from("Invoice")
-      .select("total")
-      .eq("id", invoiceId)
-      .single();
-
-    let newPaymentStatus: PaymentStatus = "PARTIALLY_PAID";
-
-    if (invoice && totalPaid >= invoice.total) {
-      newPaymentStatus = "PAID";
-    }
-
-    await supabase.from("Invoice").update({
-      paymentStatus: newPaymentStatus,
-      updatedAt: new Date().toISOString()
-    }).eq("id", invoiceId);
-
-    return { paymentId, proofUrl };
-  } catch (uploadError) {
-    // If upload fails, clean up the payment record
-    await supabase.from("Payment").delete().eq("id", paymentId);
-    throw uploadError;
+  if (rpcError) throw rpcError;
+  const paymentId = (data as any)?.paymentId;
+  if (!paymentId) {
+    throw new Error("Failed to record partial payment: no payment ID returned from database");
   }
+
+  // 2. Upload the payment proof file using the authoritative payment ID
+  // Note: If upload fails, client rollback DELETE is removed (Phase 2A).
+  // Phase 2B will implement secure payment cancellation/cleanup.
+  const proofUrl = await uploadPaymentProofFile(
+    file,
+    tenantId,
+    invoiceId,
+    paymentId
+  );
+
+  // 3. Attach proofUrl to Payment record
+  try {
+    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
+  } catch (attachError) {
+    console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
+  }
+
+  return { paymentId, proofUrl };
 }
 
 /**
