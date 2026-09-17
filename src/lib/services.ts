@@ -1286,16 +1286,38 @@ export async function attachPaymentProof(
   tenantId: string,
   proofUrl: string
 ): Promise<void> {
-  const { error } = await supabase
-    .from("Payment")
-    .update({ proofUrl })
-    .eq("id", paymentId)
-    .eq("invoiceId", invoiceId)
-    .eq("tenantId", tenantId);
+  const { error } = await supabase.rpc("rpc_attach_payment_proof", {
+    p_payment_id: paymentId,
+    p_invoice_id: invoiceId,
+    p_proof_url: proofUrl
+  });
 
   if (error) {
     throw new Error(`Failed to attach payment proof: ${error.message}`);
   }
+}
+
+/**
+ * Securely cancels / voids a payment record and recalculates invoice payment status
+ *
+ * @param paymentId - The payment record ID to cancel
+ */
+export async function cancelPaymentRecord(
+  paymentId: string
+): Promise<{
+  success: boolean;
+  paymentId: string;
+  invoiceId: string;
+  status: PaymentStatus;
+  newPaymentStatus: PaymentStatus;
+  totalPaid: number;
+}> {
+  const { data, error } = await supabase.rpc("rpc_cancel_payment_record", {
+    p_payment_id: paymentId
+  });
+
+  if (error) throw error;
+  return data;
 }
 
 export async function markInvoiceAsPaid(
@@ -1356,19 +1378,23 @@ export async function recordPaymentWithProof(
     throw new Error("Failed to record payment: no payment ID returned from database");
   }
 
-  // 2. Upload the payment proof file using the authoritative payment ID
-  // Note: If upload fails, client rollback DELETE is removed (Phase 2A).
-  // Phase 2B will implement secure payment cancellation/cleanup.
-  const proofUrl = await uploadPaymentProofFile(file, tenantId, invoiceId, paymentId);
-
-  // 3. Attach proofUrl to Payment record
   try {
-    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
-  } catch (attachError) {
-    console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
-  }
+    // 2. Upload the payment proof file using the authoritative payment ID
+    const proofUrl = await uploadPaymentProofFile(file, tenantId, invoiceId, paymentId);
 
-  return { paymentId, proofUrl };
+    // 3. Attach proofUrl to Payment record via secure RPC
+    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
+
+    return { paymentId, proofUrl };
+  } catch (uploadError) {
+    // If upload or attach fails, safely cancel the unproven payment record
+    try {
+      await cancelPaymentRecord(paymentId);
+    } catch (cancelErr) {
+      console.warn("Failed to automatically cancel payment after proof failure:", cancelErr);
+    }
+    throw uploadError;
+  }
 }
 
 /**
@@ -1406,24 +1432,28 @@ export async function recordPartialPaymentWithProof(
     throw new Error("Failed to record partial payment: no payment ID returned from database");
   }
 
-  // 2. Upload the payment proof file using the authoritative payment ID
-  // Note: If upload fails, client rollback DELETE is removed (Phase 2A).
-  // Phase 2B will implement secure payment cancellation/cleanup.
-  const proofUrl = await uploadPaymentProofFile(
-    file,
-    tenantId,
-    invoiceId,
-    paymentId
-  );
-
-  // 3. Attach proofUrl to Payment record
   try {
-    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
-  } catch (attachError) {
-    console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
-  }
+    // 2. Upload the payment proof file using the authoritative payment ID
+    const proofUrl = await uploadPaymentProofFile(
+      file,
+      tenantId,
+      invoiceId,
+      paymentId
+    );
 
-  return { paymentId, proofUrl };
+    // 3. Attach proofUrl to Payment record via secure RPC
+    await attachPaymentProof(paymentId, invoiceId, tenantId, proofUrl);
+
+    return { paymentId, proofUrl };
+  } catch (uploadError) {
+    // If upload or attach fails, safely cancel the unproven payment record
+    try {
+      await cancelPaymentRecord(paymentId);
+    } catch (cancelErr) {
+      console.warn("Failed to automatically cancel payment after proof failure:", cancelErr);
+    }
+    throw uploadError;
+  }
 }
 
 /**
