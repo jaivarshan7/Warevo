@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { createEmployeeWithAuth } from "./employeeService";
 import {
   Order,
   Inventory,
@@ -1911,27 +1912,22 @@ export async function createAdminWarehouse(payload: {
 export async function createAdminUser(payload: {
   name: string;
   email?: string;
+  password?: string;
   mobile?: string;
   role: Role;
   tenantId?: string;
 }) {
-  const { data, error } = await supabase
-    .from("User")
-    .insert([
-      {
-        name: payload.name,
-        email: payload.email || null,
-        mobile: payload.mobile || null,
-        role: payload.role,
-        tenantId: payload.tenantId || null,
-        status: "ACTIVE"
-      }
-    ])
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  if (!payload.email) throw new Error("Email is required to create a user account.");
+  const result = await createEmployeeWithAuth({
+    name: payload.name,
+    email: payload.email,
+    password: payload.password || "TemporaryPass123!",
+    mobile: payload.mobile,
+    role: payload.role,
+    tenantId: payload.tenantId
+  });
+  if (!result.success) throw new Error(result.error || "Failed to create user");
+  return { id: result.userId, ...payload };
 }
 
 export async function createAdminClient(payload: {
@@ -2060,10 +2056,10 @@ export interface CreateClientEmployeePayload {
   actorUserRole?: Role;
 }
 
-export async function createClientEmployeeWithUser(payload: CreateClientEmployeePayload) {
+export async function createClientEmployeeWithUser(payload: CreateClientEmployeePayload & { password?: string }) {
   const normalizedEmail = payload.email?.trim().toLowerCase();
   if (!normalizedEmail) {
-    throw new Error("Email is required for Client Employee creation to enable WMS login and Google Sign-In.");
+    throw new Error("Email is required for Client Employee creation to enable WMS login.");
   }
   if (!payload.tenantId) {
     throw new Error("Tenant ID is required.");
@@ -2075,182 +2071,50 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
     throw new Error("Mobile number is required.");
   }
 
-  // Tenant-scoped duplicate user check: check within the authorized tenant scope
-  const { data: existingTenantUsers, error: searchError } = await supabase
-    .from("User")
-    .select("id, name, email, mobile, role, tenantId, status")
-    .eq("tenantId", payload.tenantId)
-    .ilike("email", normalizedEmail);
+  const result = await createEmployeeWithAuth({
+    name: payload.contactPerson.trim(),
+    email: normalizedEmail,
+    password: payload.password || "TemporaryPass123!",
+    mobile: payload.mobile.trim() || undefined,
+    role: "CLIENT",
+    clientEmployeeRole: payload.employeeRole,
+    companyName: payload.companyName.trim(),
+    shippingAddress: payload.shippingAddress?.trim() || "Main Office",
+    billingAddress: payload.billingAddress?.trim() || payload.shippingAddress?.trim() || "Main Office",
+    tenantId: payload.tenantId,
+  });
 
-  if (searchError) {
-    throw new Error(`Failed to check existing users in organization: ${searchError.message}`);
-  }
-
-  let targetUserId: string;
-  let isNewlyCreatedUser = false;
-
-  if (existingTenantUsers && existingTenantUsers.length > 0) {
-    const existingUser = existingTenantUsers[0];
-    targetUserId = existingUser.id;
-
-    // Guard against downgrading employees or warehouse/platform admin roles to CLIENT
-    const protectedRoles: Role[] = [
-      ...ALLOWED_EMPLOYEE_ROLES,
-      "WAREHOUSE_OWNER",
-      "MANAGER",
-      "GM",
-      "PLATFORM_ADMIN"
-    ];
-    if (protectedRoles.includes(existingUser.role)) {
-      throw new Error(
-        `Cannot convert employee '${existingUser.name}' (${existingUser.role}) to a CLIENT. Please use a separate account for client access.`
-      );
-    }
-
-    // If the existing user is not ACTIVE or has a different role (e.g. CLIENT_ACCOUNTANT), ensure active CLIENT role
-    if (existingUser.role !== "CLIENT" || existingUser.status !== "ACTIVE") {
-      await supabase.from("User").update({ role: "CLIENT", status: "ACTIVE" }).eq("id", targetUserId);
-    }
-  } else {
-    // Attempt to create new WMS User
-    const { data: newUser, error: userError } = await supabase
-      .from("User")
-      .insert([
-        {
-          name: payload.contactPerson.trim(),
-          email: normalizedEmail,
-          mobile: payload.mobile.trim() || null,
-          role: "CLIENT",
-          tenantId: payload.tenantId,
-          status: "ACTIVE"
-        }
-      ])
-      .select()
-      .single();
-
-    if (userError) {
-      if (userError.code === "23505" || userError.message.includes("unique")) {
-        throw new Error("A user account with this email address already exists. Please verify the email or use an alternate address.");
-      }
-      throw new Error(`Failed to create login user account: ${userError.message}`);
-    }
-
-    targetUserId = newUser.id;
-    isNewlyCreatedUser = true;
-  }
-
-  // Resolve or create CompanyGroup for automatic assignment
-  let resolvedCompanyGroupId: string | null = null;
-  
-  if (payload.companyGroupId) {
-    // Validate explicit companyGroupId
-    const { data: existingGroup } = await supabase
-      .from("CompanyGroup")
-      .select("id, tenantId")
-      .eq("id", payload.companyGroupId)
-      .eq("tenantId", payload.tenantId)
-      .single();
-    
-    if (!existingGroup) {
-      throw new Error("Invalid CompanyGroup ID or tenant mismatch.");
-    }
-    resolvedCompanyGroupId = existingGroup.id;
-  } else {
-    // Auto-resolve by tenantId + companyName
-    const normalizedCompanyName = payload.companyName.trim();
-    
-    // Try to find existing CompanyGroup
-    const { data: existingGroup } = await supabase
-      .from("CompanyGroup")
-      .select("id")
-      .eq("tenantId", payload.tenantId)
-      .eq("name", normalizedCompanyName)
-      .single();
-    
-    if (existingGroup?.id) {
-      resolvedCompanyGroupId = existingGroup.id;
-    } else {
-      // Create new CompanyGroup
-      const groupId = `cg_${crypto.randomUUID().replace(/-/g, '').substring(0, 16)}`;
-      const { data: createdGroup, error: groupError } = await supabase
-        .from("CompanyGroup")
-        .insert({
-          id: groupId,
-          tenantId: payload.tenantId,
-          name: normalizedCompanyName
-        })
-        .select("id")
-        .single();
-      
-      if (groupError || !createdGroup?.id) {
-        throw new Error(`Failed to create CompanyGroup: ${groupError?.message || 'Unknown error'}`);
-      }
-      resolvedCompanyGroupId = createdGroup.id;
-    }
-  }
-
-  // Create Client record linked to targetUserId
-  const { data: clientRecord, error: clientError } = await supabase
-    .from("Client")
-    .insert([
-      {
-        companyName: payload.companyName.trim(),
-        contactPerson: payload.contactPerson.trim(),
-        mobile: payload.mobile.trim(),
-        email: normalizedEmail,
-        billingAddress: payload.billingAddress?.trim() || payload.shippingAddress?.trim() || "Main Office",
-        shippingAddress: payload.shippingAddress?.trim() || payload.billingAddress?.trim() || "Main Office",
-        tenantId: payload.tenantId,
-        companyGroupId: resolvedCompanyGroupId,
-        employeeRole: payload.employeeRole,
-        userId: targetUserId,
-        status: "ACTIVE"
-      }
-    ])
-    .select()
-    .single();
-
-  if (clientError) {
-    // Compensating cleanup ONLY if this operation created that User
-    if (isNewlyCreatedUser) {
-      try {
-        await supabase.from("User").delete().eq("id", targetUserId);
-      } catch (cleanupErr) {
-        console.error("Compensating cleanup failed for newly created user:", cleanupErr);
-        // Cleanup failed — the user account still exists and was NOT rolled back
-        throw new Error(
-          `Client employee creation failed (${clientError.message}). A login user account was created (ID: ${targetUserId}) but could not be automatically cleaned up. The user account still exists and must be handled manually. The client employee account was NOT successfully created.`
-        );
-      }
-      // Cleanup succeeded — user was deleted, client employee creation is fully rolled back
-      throw new Error(`Client employee could not be created (${clientError.message}). The login user account was rolled back.`);
-    }
-    throw new Error(`Client employee could not be created (${clientError.message}). Existing user was not modified.`);
+  if (!result.success) {
+    throw new Error(result.error || "Failed to create client employee");
   }
 
   // Audit Logging
   try {
-    await createAuditLogRecord({
-      tenantId: payload.tenantId,
-      userId: payload.actorUserId || null,
-      userRole: payload.actorUserRole || "PLATFORM_ADMIN",
-      action: "CREATE_CLIENT_EMPLOYEE",
-      entity: "Client",
-      entityId: clientRecord.id,
-      newValue: {
-        companyName: payload.companyName,
-        contactPerson: payload.contactPerson,
-        email: normalizedEmail,
-        mobile: payload.mobile,
-        employeeRole: payload.employeeRole,
-        userId: targetUserId
-      }
-    });
+    if (result.clientId) {
+      await createAuditLogRecord({
+        tenantId: payload.tenantId,
+        userId: payload.actorUserId || null,
+        userRole: payload.actorUserRole || "PLATFORM_ADMIN",
+        action: "CREATE_CLIENT_EMPLOYEE",
+        entity: "Client",
+        entityId: result.clientId,
+        changes: {
+          clientName: payload.contactPerson,
+          companyName: payload.companyName,
+          role: payload.employeeRole,
+          userId: result.userId
+        }
+      });
+    }
   } catch (auditErr) {
-    console.warn("Audit log creation failed (non-critical):", auditErr);
+    console.warn("Audit log creation failed for client employee:", auditErr);
   }
 
-  return { client: clientRecord, userId: targetUserId, isNewUser: isNewlyCreatedUser };
+  return {
+    id: result.clientId,
+    userId: result.userId,
+    ...payload
+  };
 }
 
 export interface UpdateAdminUserRolePayload {

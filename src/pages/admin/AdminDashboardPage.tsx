@@ -14,19 +14,20 @@ import {
   RefreshCw,
   X,
   Pencil,
-  Trash2
+  Trash2,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
+import { createEmployeeWithAuth } from "@/lib/employeeService";
 import {
   fetchAdminDashboardData,
   createAdminWarehouse,
-  createAdminUser,
   createAdminClient,
-  createClientEmployeeWithUser,
   createAdminCompanyGroup,
   createAdminTenant,
   updateAdminWarehouse,
@@ -98,10 +99,12 @@ export const AdminDashboardPage: React.FC = () => {
   const [userForm, setUserForm] = useState({
     name: "",
     email: "",
+    password: "",
     mobile: "",
     role: "WAREHOUSE_STAFF" as Role,
     tenantId: ""
   });
+  const [showUserPassword, setShowUserPassword] = useState(false);
 
   const [clientForm, setClientForm] = useState({
     companyName: "",
@@ -119,10 +122,12 @@ export const AdminDashboardPage: React.FC = () => {
     contactPerson: "",
     mobile: "",
     email: "",
+    password: "",
     employeeRole: "RECEIVER" as ClientEmployeeRole,
     shippingAddress: "",
     tenantId: ""
   });
+  const [showEmployeePassword, setShowEmployeePassword] = useState(false);
 
   const [groupForm, setGroupForm] = useState({
     name: "",
@@ -257,14 +262,40 @@ export const AdminDashboardPage: React.FC = () => {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!userForm.email.trim()) {
+      setActionMessage({ type: "error", text: "Email is required." });
+      return;
+    }
+    if (!userForm.password) {
+      setActionMessage({ type: "error", text: "Password is required." });
+      return;
+    }
+    if (userForm.password.length < 8) {
+      setActionMessage({ type: "error", text: "Password must be at least 8 characters." });
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await createAdminUser(userForm);
+      const result = await createEmployeeWithAuth({
+        name: userForm.name.trim(),
+        email: userForm.email.trim(),
+        password: userForm.password,
+        mobile: userForm.mobile.trim() || undefined,
+        role: userForm.role,
+        tenantId: userForm.tenantId || undefined,
+      });
+
+      if (!result.success) {
+        setActionMessage({ type: "error", text: result.error || "Failed to create user." });
+        return;
+      }
+
       setShowAddUser(false);
-      setUserForm({ name: "", email: "", mobile: "", role: "WAREHOUSE_STAFF", tenantId: tenants[0]?.id || "" });
-      setActionMessage({ type: "success", text: "User created successfully!" });
+      setUserForm({ name: "", email: "", password: "", mobile: "", role: "WAREHOUSE_STAFF", tenantId: tenants[0]?.id || "" });
+      setShowUserPassword(false);
+      setActionMessage({ type: "success", text: "User created successfully with Supabase Auth credentials!" });
       await loadData();
-      // Refresh allUsers in AuthContext so newly created user can be found during login
       await refreshUsers();
     } catch (err: any) {
       setActionMessage({ type: "error", text: err.message || "Failed to create user." });
@@ -303,9 +334,26 @@ export const AdminDashboardPage: React.FC = () => {
 
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!employeeForm.email.trim()) {
+      setActionMessage({ type: "error", text: "Email is required for employee login." });
+      return;
+    }
+    if (!employeeForm.password) {
+      setActionMessage({ type: "error", text: "Password is required for employee login." });
+      return;
+    }
+    if (employeeForm.password.length < 8) {
+      setActionMessage({ type: "error", text: "Password must be at least 8 characters." });
+      return;
+    }
+    if (!employeeForm.companyName.trim()) {
+      setActionMessage({ type: "error", text: "Client company name is required." });
+      return;
+    }
+
     setSubmitting(true);
     try {
-      console.log("[ClientEmployee] create started", {
+      console.log("[ClientEmployee] create started with Auth", {
         companyName: employeeForm.companyName,
         contactPerson: employeeForm.contactPerson,
         email: employeeForm.email,
@@ -313,18 +361,23 @@ export const AdminDashboardPage: React.FC = () => {
         tenantId: employeeForm.tenantId || tenants[0]?.id,
       });
 
-      const result = await createClientEmployeeWithUser({
-        companyName: employeeForm.companyName,
-        contactPerson: employeeForm.contactPerson,
-        mobile: employeeForm.mobile,
-        email: employeeForm.email || "",
-        shippingAddress: employeeForm.shippingAddress || "Main Office",
-        billingAddress: employeeForm.shippingAddress || "Main Office",
-        tenantId: employeeForm.tenantId || tenants[0]?.id || "",
-        employeeRole: employeeForm.employeeRole,
-        actorUserId: user?.id || null,
-        actorUserRole: role || undefined,
+      const result = await createEmployeeWithAuth({
+        name: employeeForm.contactPerson.trim(),
+        email: employeeForm.email.trim(),
+        password: employeeForm.password,
+        mobile: employeeForm.mobile.trim() || undefined,
+        role: "CLIENT",
+        clientEmployeeRole: employeeForm.employeeRole,
+        companyName: employeeForm.companyName.trim(),
+        shippingAddress: employeeForm.shippingAddress.trim() || "Main Office",
+        billingAddress: employeeForm.shippingAddress.trim() || "Main Office",
+        tenantId: employeeForm.tenantId || tenants[0]?.id || undefined,
       });
+
+      if (!result.success) {
+        setActionMessage({ type: "error", text: result.error || "Failed to add employee." });
+        return;
+      }
 
       console.log("[ClientEmployee] create result", result);
 
@@ -334,11 +387,13 @@ export const AdminDashboardPage: React.FC = () => {
         contactPerson: "",
         mobile: "",
         email: "",
+        password: "",
         employeeRole: "RECEIVER",
         shippingAddress: "",
         tenantId: tenants[0]?.id || ""
       });
-      setActionMessage({ type: "success", text: "Employee added successfully! User account created with CLIENT role." });
+      setShowEmployeePassword(false);
+      setActionMessage({ type: "success", text: "Employee added successfully! Supabase Auth login account active with CLIENT role." });
       await loadData();
       await refreshUsers();
       console.log("[ClientEmployee] refresh completed");
@@ -1034,7 +1089,7 @@ export const AdminDashboardPage: React.FC = () => {
                               <button
                                 onClick={() => {
                                   setEditingClient(emp);
-                                  setEditForm({ companyName: emp.companyName, contactPerson: emp.contactPerson, mobile: emp.mobile, email: emp.email || "", status: emp.status, shippingAddress: emp.shippingAddress });
+                                  setEditForm({ companyName: emp.companyName, contactPerson: emp.contactPerson, mobile: emp.mobile, email: emp.email || "", status: emp.status, shippingAddress: emp.shippingAddress, employeeRole: emp.employeeRole || "RECEIVER" });
                                 }}
                                 className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
                                 title="Edit client"
@@ -1486,8 +1541,32 @@ export const AdminDashboardPage: React.FC = () => {
               required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              Password *
+            </label>
+            <div className="relative">
+              <input
+                type={showUserPassword ? "text" : "password"}
+                value={userForm.password}
+                onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                placeholder="Minimum 8 characters"
+                minLength={8}
+                required
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-3 pr-9 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowUserPassword(!showUserPassword)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+              >
+                {showUserPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
             <p className="text-[10px] text-slate-500 mt-1">
-              Required for login. User will receive invitation to set password.
+              Securely stored in Supabase Auth only. Never saved in the WMS database.
             </p>
           </div>
 
@@ -1768,7 +1847,7 @@ export const AdminDashboardPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
                 Mobile Number *
@@ -1785,15 +1864,40 @@ export const AdminDashboardPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Email
+                Email Address *
               </label>
               <input
                 type="email"
                 value={employeeForm.email}
                 onChange={(e) => setEmployeeForm({ ...employeeForm, email: e.target.value })}
                 placeholder="receiver@store.test"
+                required
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Password *
+              </label>
+              <div className="relative">
+                <input
+                  type={showEmployeePassword ? "text" : "password"}
+                  value={employeeForm.password}
+                  onChange={(e) => setEmployeeForm({ ...employeeForm, password: e.target.value })}
+                  placeholder="Min 8 chars"
+                  minLength={8}
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-3 pr-8 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmployeePassword(!showEmployeePassword)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  {showEmployeePassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1851,13 +1955,40 @@ export const AdminDashboardPage: React.FC = () => {
           )}
           {editingClient && (
             <>
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Company Name</label>
-                <input value={editForm.companyName || ""} onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Company Name</label>
+                  <input value={editForm.companyName || ""} onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Contact Person</label>
+                  <input value={editForm.contactPerson || ""} onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Mobile Number</label>
+                  <input value={editForm.mobile || ""} onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Email</label>
+                  <input type="email" value={editForm.email || ""} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                </div>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Contact Person</label>
-                <input value={editForm.contactPerson || ""} onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Role in Company *</label>
+                <select
+                  value={editForm.employeeRole || "RECEIVER"}
+                  onChange={(e) => setEditForm({ ...editForm, employeeRole: e.target.value })}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="RECEIVER">Receiver — Store Delivery Receiver</option>
+                  <option value="STORE">Store Incharge</option>
+                  <option value="ACCOUNT">Accountant</option>
+                  <option value="MANAGER">Store Manager</option>
+                  <option value="GM">General Manager (GM)</option>
+                  <option value="MD">Managing Director (MD)</option>
+                </select>
               </div>
             </>
           )}
@@ -1867,10 +1998,10 @@ export const AdminDashboardPage: React.FC = () => {
               <input value={editForm[editingWarehouse ? "code" : "email"] || ""} onChange={(e) => setEditForm({ ...editForm, [editingWarehouse ? "code" : "email"]: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
             </div>
           )}
-          {(editingWarehouse || editingClient) && (
+          {editingWarehouse && (
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">{editingWarehouse ? "Address" : "Mobile Number"}</label>
-              <input value={editForm[editingWarehouse ? "address" : "mobile"] || ""} onChange={(e) => setEditForm({ ...editForm, [editingWarehouse ? "address" : "mobile"]: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Address</label>
+              <input value={editForm.address || ""} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
             </div>
           )}
           {editingUser && (
@@ -1879,27 +2010,22 @@ export const AdminDashboardPage: React.FC = () => {
               <input value={editForm.mobile || ""} onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
             </div>
           )}
-          {editingClient && (
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Email</label>
-              <input type="email" value={editForm.email || ""} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
-            </div>
-          )}
           {editingUser && (
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Role *</label>
-              <select value={editForm.role || ""} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
-                <option value="PLATFORM_ADMIN">PLATFORM_ADMIN</option>
-                <option value="MANAGER">MANAGER</option>
-                <option value="GM">GM</option>
-                <option value="WAREHOUSE_OWNER">WAREHOUSE_OWNER</option>
-                <option value="WAREHOUSE_MODERATOR">WAREHOUSE_MODERATOR</option>
-                <option value="ACCOUNTS_TEAM">ACCOUNTS_TEAM</option>
-                <option value="WAREHOUSE_STAFF">WAREHOUSE_STAFF</option>
-                <option value="PRODUCT_RECEIVER">PRODUCT_RECEIVER</option>
-                <option value="ACCOUNTANT">ACCOUNTANT</option>
-                <option value="CLIENT">CLIENT</option>
-                <option value="CLIENT_ACCOUNTANT">CLIENT_ACCOUNTANT</option>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">System Role *</label>
+              <select
+                value={editForm.role || ""}
+                onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="PLATFORM_ADMIN">Platform Admin</option>
+                <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
+                <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
+                <option value="WAREHOUSE_STAFF">Warehouse Staff</option>
+                <option value="PRODUCT_RECEIVER">Product Receiver</option>
+                <option value="ACCOUNTANT">Accountant</option>
+                <option value="ACCOUNTS_TEAM">Accounts Team</option>
+                <option value="CLIENT">Client (External)</option>
               </select>
             </div>
           )}

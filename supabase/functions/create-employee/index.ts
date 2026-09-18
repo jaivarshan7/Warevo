@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient, User as SupabaseUser } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 interface CreateEmployeeRequest {
   name: string;
@@ -8,28 +8,46 @@ interface CreateEmployeeRequest {
   mobile?: string;
   role: string;
   tenantId?: string;
+  // Client Employee specific fields
+  clientEmployeeRole?: string;
+  clientId?: string;
+  companyName?: string;
+  billingAddress?: string;
+  shippingAddress?: string;
+  gstNumber?: string;
 }
 
 interface CreateEmployeeResponse {
   success: boolean;
   userId?: string;
+  clientId?: string;
   error?: string;
   code?: string;
 }
 
-// Allowed warehouse employee roles - server-side enforcement
-const ALLOWED_EMPLOYEE_ROLES = [
+// Allowed warehouse employee roles
+const WAREHOUSE_EMPLOYEE_ROLES = [
   "WAREHOUSE_STAFF",
   "ACCOUNTS_TEAM",
   "ACCOUNTANT",
-  "WAREHOUSE_MODERATOR"
+  "WAREHOUSE_MODERATOR",
 ];
 
-// Roles that can create employees
+// Valid roles for a client employee
+const VALID_CLIENT_EMPLOYEE_ROLES = [
+  "RECEIVER",
+  "STORE",
+  "ACCOUNT",
+  "MANAGER",
+  "GM",
+  "MD",
+];
+
+// Roles authorized to manage/create employees (matches Phase 6B rpc_update_employee)
+// WAREHOUSE_MODERATOR is strictly excluded.
 const AUTHORIZED_CREATOR_ROLES = [
   "PLATFORM_ADMIN",
   "WAREHOUSE_OWNER",
-  "WAREHOUSE_MODERATOR"
 ];
 
 // CORS headers for all responses
@@ -40,7 +58,7 @@ const corsHeaders = {
 };
 
 serve(async (req: Request) => {
-  // CORS preflight handling - MUST be before any authentication
+  // CORS preflight handling
   if (req.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -49,7 +67,6 @@ serve(async (req: Request) => {
   }
 
   try {
-    // Only accept POST requests
     if (req.method !== "POST") {
       return new Response(
         JSON.stringify({ success: false, error: "Method not allowed", code: "METHOD_NOT_ALLOWED" }),
@@ -57,7 +74,7 @@ serve(async (req: Request) => {
       );
     }
 
-    // Get the Authorization header
+    // 1. Get and validate Authorization header
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
@@ -68,7 +85,6 @@ serve(async (req: Request) => {
 
     const jwt = authHeader.replace("Bearer ", "");
 
-    // Create Supabase client with service role key from environment
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
     const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
@@ -87,7 +103,7 @@ serve(async (req: Request) => {
       },
     });
 
-    // Verify the JWT and get the authenticated user
+    // 2. Verify caller's JWT and extract auth.uid()
     const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(jwt);
 
     if (authError || !authUser) {
@@ -100,7 +116,7 @@ serve(async (req: Request) => {
 
     const callerSupabaseUserId = authUser.id;
 
-    // Load the caller's WMS User record
+    // 3. Resolve caller's WMS profile from database using auth.uid()
     const { data: callerWmsUser, error: callerFetchError } = await supabaseAdmin
       .from("User")
       .select("id, name, email, role, tenantId, supabaseUserId, status")
@@ -108,18 +124,17 @@ serve(async (req: Request) => {
       .single();
 
     if (callerFetchError || !callerWmsUser) {
-      console.error("Caller WMS user not found:", callerFetchError?.message);
+      console.error("Caller WMS user not found for auth.uid:", callerSupabaseUserId);
       return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: "Authenticated user does not have a WMS profile", 
-          code: "CALLER_NOT_FOUND" 
+        JSON.stringify({
+          success: false,
+          error: "Authenticated user does not have a WMS profile",
+          code: "CALLER_NOT_FOUND",
         }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Check if caller is active
     if (callerWmsUser.status !== "ACTIVE") {
       return new Response(
         JSON.stringify({ success: false, error: "Your account is inactive", code: "CALLER_INACTIVE" }),
@@ -127,23 +142,35 @@ serve(async (req: Request) => {
       );
     }
 
-    // Validate caller has permission to create employees
+    // 4. Check caller authorization
     if (!AUTHORIZED_CREATOR_ROLES.includes(callerWmsUser.role)) {
       return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: `Unauthorized: ${callerWmsUser.role} cannot create employees`, 
-          code: "UNAUTHORIZED_ROLE" 
+        JSON.stringify({
+          success: false,
+          error: `Unauthorized: role ${callerWmsUser.role} cannot create users or employees`,
+          code: "UNAUTHORIZED_ROLE",
         }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Parse request body
+    // 5. Parse and validate request body
     const requestBody: CreateEmployeeRequest = await req.json();
-    const { name, email, password, mobile, role, tenantId } = requestBody;
+    const {
+      name,
+      email,
+      password,
+      mobile,
+      role,
+      tenantId: requestedTenantId,
+      clientEmployeeRole,
+      clientId,
+      companyName,
+      billingAddress,
+      shippingAddress,
+      gstNumber,
+    } = requestBody;
 
-    // Validate required fields
     if (!name || !name.trim()) {
       return new Response(
         JSON.stringify({ success: false, error: "Name is required", code: "VALIDATION_ERROR" }),
@@ -158,6 +185,15 @@ serve(async (req: Request) => {
       );
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!emailRegex.test(normalizedEmail)) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Invalid email format", code: "INVALID_EMAIL" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     if (!password) {
       return new Response(
         JSON.stringify({ success: false, error: "Password is required", code: "VALIDATION_ERROR" }),
@@ -165,7 +201,6 @@ serve(async (req: Request) => {
       );
     }
 
-    // Validate password length
     if (password.length < 8) {
       return new Response(
         JSON.stringify({ success: false, error: "Password must be at least 8 characters", code: "PASSWORD_TOO_SHORT" }),
@@ -180,142 +215,250 @@ serve(async (req: Request) => {
       );
     }
 
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Invalid email format", code: "INVALID_EMAIL" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // SERVER-SIDE: Validate role - only allow warehouse employee roles
-    if (!ALLOWED_EMPLOYEE_ROLES.includes(role)) {
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: `Invalid role. Allowed roles: ${ALLOWED_EMPLOYEE_ROLES.join(", ")}`, 
-          code: "INVALID_ROLE" 
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Determine the tenant/company for the new employee
-    let targetTenantId: string | null = null;
+    // 6. Validate target role and tenant permissions based on caller's actual role
+    let targetTenantId: string;
 
     if (callerWmsUser.role === "PLATFORM_ADMIN") {
-      // Platform admin can create employees for authorized tenants
-      // If tenantId is provided, validate it exists
-      if (tenantId) {
-        const { data: tenant, error: tenantError } = await supabaseAdmin
-          .from("Tenant")
-          .select("id, name, status")
-          .eq("id", tenantId)
-          .single();
-
-        if (tenantError || !tenant) {
-          return new Response(
-            JSON.stringify({ success: false, error: "Invalid company/tenant specified", code: "INVALID_TENANT" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        if (tenant.status !== "ACTIVE") {
-          return new Response(
-            JSON.stringify({ success: false, error: "Selected company is not active", code: "TENANT_INACTIVE" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        targetTenantId = tenantId;
-      } else {
-        // Platform admin must specify a tenant
+      // Platform admin can create: warehouse employees, WAREHOUSE_OWNER, CLIENT, PRODUCT_RECEIVER
+      const adminAllowedRoles = [
+        ...WAREHOUSE_EMPLOYEE_ROLES,
+        "WAREHOUSE_OWNER",
+        "CLIENT",
+        "PRODUCT_RECEIVER",
+      ];
+      if (!adminAllowedRoles.includes(role)) {
         return new Response(
-          JSON.stringify({ success: false, error: "Company selection is required", code: "MISSING_TENANT" }),
+          JSON.stringify({
+            success: false,
+            error: `Invalid role '${role}'. Allowed roles: ${adminAllowedRoles.join(", ")}`,
+            code: "INVALID_ROLE",
+          }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+
+      if (!requestedTenantId) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Company / Organization selection is required", code: "MISSING_TENANT" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Verify target tenant exists and is ACTIVE
+      const { data: tenant, error: tenantError } = await supabaseAdmin
+        .from("Tenant")
+        .select("id, name, status")
+        .eq("id", requestedTenantId)
+        .single();
+
+      if (tenantError || !tenant) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Invalid organization specified", code: "INVALID_TENANT" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (tenant.status !== "ACTIVE") {
+        return new Response(
+          JSON.stringify({ success: false, error: "Specified organization is not active", code: "TENANT_INACTIVE" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      targetTenantId = requestedTenantId;
     } else {
-      // WAREHOUSE_OWNER or WAREHOUSE_MODERATOR: restrict to their own tenant
+      // WAREHOUSE_OWNER: strictly locked to own tenantId
+      if (!callerWmsUser.tenantId) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Caller does not belong to any organization", code: "CALLER_NO_TENANT" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       targetTenantId = callerWmsUser.tenantId;
 
-      if (!targetTenantId) {
+      const ownerAllowedRoles = [
+        ...WAREHOUSE_EMPLOYEE_ROLES,
+        "CLIENT",
+      ];
+      if (!ownerAllowedRoles.includes(role)) {
         return new Response(
-          JSON.stringify({ success: false, error: "Caller does not belong to any company", code: "CALLER_NO_TENANT" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          JSON.stringify({
+            success: false,
+            error: `Unauthorized to create role '${role}'. Allowed roles: ${ownerAllowedRoles.join(", ")}`,
+            code: "INVALID_ROLE",
+          }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
-      }
-
-      // If frontend sent a different tenantId, ignore it and use caller's tenant
-      // This prevents privilege escalation
-      if (tenantId && tenantId !== targetTenantId) {
-        console.warn(`Attempted tenant override: caller=${callerWmsUser.tenantId}, requested=${tenantId}`);
       }
     }
 
-    // Check for duplicate email in WMS User table
+    // 7. Validate Client Employee specifics if role is CLIENT
+    let resolvedCompanyName = "";
+    let resolvedBillingAddress = "";
+    let resolvedShippingAddress = "";
+    let resolvedGstNumber: string | null = null;
+
+    if (role === "CLIENT") {
+      if (!clientEmployeeRole || !VALID_CLIENT_EMPLOYEE_ROLES.includes(clientEmployeeRole)) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Client employee role is required. Valid roles: ${VALID_CLIENT_EMPLOYEE_ROLES.join(", ")}`,
+            code: "INVALID_CLIENT_ROLE",
+          }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (clientId) {
+        // Look up existing Client company and verify it belongs to targetTenantId
+        const { data: existingClient, error: clientFetchErr } = await supabaseAdmin
+          .from("Client")
+          .select("id, companyName, billingAddress, shippingAddress, gstNumber, tenantId")
+          .eq("id", clientId)
+          .single();
+
+        if (clientFetchErr || !existingClient) {
+          return new Response(
+            JSON.stringify({ success: false, error: "Selected client company does not exist", code: "INVALID_CLIENT_ID" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        if (existingClient.tenantId !== targetTenantId) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: "Client company does not belong to your organization",
+              code: "TENANT_MISMATCH",
+            }),
+            { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        resolvedCompanyName = existingClient.companyName;
+        resolvedBillingAddress = billingAddress?.trim() || existingClient.billingAddress || "Main Office";
+        resolvedShippingAddress = shippingAddress?.trim() || existingClient.shippingAddress || resolvedBillingAddress;
+        resolvedGstNumber = gstNumber?.trim() || existingClient.gstNumber || null;
+      } else if (companyName && companyName.trim()) {
+        resolvedCompanyName = companyName.trim();
+        resolvedBillingAddress = billingAddress?.trim() || "Main Office";
+        resolvedShippingAddress = shippingAddress?.trim() || resolvedBillingAddress;
+        resolvedGstNumber = gstNumber?.trim() || null;
+      } else {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "A client company must be selected or specified",
+            code: "MISSING_CLIENT_COMPANY",
+          }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Check Client unique constraint: (tenantId, mobile)
+      if (mobile && mobile.trim()) {
+        const { data: existingClientMobile } = await supabaseAdmin
+          .from("Client")
+          .select("id, contactPerson")
+          .eq("tenantId", targetTenantId)
+          .eq("mobile", mobile.trim())
+          .maybeSingle();
+
+        if (existingClientMobile) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: `A client contact with mobile number ${mobile.trim()} already exists in this organization`,
+              code: "DUPLICATE_CLIENT_MOBILE",
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+    }
+
+    // 8. Pre-check email duplicates in WMS User table
     const { data: existingWmsUser } = await supabaseAdmin
       .from("User")
       .select("id, email")
-      .ilike("email", email.trim())
-      .single();
+      .ilike("email", normalizedEmail)
+      .maybeSingle();
 
     if (existingWmsUser) {
       return new Response(
-        JSON.stringify({ success: false, error: "An employee with this email already exists", code: "DUPLICATE_EMAIL" }),
+        JSON.stringify({
+          success: false,
+          error: "This email address is already registered.",
+          code: "DUPLICATE_EMAIL",
+        }),
         { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Create Supabase Auth user using Admin API
+    // 9. Step 1: Create Supabase Auth user (auth.users)
     const { data: createdAuthUser, error: authCreateError } = await supabaseAdmin.auth.admin.createUser({
-      email: email.trim().toLowerCase(),
+      email: normalizedEmail,
       password: password,
-      email_confirm: true, // Auto-confirm since admin is creating
+      email_confirm: true,
       user_metadata: {
         created_by: callerWmsUser.id,
         created_at: new Date().toISOString(),
-      }
+      },
     });
 
     if (authCreateError) {
       console.error("Failed to create Supabase Auth user:", authCreateError.message);
-      
-      // Handle specific error cases
-      if (authCreateError.message.includes("already been registered") || 
-          authCreateError.message.includes("duplicate key")) {
+      if (
+        authCreateError.message.includes("already been registered") ||
+        authCreateError.message.includes("duplicate") ||
+        authCreateError.message.includes("User already registered")
+      ) {
         return new Response(
-          JSON.stringify({ success: false, error: "An account with this email already exists", code: "DUPLICATE_EMAIL" }),
+          JSON.stringify({
+            success: false,
+            error: "This email address is already registered.",
+            code: "DUPLICATE_EMAIL",
+          }),
           { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
       return new Response(
-        JSON.stringify({ success: false, error: "Failed to create authentication account", code: "AUTH_CREATE_FAILED" }),
+        JSON.stringify({
+          success: false,
+          error: "Failed to create authentication account. Please try again.",
+          code: "AUTH_CREATE_FAILED",
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!createdAuthUser?.user) {
       return new Response(
-        JSON.stringify({ success: false, error: "Authentication account creation returned empty result", code: "AUTH_CREATE_EMPTY" }),
+        JSON.stringify({
+          success: false,
+          error: "Authentication account creation returned empty result",
+          code: "AUTH_CREATE_EMPTY",
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const newAuthUserId = createdAuthUser.user.id;
 
-    // Create WMS User record
+    // 10. Step 2: Insert into WMS User table
+    const newWmsUserId = `usr_${Math.random().toString(36).substring(2, 11)}${Math.random().toString(36).substring(2, 11)}`;
     const { data: createdWmsUser, error: wmsCreateError } = await supabaseAdmin
       .from("User")
       .insert({
-        id: `usr_${Math.random().toString(36).substring(2, 11)}${Math.random().toString(36).substring(2, 11)}`,
+        id: newWmsUserId,
         tenantId: targetTenantId,
         supabaseUserId: newAuthUserId,
         role: role,
         name: name.trim(),
-        email: email.trim(),
+        email: normalizedEmail,
         mobile: mobile?.trim() || null,
         status: "ACTIVE",
       })
@@ -324,45 +467,123 @@ serve(async (req: Request) => {
 
     if (wmsCreateError) {
       console.error("Failed to create WMS User:", wmsCreateError.message);
-      
-      // ROLLBACK: Delete the Supabase Auth user if WMS User creation fails
+
+      // COMPENSATING ROLLBACK: Delete created Auth user
       const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
       if (deleteAuthError) {
-        console.error("Failed to rollback Auth user:", deleteAuthError.message);
+        console.error("Failed to rollback Auth user after WMS User insert failure:", deleteAuthError.message);
       }
 
-      // Handle specific error cases
       if (wmsCreateError.message.includes("duplicate key") || wmsCreateError.code === "23505") {
         return new Response(
-          JSON.stringify({ success: false, error: "An employee with this email already exists", code: "DUPLICATE_EMAIL" }),
+          JSON.stringify({
+            success: false,
+            error: "This email address is already registered.",
+            code: "DUPLICATE_EMAIL",
+          }),
           { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
       return new Response(
-        JSON.stringify({ success: false, error: "Failed to create employee record", code: "WMS_CREATE_FAILED" }),
+        JSON.stringify({
+          success: false,
+          error: "Failed to create user profile",
+          code: "WMS_CREATE_FAILED",
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Success!
+    // 11. Step 3: If role === "CLIENT", create linked Client record
+    let createdClientRecordId: string | undefined = undefined;
+
+    if (role === "CLIENT") {
+      const newClientId = `cl_${Math.random().toString(36).substring(2, 11)}${Math.random().toString(36).substring(2, 11)}`;
+      const { data: createdClient, error: clientCreateError } = await supabaseAdmin
+        .from("Client")
+        .insert({
+          id: newClientId,
+          tenantId: targetTenantId,
+          userId: createdWmsUser.id,
+          companyName: resolvedCompanyName,
+          contactPerson: name.trim(),
+          mobile: mobile?.trim() || "",
+          email: normalizedEmail,
+          gstNumber: resolvedGstNumber,
+          billingAddress: resolvedBillingAddress,
+          shippingAddress: resolvedShippingAddress,
+          employeeRole: clientEmployeeRole,
+          status: "ACTIVE",
+        })
+        .select()
+        .single();
+
+      if (clientCreateError) {
+        console.error("Failed to create Client record for user:", clientCreateError.message);
+
+        // COMPENSATING ROLLBACK:
+        // 1. Delete created WMS User
+        const { error: deleteWmsError } = await supabaseAdmin
+          .from("User")
+          .delete()
+          .eq("id", createdWmsUser.id);
+        if (deleteWmsError) {
+          console.error("Failed to rollback WMS User after Client failure:", deleteWmsError.message);
+        }
+
+        // 2. Delete created Supabase Auth user
+        const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
+        if (deleteAuthError) {
+          console.error("Failed to rollback Auth user after Client failure:", deleteAuthError.message);
+        }
+
+        if (clientCreateError.code === "23505" || clientCreateError.message.includes("unique")) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: "A client contact with this mobile number already exists in this organization.",
+              code: "DUPLICATE_CLIENT_MOBILE",
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Failed to create client employee record",
+            code: "CLIENT_CREATE_FAILED",
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      createdClientRecordId = createdClient.id;
+    }
+
+    // 12. Success response
     const response: CreateEmployeeResponse = {
       success: true,
       userId: createdWmsUser.id,
+      clientId: createdClientRecordId,
     };
 
     return new Response(JSON.stringify(response), {
       status: 201,
-      headers: { 
+      headers: {
         ...corsHeaders,
         "Content-Type": "application/json",
       },
     });
-
   } catch (error: any) {
-    console.error("Unexpected error in create-employee:", error);
+    console.error("Unexpected error in create-employee Edge Function:", error);
     return new Response(
-      JSON.stringify({ success: false, error: error.message || "Internal server error", code: "INTERNAL_ERROR" }),
+      JSON.stringify({
+        success: false,
+        error: error.message || "Internal server error",
+        code: "INTERNAL_ERROR",
+      }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

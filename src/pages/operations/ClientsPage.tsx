@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchClients, createClientRecord, updateClientRecord } from "@/lib/services";
-import { Client } from "@/types";
+import { createEmployeeWithAuth } from "@/lib/employeeService";
+import { Client, ClientEmployeeRole } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -18,7 +19,11 @@ import {
   Building,
   CheckCircle2,
   UserCheck,
-  Pencil
+  Pencil,
+  Eye,
+  EyeOff,
+  Key,
+  ShieldCheck
 } from "lucide-react";
 
 export const ClientsPage: React.FC = () => {
@@ -35,6 +40,10 @@ export const ClientsPage: React.FC = () => {
   const [contactPerson, setContactPerson] = useState("");
   const [mobile, setMobile] = useState("+91");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [enableLogin, setEnableLogin] = useState(true);
+  const [employeeRole, setEmployeeRole] = useState<ClientEmployeeRole>("RECEIVER");
   const [gstNumber, setGstNumber] = useState("");
   const [billingAddress, setBillingAddress] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
@@ -107,23 +116,68 @@ export const ClientsPage: React.FC = () => {
     setFormError(null);
 
     try {
-      await createClientRecord({
-        tenantId: tenant.id,
-        companyName: finalCompany,
-        contactPerson: contactPerson.trim(),
-        mobile: mobile.trim(),
-        email: email.trim() || undefined,
-        gstNumber: gstNumber.trim() || undefined,
-        billingAddress: billingAddress.trim(),
-        shippingAddress: (shippingAddress.trim() || billingAddress.trim())
-      });
+      if (enableLogin) {
+        if (!email.trim()) {
+          setFormError("Email is required to create a login account.");
+          setIsSubmitting(false);
+          return;
+        }
+        if (!password) {
+          setFormError("Password is required to create a login account.");
+          setIsSubmitting(false);
+          return;
+        }
+        if (password.length < 8) {
+          setFormError("Password must be at least 8 characters.");
+          setIsSubmitting(false);
+          return;
+        }
+
+        const existingClientRec = companyMode === "EXISTING" ? companyMap[selectedCompany]?.[0] : null;
+
+        const result = await createEmployeeWithAuth({
+          name: contactPerson.trim(),
+          email: email.trim(),
+          password,
+          mobile: mobile.trim() || undefined,
+          role: "CLIENT",
+          clientEmployeeRole: employeeRole,
+          clientId: existingClientRec?.id,
+          companyName: finalCompany,
+          billingAddress: billingAddress.trim() || "Main Office",
+          shippingAddress: (shippingAddress.trim() || billingAddress.trim()) || "Main Office",
+          gstNumber: gstNumber.trim() || undefined,
+        });
+
+        if (!result.success) {
+          setFormError(result.error || "Failed to create client employee");
+          setIsSubmitting(false);
+          return;
+        }
+
+        setSuccessMsg(`Client employee ${contactPerson} under ${finalCompany} created with login access!`);
+      } else {
+        await createClientRecord({
+          tenantId: tenant.id,
+          companyName: finalCompany,
+          contactPerson: contactPerson.trim(),
+          mobile: mobile.trim(),
+          email: email.trim() || undefined,
+          gstNumber: gstNumber.trim() || undefined,
+          billingAddress: billingAddress.trim(),
+          shippingAddress: (shippingAddress.trim() || billingAddress.trim())
+        });
+        setSuccessMsg(`Contact ${contactPerson} under ${finalCompany} registered successfully!`);
+      }
+
       setIsAddOpen(false);
-      setSuccessMsg(`Contact ${contactPerson} under ${finalCompany} added successfully!`);
       // Reset form
       setCompanyName("");
       setContactPerson("");
       setMobile("+91");
       setEmail("");
+      setPassword("");
+      setShowPassword(false);
       setGstNumber("");
       setBillingAddress("");
       setShippingAddress("");
@@ -486,13 +540,16 @@ export const ClientsPage: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Email</label>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Email {enableLogin && "*"}
+                </label>
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@company.com"
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                  required={enableLogin}
                 />
               </div>
               <div>
@@ -505,6 +562,72 @@ export const ClientsPage: React.FC = () => {
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono focus:outline-none uppercase"
                 />
               </div>
+            </div>
+
+            {/* WMS Login Account Section */}
+            <div className="p-3.5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-indigo-400" />
+                  <div>
+                    <span className="text-xs font-semibold text-white">WMS Portal Access</span>
+                    <p className="text-[11px] text-slate-400">Create a secure Supabase Auth login for this client employee</p>
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={enableLogin}
+                  onChange={(e) => setEnableLogin(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-indigo-500"
+                />
+              </div>
+
+              {enableLogin && (
+                <div className="pt-2 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      Role in Company *
+                    </label>
+                    <select
+                      value={employeeRole}
+                      onChange={(e) => setEmployeeRole(e.target.value as ClientEmployeeRole)}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                      required
+                    >
+                      <option value="RECEIVER">Receiver (Delivery Receiver)</option>
+                      <option value="STORE">Store Incharge</option>
+                      <option value="ACCOUNT">Accountant</option>
+                      <option value="MANAGER">Store Manager</option>
+                      <option value="GM">General Manager (GM)</option>
+                      <option value="MD">Managing Director (MD)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      Login Password *
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Min 8 characters"
+                        minLength={8}
+                        required={enableLogin}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-3 pr-9 py-2 text-xs text-white focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                      >
+                        {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>

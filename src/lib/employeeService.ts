@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { Role, UserStatus } from "@/types";
+import { Role, ClientEmployeeRole, UserStatus } from "@/types";
 
 export interface CreateEmployeePayload {
   name: string;
@@ -8,27 +8,34 @@ export interface CreateEmployeePayload {
   mobile?: string;
   role: Role;
   tenantId?: string;
+  clientEmployeeRole?: ClientEmployeeRole;
+  clientId?: string;
+  companyName?: string;
+  billingAddress?: string;
+  shippingAddress?: string;
+  gstNumber?: string;
 }
 
 export interface CreateEmployeeResult {
   success: boolean;
   userId?: string;
+  clientId?: string;
   error?: string;
   code?: string;
 }
 
 /**
- * Creates a new employee using the Supabase Edge Function.
+ * Creates a new employee or client employee using the Supabase Edge Function.
  * 
  * This function:
  * - Calls the create-employee Edge Function
- * - The Edge Function authenticates the caller via JWT
- * - Validates permissions server-side
- * - Creates Supabase Auth user + WMS User atomically
- * - Rolls back Auth user if WMS User creation fails
+ * - Authenticates the caller via JWT and resolves current actor identity
+ * - Validates role/tenant/client permissions server-side
+ * - Creates Supabase Auth user + WMS User (and Client record if role === 'CLIENT')
+ * - Performs compensating rollback if any database insert fails
  * 
  * @param payload Employee creation data
- * @returns Result with success status and userId or error
+ * @returns Result with success status and userId/clientId or error
  */
 export async function createEmployeeWithAuth(
   payload: CreateEmployeePayload
@@ -40,7 +47,7 @@ export async function createEmployeeWithAuth(
     if (sessionError || !sessionData?.session) {
       return {
         success: false,
-        error: "You must be logged in to create employees",
+        error: "You must be logged in to create users or employees",
         code: "NOT_AUTHENTICATED"
       };
     }
@@ -64,7 +71,13 @@ export async function createEmployeeWithAuth(
         password: payload.password,
         mobile: payload.mobile,
         role: payload.role,
-        tenantId: payload.tenantId
+        tenantId: payload.tenantId,
+        clientEmployeeRole: payload.clientEmployeeRole,
+        clientId: payload.clientId,
+        companyName: payload.companyName,
+        billingAddress: payload.billingAddress,
+        shippingAddress: payload.shippingAddress,
+        gstNumber: payload.gstNumber,
       })
     });
 
@@ -80,7 +93,8 @@ export async function createEmployeeWithAuth(
 
     return {
       success: true,
-      userId: result.userId
+      userId: result.userId,
+      clientId: result.clientId
     };
 
   } catch (error: any) {
