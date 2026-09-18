@@ -11,7 +11,7 @@ interface AddEmployeeModalProps {
   onSuccess: () => void;
   tenantId?: string;
   isPlatformAdmin?: boolean;
-  allTenants?: Tenant[];
+  allTenants?: Array<Tenant | { id: string; name: string; status: string }>;
 }
 
 const ROLE_LABELS: Record<string, string> = {

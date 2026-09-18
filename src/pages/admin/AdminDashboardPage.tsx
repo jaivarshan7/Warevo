@@ -16,13 +16,15 @@ import {
   Pencil,
   Trash2,
   Eye,
-  EyeOff
+  EyeOff,
+  ShieldCheck
 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
+import { AddEmployeeModal } from "@/components/employees/AddEmployeeModal";
 import { createEmployeeWithAuth } from "@/lib/employeeService";
 import {
   fetchAdminDashboardData,
@@ -57,7 +59,7 @@ export const AdminDashboardPage: React.FC = () => {
   const { user, role, refreshUsers } = useAuth();
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<"warehouses" | "users" | "clients" | "groups" | "tenants">("warehouses");
+  const [activeTab, setActiveTab] = useState<"warehouses" | "admins" | "warehouse_employees" | "clients" | "groups" | "tenants">("warehouses");
   const [searchQuery, setSearchQuery] = useState("");
   const [tenantFilter, setTenantFilter] = useState("ALL");
   const [roleFilter, setRoleFilter] = useState("ALL");
@@ -65,7 +67,9 @@ export const AdminDashboardPage: React.FC = () => {
 
   // Modal states
   const [showAddWarehouse, setShowAddWarehouse] = useState(false);
-  const [showAddUser, setShowAddUser] = useState(false);
+  const [showAddPlatformAdmin, setShowAddPlatformAdmin] = useState(false);
+  const [showAddWarehouseEmployee, setShowAddWarehouseEmployee] = useState(false);
+  const [selectedWarehouseTenantId, setSelectedWarehouseTenantId] = useState<string>("");
   const [showAddClient, setShowAddClient] = useState(false);
   const [showAddEmployee, setShowAddEmployee] = useState(false);
   const [showAddTenant, setShowAddTenant] = useState(false);
@@ -96,15 +100,14 @@ export const AdminDashboardPage: React.FC = () => {
     tenantId: ""
   });
 
-  const [userForm, setUserForm] = useState({
+  const [platformAdminForm, setPlatformAdminForm] = useState({
     name: "",
     email: "",
     password: "",
     mobile: "",
-    role: "WAREHOUSE_STAFF" as Role,
     tenantId: ""
   });
-  const [showUserPassword, setShowUserPassword] = useState(false);
+  const [showPlatformAdminPassword, setShowPlatformAdminPassword] = useState(false);
 
   const [clientForm, setClientForm] = useState({
     companyName: "",
@@ -146,7 +149,7 @@ export const AdminDashboardPage: React.FC = () => {
 
       if (data.tenants.length > 0) {
         setWarehouseForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
-        setUserForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
+        setPlatformAdminForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
         setClientForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
         setEmployeeForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
         setGroupForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
@@ -184,21 +187,61 @@ export const AdminDashboardPage: React.FC = () => {
     });
   }, [warehouses, searchQuery, statusFilter, tenantFilter]);
 
-  // Filtered Users
-  const filteredUsers = useMemo(() => {
-    return users.filter((u) => {
+  // 1. Platform Admins (ONLY role === "PLATFORM_ADMIN")
+  const platformAdmins = useMemo(() => {
+    return users.filter((u) => u.role === "PLATFORM_ADMIN");
+  }, [users]);
+
+  const filteredPlatformAdmins = useMemo(() => {
+    return platformAdmins.filter((u) => {
+      const q = searchQuery.toLowerCase();
+      const matchesSearch =
+        u.name.toLowerCase().includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q) ||
+        (u.mobile ?? "").includes(q);
+      const matchesStatus = statusFilter === "ALL" || u.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [platformAdmins, searchQuery, statusFilter]);
+
+  // 2. Warehouse Employees (warehouse-side roles; excludes PLATFORM_ADMIN, CLIENT, CLIENT_ACCOUNTANT)
+  const warehouseEmployees = useMemo(() => {
+    return users.filter(
+      (u) =>
+        u.role !== "PLATFORM_ADMIN" &&
+        u.role !== "CLIENT" &&
+        u.role !== "CLIENT_ACCOUNTANT"
+    );
+  }, [users]);
+
+  const filteredWarehouseEmployees = useMemo(() => {
+    return warehouseEmployees.filter((u) => {
       const q = searchQuery.toLowerCase();
       const matchesSearch =
         u.name.toLowerCase().includes(q) ||
         (u.email ?? "").toLowerCase().includes(q) ||
         (u.mobile ?? "").includes(q) ||
-        (u.tenant?.name ?? "").toLowerCase().includes(q);
+        (u.tenant?.name ?? "").toLowerCase().includes(q) ||
+        u.role.toLowerCase().includes(q);
       const matchesRole = roleFilter === "ALL" || u.role === roleFilter;
       const matchesStatus = statusFilter === "ALL" || u.status === statusFilter;
       const matchesTenant = tenantFilter === "ALL" || u.tenant?.id === tenantFilter;
       return matchesSearch && matchesRole && matchesStatus && matchesTenant;
     });
-  }, [users, searchQuery, roleFilter, statusFilter, tenantFilter]);
+  }, [warehouseEmployees, searchQuery, roleFilter, statusFilter, tenantFilter]);
+
+  // Group warehouse employees by Tenant/Organization
+  const groupedWarehouseEmployees = useMemo(() => {
+    const map = new Map<string, { tenantName: string; tenantId: string; items: AdminUserItem[] }>();
+    for (const emp of filteredWarehouseEmployees) {
+      const key = emp.tenantId || "system";
+      const tenantName = emp.tenant?.name || "System Level / Global";
+      const current = map.get(key) ?? { tenantName, tenantId: key, items: [] };
+      current.items.push(emp);
+      map.set(key, current);
+    }
+    return Array.from(map.values());
+  }, [filteredWarehouseEmployees]);
 
   // Filtered Clients
   const filteredClients = useMemo(() => {
@@ -238,10 +281,27 @@ export const AdminDashboardPage: React.FC = () => {
     const q = searchQuery.toLowerCase();
     return companyGroups.filter((g) => {
       if (!q) return true;
-      const companyNames = g.clients.map((c) => c.companyName).join(" ").toLowerCase();
-      return g.name.toLowerCase().includes(q) || companyNames.includes(q);
+      // Search across distinct company names (not individual employee rows)
+      const distinctCompanyNames = Array.from(new Set(g.clients.map((c) => c.companyName))).join(" ").toLowerCase();
+      return g.name.toLowerCase().includes(q) || distinctCompanyNames.includes(q);
     });
   }, [companyGroups, searchQuery]);
+
+  /**
+   * Groups a corporate group's flat Client[] (which may contain multiple employee rows
+   * per company) into distinct companies, each with their employee list.
+   * This correctly implements: Corporate Group → Companies → Employees
+   */
+  const groupGroupClients = (clients: AdminClientItem[]) => {
+    const map = new Map<string, AdminClientItem[]>();
+    for (const c of clients) {
+      const key = c.companyName.trim() || "Unnamed Company";
+      const current = map.get(key) ?? [];
+      current.push(c);
+      map.set(key, current);
+    }
+    return Array.from(map.entries()).map(([companyName, employees]) => ({ companyName, employees }));
+  };
 
   // Handlers
   const handleCreateWarehouse = async (e: React.FormEvent) => {
@@ -260,17 +320,17 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
-  const handleCreateUser = async (e: React.FormEvent) => {
+  const handleCreatePlatformAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userForm.email.trim()) {
+    if (!platformAdminForm.email.trim()) {
       setActionMessage({ type: "error", text: "Email is required." });
       return;
     }
-    if (!userForm.password) {
+    if (!platformAdminForm.password) {
       setActionMessage({ type: "error", text: "Password is required." });
       return;
     }
-    if (userForm.password.length < 8) {
+    if (platformAdminForm.password.length < 8) {
       setActionMessage({ type: "error", text: "Password must be at least 8 characters." });
       return;
     }
@@ -278,27 +338,27 @@ export const AdminDashboardPage: React.FC = () => {
     setSubmitting(true);
     try {
       const result = await createEmployeeWithAuth({
-        name: userForm.name.trim(),
-        email: userForm.email.trim(),
-        password: userForm.password,
-        mobile: userForm.mobile.trim() || undefined,
-        role: userForm.role,
-        tenantId: userForm.tenantId || undefined,
+        name: platformAdminForm.name.trim(),
+        email: platformAdminForm.email.trim(),
+        password: platformAdminForm.password,
+        mobile: platformAdminForm.mobile.trim() || undefined,
+        role: "PLATFORM_ADMIN",
+        tenantId: platformAdminForm.tenantId || undefined,
       });
 
       if (!result.success) {
-        setActionMessage({ type: "error", text: result.error || "Failed to create user." });
+        setActionMessage({ type: "error", text: result.error || "Failed to create platform admin." });
         return;
       }
 
-      setShowAddUser(false);
-      setUserForm({ name: "", email: "", password: "", mobile: "", role: "WAREHOUSE_STAFF", tenantId: tenants[0]?.id || "" });
-      setShowUserPassword(false);
-      setActionMessage({ type: "success", text: "User created successfully with Supabase Auth credentials!" });
+      setShowAddPlatformAdmin(false);
+      setPlatformAdminForm({ name: "", email: "", password: "", mobile: "", tenantId: tenants[0]?.id || "" });
+      setShowPlatformAdminPassword(false);
+      setActionMessage({ type: "success", text: "Platform Admin created successfully with Supabase Auth credentials!" });
       await loadData();
       await refreshUsers();
     } catch (err: any) {
-      setActionMessage({ type: "error", text: err.message || "Failed to create user." });
+      setActionMessage({ type: "error", text: err.message || "Failed to create platform admin." });
     } finally {
       setSubmitting(false);
     }
@@ -565,9 +625,21 @@ export const AdminDashboardPage: React.FC = () => {
               <Plus className="w-3.5 h-3.5" /> Add Warehouse
             </Button>
           )}
-          {activeTab === "users" && (
-            <Button size="sm" onClick={() => setShowAddUser(true)} className="flex items-center gap-1.5 text-xs">
-              <Plus className="w-3.5 h-3.5" /> Add User
+          {activeTab === "admins" && (
+            <Button size="sm" onClick={() => setShowAddPlatformAdmin(true)} className="flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white">
+              <Plus className="w-3.5 h-3.5" /> Add Platform Admin
+            </Button>
+          )}
+          {activeTab === "warehouse_employees" && (
+            <Button
+              size="sm"
+              onClick={() => {
+                setSelectedWarehouseTenantId(tenants[0]?.id || "");
+                setShowAddWarehouseEmployee(true);
+              }}
+              className="flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Warehouse Employee
             </Button>
           )}
           {activeTab === "clients" && (
@@ -576,7 +648,7 @@ export const AdminDashboardPage: React.FC = () => {
                 <Plus className="w-3.5 h-3.5" /> Add Client Company
               </Button>
               <Button size="sm" variant="outline" onClick={() => setShowAddEmployee(true)} className="flex items-center gap-1.5 text-xs">
-                <Plus className="w-3.5 h-3.5" /> Add Employee
+                <Plus className="w-3.5 h-3.5" /> Add Client Employee
               </Button>
             </div>
           )}
@@ -597,58 +669,83 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <Card
           onClick={() => setActiveTab("warehouses")}
-          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
         >
-          <div className="w-12 h-12 rounded-xl bg-teal-950/60 border border-teal-800/60 flex items-center justify-center text-teal-400">
-            <Building2 className="w-6 h-6" />
+          <div className="w-10 h-10 rounded-xl bg-teal-950/60 border border-teal-800/60 flex items-center justify-center text-teal-400 shrink-0">
+            <Building2 className="w-5 h-5" />
           </div>
-          <div>
-            <p className="text-xs font-medium text-slate-400">Total Warehouses</p>
-            <p className="text-2xl font-bold text-white mt-0.5">{warehouses.length}</p>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 truncate">Warehouses</p>
+            <p className="text-xl font-bold text-white mt-0.5">{warehouses.length}</p>
           </div>
         </Card>
 
         <Card
-          onClick={() => setActiveTab("users")}
-          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+          onClick={() => setActiveTab("admins")}
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-indigo-600/50 hover:bg-slate-900/80 transition-all"
         >
-          <div className="w-12 h-12 rounded-xl bg-indigo-950/60 border border-indigo-800/60 flex items-center justify-center text-indigo-400">
-            <Users className="w-6 h-6" />
+          <div className="w-10 h-10 rounded-xl bg-indigo-950/60 border border-indigo-800/60 flex items-center justify-center text-indigo-400 shrink-0">
+            <ShieldCheck className="w-5 h-5" />
           </div>
-          <div>
-            <p className="text-xs font-medium text-slate-400">Total Users</p>
-            <p className="text-2xl font-bold text-white mt-0.5">{users.length}</p>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 truncate">Platform Admins</p>
+            <p className="text-xl font-bold text-white mt-0.5">{platformAdmins.length}</p>
+          </div>
+        </Card>
+
+        <Card
+          onClick={() => setActiveTab("warehouse_employees")}
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-blue-600/50 hover:bg-slate-900/80 transition-all"
+        >
+          <div className="w-10 h-10 rounded-xl bg-blue-950/60 border border-blue-800/60 flex items-center justify-center text-blue-400 shrink-0">
+            <Users className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 truncate">Warehouse Staff</p>
+            <p className="text-xl font-bold text-white mt-0.5">{warehouseEmployees.length}</p>
           </div>
         </Card>
 
         <Card
           onClick={() => setActiveTab("clients")}
-          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-amber-600/50 hover:bg-slate-900/80 transition-all"
         >
-          <div className="w-12 h-12 rounded-xl bg-amber-950/60 border border-amber-800/60 flex items-center justify-center text-amber-400">
-            <Store className="w-6 h-6" />
+          <div className="w-10 h-10 rounded-xl bg-amber-950/60 border border-amber-800/60 flex items-center justify-center text-amber-400 shrink-0">
+            <Store className="w-5 h-5" />
           </div>
-          <div>
-            <p className="text-xs font-medium text-slate-400">Client Companies</p>
-            <p className="text-2xl font-bold text-white mt-0.5">{uniqueCompanyNames.length}</p>
-            <span className="text-[10px] text-slate-400">{clients.length} employee accounts</span>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 truncate">Client Companies</p>
+            <p className="text-xl font-bold text-white mt-0.5">{uniqueCompanyNames.length}</p>
+            <span className="text-[10px] text-slate-400 block truncate">{clients.length} employee accounts</span>
+          </div>
+        </Card>
+
+        <Card
+          onClick={() => setActiveTab("groups")}
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-rose-600/50 hover:bg-slate-900/80 transition-all"
+        >
+          <div className="w-10 h-10 rounded-xl bg-rose-950/60 border border-rose-800/60 flex items-center justify-center text-rose-400 shrink-0">
+            <Layers className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 truncate">Corp Groups</p>
+            <p className="text-xl font-bold text-white mt-0.5">{companyGroups.length}</p>
           </div>
         </Card>
 
         <Card
           onClick={() => setActiveTab("tenants")}
-          className="p-4 flex items-center gap-4 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-purple-600/50 hover:bg-slate-900/80 transition-all group"
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-purple-600/50 hover:bg-slate-900/80 transition-all group"
         >
-          <div className="w-12 h-12 rounded-xl bg-purple-950/60 border border-purple-800/60 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
-            <Briefcase className="w-6 h-6" />
+          <div className="w-10 h-10 rounded-xl bg-purple-950/60 border border-purple-800/60 flex items-center justify-center text-purple-400 shrink-0 group-hover:scale-105 transition-transform">
+            <Briefcase className="w-5 h-5" />
           </div>
-          <div>
-            <p className="text-xs font-medium text-slate-400 group-hover:text-purple-300 transition-colors">Organizations / Tenants</p>
-            <p className="text-2xl font-bold text-white mt-0.5">{tenants.length}</p>
-            <span className="text-[10px] text-purple-400/80 font-medium">Click to manage →</span>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 group-hover:text-purple-300 transition-colors truncate">Organizations</p>
+            <p className="text-xl font-bold text-white mt-0.5">{tenants.length}</p>
           </div>
         </Card>
       </div>
@@ -668,15 +765,27 @@ export const AdminDashboardPage: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveTab("users")}
+          onClick={() => setActiveTab("admins")}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
-            activeTab === "users"
+            activeTab === "admins"
+              ? "bg-indigo-600 text-white shadow-lg shadow-indigo-950/50"
+              : "bg-slate-800/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+          }`}
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          Platform Admins ({platformAdmins.length})
+        </button>
+
+        <button
+          onClick={() => setActiveTab("warehouse_employees")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            activeTab === "warehouse_employees"
               ? "bg-indigo-600 text-white shadow-lg shadow-indigo-950/50"
               : "bg-slate-800/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
           }`}
         >
           <Users className="w-3.5 h-3.5" />
-          Users & Roles ({users.length})
+          Warehouse Employees ({warehouseEmployees.length})
         </button>
 
         <button
@@ -728,10 +837,14 @@ export const AdminDashboardPage: React.FC = () => {
               placeholder={
                 activeTab === "warehouses"
                   ? "Search warehouses by name, code, address, organization..."
-                  : activeTab === "users"
-                  ? "Search users by name, email, phone, organization..."
+                  : activeTab === "admins"
+                  ? "Search platform admins by name, email, phone..."
+                  : activeTab === "warehouse_employees"
+                  ? "Search warehouse employees by name, email, role, organization..."
                   : activeTab === "groups"
                   ? "Search groups by name, company, or contact..."
+                  : activeTab === "tenants"
+                  ? "Search organizations by name, slug, email..."
                   : "Search client companies by name, contact, mobile, GSTIN..."
               }
               className="w-full bg-slate-800/70 border border-slate-700/60 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -739,34 +852,34 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-            <select
-              value={tenantFilter}
-              onChange={(e) => setTenantFilter(e.target.value)}
-              className="bg-slate-800/70 border border-slate-700/60 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            >
-              <option value="ALL">All Organizations</option>
-              {tenants.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
+            {activeTab !== "admins" && (
+              <select
+                value={tenantFilter}
+                onChange={(e) => setTenantFilter(e.target.value)}
+                className="bg-slate-800/70 border border-slate-700/60 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="ALL">All Organizations</option>
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
-            {activeTab === "users" && (
+            {activeTab === "warehouse_employees" && (
               <select
                 value={roleFilter}
                 onChange={(e) => setRoleFilter(e.target.value)}
                 className="bg-slate-800/70 border border-slate-700/60 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
-                <option value="ALL">All Roles</option>
-                <option value="PLATFORM_ADMIN">Platform Admin</option>
-                <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
-                <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
+                <option value="ALL">All Warehouse Roles</option>
                 <option value="WAREHOUSE_STAFF">Warehouse Staff</option>
-                <option value="PRODUCT_RECEIVER">Product Receiver</option>
+                <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
+                <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
                 <option value="ACCOUNTANT">Accountant</option>
                 <option value="ACCOUNTS_TEAM">Accounts Team</option>
-                <option value="CLIENT">Client</option>
+                <option value="PRODUCT_RECEIVER">Product Receiver</option>
               </select>
             )}
 
@@ -885,18 +998,28 @@ export const AdminDashboardPage: React.FC = () => {
         </Card>
       )}
 
-      {/* TAB 2: USERS */}
-      {activeTab === "users" && (
+      {/* TAB 2: PLATFORM ADMINS */}
+      {activeTab === "admins" && (
         <Card className="overflow-hidden border-slate-800 bg-slate-900/60">
           <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-            <h3 className="font-semibold text-sm text-white">System Users & Roles</h3>
-            <span className="text-xs text-slate-400">{filteredUsers.length} accounts</span>
+            <div>
+              <h3 className="font-semibold text-sm text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                Platform Administrators
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Full-access system administrators with global platform oversight.
+              </p>
+            </div>
+            <span className="text-xs text-slate-400 font-medium">
+              {filteredPlatformAdmins.length} {filteredPlatformAdmins.length === 1 ? "account" : "accounts"}
+            </span>
           </div>
 
-          {filteredUsers.length === 0 ? (
+          {filteredPlatformAdmins.length === 0 ? (
             <div className="p-12 text-center text-slate-500">
-              <Users className="w-10 h-10 mx-auto text-slate-600 mb-2" />
-              <p className="text-sm font-medium">No users found</p>
+              <ShieldCheck className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+              <p className="text-sm font-medium">No platform admins found</p>
               <p className="text-xs text-slate-400">Try adjusting your search criteria</p>
             </div>
           ) : (
@@ -906,19 +1029,18 @@ export const AdminDashboardPage: React.FC = () => {
                   <tr>
                     <th className="px-4 py-3">User</th>
                     <th className="px-4 py-3">Contact</th>
-                    <th className="px-4 py-3">Assigned Role</th>
-                    <th className="px-4 py-3">Organization</th>
+                    <th className="px-4 py-3">Role</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Joined</th>
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {filteredUsers.map((u) => (
+                  {filteredPlatformAdmins.map((u) => (
                     <tr key={u.id} className="hover:bg-slate-800/30 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-[11px] text-indigo-400">
+                          <div className="w-7 h-7 rounded-full bg-indigo-950/80 border border-indigo-700/80 flex items-center justify-center font-bold text-[11px] text-indigo-300">
                             {u.name.slice(0, 2).toUpperCase()}
                           </div>
                           <div>
@@ -949,12 +1071,7 @@ export const AdminDashboardPage: React.FC = () => {
                             u.role
                           )}`}
                         >
-                          {u.role.replace(/_/g, " ")}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-slate-300 font-medium">
-                          {u.tenant?.name || "System Level"}
+                          PLATFORM ADMIN
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -969,10 +1086,17 @@ export const AdminDashboardPage: React.FC = () => {
                         <button
                           onClick={() => {
                             setEditingUser(u);
-                            setEditForm({ name: u.name, email: u.email || "", mobile: u.mobile || "", role: u.role, status: u.status, tenantId: u.tenantId || "" });
+                            setEditForm({
+                              name: u.name,
+                              email: u.email || "",
+                              mobile: u.mobile || "",
+                              role: u.role,
+                              status: u.status,
+                              tenantId: u.tenantId || ""
+                            });
                           }}
                           className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
-                          title="Edit user"
+                          title="Edit platform admin"
                         >
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
@@ -984,6 +1108,130 @@ export const AdminDashboardPage: React.FC = () => {
             </div>
           )}
         </Card>
+      )}
+
+      {/* TAB 3: WAREHOUSE EMPLOYEES */}
+      {activeTab === "warehouse_employees" && (
+        <div className="space-y-4">
+          {groupedWarehouseEmployees.length === 0 ? (
+            <Card className="p-12 text-center text-slate-500 bg-slate-900/60 border-slate-800">
+              <Users className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+              <p className="text-sm font-medium">No warehouse employees found</p>
+              <p className="text-xs text-slate-400">Try adjusting your search criteria or role filters</p>
+            </Card>
+          ) : (
+            groupedWarehouseEmployees.map(({ tenantName, tenantId, items }) => (
+              <Card
+                key={tenantId}
+                className="overflow-hidden border-slate-800 bg-slate-900/60 shadow-lg"
+              >
+                <div className="p-4 bg-slate-800/50 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-blue-950/80 border border-blue-800/80 flex items-center justify-center text-blue-400">
+                      <Building2 className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-base text-white">{tenantName}</h4>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-0.5">
+                        <span>{items.length} employee account{items.length === 1 ? "" : "s"}</span>
+                        <span>• Warehouse Operations & Facility Staff</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSelectedWarehouseTenantId(tenantId === "system" ? (tenants[0]?.id || "") : tenantId);
+                      setShowAddWarehouseEmployee(true);
+                    }}
+                    className="text-xs flex items-center gap-1 self-start sm:self-auto"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Warehouse Employee
+                  </Button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-800/30 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                      <tr>
+                        <th className="px-4 py-2.5">Employee</th>
+                        <th className="px-4 py-2.5">Role</th>
+                        <th className="px-4 py-2.5">Mobile</th>
+                        <th className="px-4 py-2.5">Email</th>
+                        <th className="px-4 py-2.5">Warehouse / Company</th>
+                        <th className="px-4 py-2.5">Status</th>
+                        <th className="px-4 py-2.5">Joined</th>
+                        <th className="px-4 py-2.5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/40">
+                      {items.map((emp) => (
+                        <tr key={emp.id} className="hover:bg-slate-800/20 transition-colors">
+                          <td className="px-4 py-2.5 font-semibold text-white flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-[10px] text-blue-400 shrink-0">
+                              {emp.name.slice(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <span>{emp.name}</span>
+                              <span className="block text-[10px] text-slate-400 font-mono">ID: {emp.id.slice(0, 8)}...</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${roleBadgeColor(
+                                emp.role
+                              )}`}
+                            >
+                              {emp.role.replace(/_/g, " ")}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 font-mono text-slate-300">
+                            {emp.mobile || "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-300">
+                            {emp.email || "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-400">
+                            {emp.tenant?.name || "System Level"}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <Badge variant={emp.status === "ACTIVE" ? "success" : "default"}>
+                              {emp.status}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-400 text-[11px]">
+                            {new Date(emp.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            <button
+                              onClick={() => {
+                                setEditingUser(emp);
+                                setEditForm({
+                                  name: emp.name,
+                                  email: emp.email || "",
+                                  mobile: emp.mobile || "",
+                                  role: emp.role,
+                                  status: emp.status,
+                                  tenantId: emp.tenantId || ""
+                                });
+                              }}
+                              className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                              title="Edit warehouse employee"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
       )}
 
       {/* TAB 3: CLIENT COMPANIES */}
@@ -1182,39 +1430,73 @@ export const AdminDashboardPage: React.FC = () => {
             </Card>
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
-              {filteredGroups.map((g) => (
-                <Card key={g.id} className="p-5 border-slate-800 bg-slate-900/60">
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="font-bold text-base text-white">{g.name}</h4>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
-                      {g.clients.length} companies
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-4">{g.description || "No description provided."}</p>
+              {filteredGroups.map((g) => {
+                const companiesInGroup = groupGroupClients(g.clients);
+                return (
+                  <Card key={g.id} className="p-5 border-slate-800 bg-slate-900/60">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-bold text-base text-white">{g.name}</h4>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
+                        {companiesInGroup.length} {companiesInGroup.length === 1 ? "company" : "companies"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mb-4">{g.description || "No description provided."}</p>
 
-                  <div className="rounded-xl border border-slate-800 bg-slate-800/40 p-3">
-                    <p className="text-[11px] font-semibold text-slate-300 mb-2 flex items-center gap-1.5">
-                      <Store className="w-3.5 h-3.5 text-indigo-400" />
-                      Associated Companies
-                    </p>
-                    {g.clients.length === 0 ? (
-                      <p className="text-xs text-slate-500">No companies attached yet.</p>
-                    ) : (
-                      <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                        {g.clients.map((c) => (
-                          <div
-                            key={c.id}
-                            className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60"
-                          >
-                            <span className="font-semibold text-white">{c.companyName}</span>
-                            <span className="text-[10px] text-slate-400">{c.contactPerson}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              ))}
+                    <div className="rounded-xl border border-slate-800 bg-slate-800/40 p-3">
+                      <p className="text-[11px] font-semibold text-slate-300 mb-2 flex items-center gap-1.5">
+                        <Store className="w-3.5 h-3.5 text-indigo-400" />
+                        Associated Companies
+                      </p>
+                      {companiesInGroup.length === 0 ? (
+                        <p className="text-xs text-slate-500">No companies attached yet.</p>
+                      ) : (
+                        <div className="space-y-2 max-h-52 overflow-y-auto">
+                          {companiesInGroup.map(({ companyName, employees }) => {
+                            const hasGst = employees.find((e) => e.gstNumber)?.gstNumber;
+                            return (
+                              <div
+                                key={companyName}
+                                className="px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700/60"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-semibold text-sm text-white">{companyName}</span>
+                                  <span className="text-[10px] text-slate-400">
+                                    {employees.length} {employees.length === 1 ? "employee" : "employees"}
+                                  </span>
+                                </div>
+                                {hasGst && (
+                                  <span className="text-[10px] font-mono text-teal-400 mt-0.5 block">
+                                    GSTIN: {hasGst}
+                                  </span>
+                                )}
+                                <div className="flex flex-wrap gap-1 mt-1.5">
+                                  {employees.slice(0, 4).map((emp) => (
+                                    <span
+                                      key={emp.id}
+                                      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
+                                    >
+                                      <UserCheck className="w-2.5 h-2.5 text-slate-500" />
+                                      {emp.contactPerson}
+                                      {emp.employeeRole && (
+                                        <span className="text-slate-500 font-mono">· {emp.employeeRole}</span>
+                                      )}
+                                    </span>
+                                  ))}
+                                  {employees.length > 4 && (
+                                    <span className="text-[10px] text-slate-500 italic">
+                                      +{employees.length - 4} more
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1508,21 +1790,21 @@ export const AdminDashboardPage: React.FC = () => {
         </form>
       </Modal>
 
-      {/* MODAL: ADD USER */}
+      {/* MODAL: ADD PLATFORM ADMIN */}
       <Modal
-        isOpen={showAddUser}
-        onClose={() => setShowAddUser(false)}
-        title="Add New User Account"
+        isOpen={showAddPlatformAdmin}
+        onClose={() => setShowAddPlatformAdmin(false)}
+        title="Add Platform Admin"
       >
-        <form onSubmit={handleCreateUser} className="space-y-4">
+        <form onSubmit={handleCreatePlatformAdmin} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
               Full Name *
             </label>
             <input
               type="text"
-              value={userForm.name}
-              onChange={(e) => setUserForm({ ...userForm, name: e.target.value })}
+              value={platformAdminForm.name}
+              onChange={(e) => setPlatformAdminForm({ ...platformAdminForm, name: e.target.value })}
               placeholder="e.g. Sarah Connor"
               required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -1535,9 +1817,9 @@ export const AdminDashboardPage: React.FC = () => {
             </label>
             <input
               type="email"
-              value={userForm.email}
-              onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-              placeholder="user@example.test"
+              value={platformAdminForm.email}
+              onChange={(e) => setPlatformAdminForm({ ...platformAdminForm, email: e.target.value })}
+              placeholder="admin@example.test"
               required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
@@ -1549,9 +1831,9 @@ export const AdminDashboardPage: React.FC = () => {
             </label>
             <div className="relative">
               <input
-                type={showUserPassword ? "text" : "password"}
-                value={userForm.password}
-                onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                type={showPlatformAdminPassword ? "text" : "password"}
+                value={platformAdminForm.password}
+                onChange={(e) => setPlatformAdminForm({ ...platformAdminForm, password: e.target.value })}
                 placeholder="Minimum 8 characters"
                 minLength={8}
                 required
@@ -1559,10 +1841,10 @@ export const AdminDashboardPage: React.FC = () => {
               />
               <button
                 type="button"
-                onClick={() => setShowUserPassword(!showUserPassword)}
+                onClick={() => setShowPlatformAdminPassword(!showPlatformAdminPassword)}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
               >
-                {showUserPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {showPlatformAdminPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               </button>
             </div>
             <p className="text-[10px] text-slate-500 mt-1">
@@ -1576,50 +1858,20 @@ export const AdminDashboardPage: React.FC = () => {
             </label>
             <input
               type="tel"
-              value={userForm.mobile}
-              onChange={(e) => setUserForm({ ...userForm, mobile: e.target.value })}
+              value={platformAdminForm.mobile}
+              onChange={(e) => setPlatformAdminForm({ ...platformAdminForm, mobile: e.target.value })}
               placeholder="+91 98765 43210"
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                System Role *
-              </label>
-              <select
-                value={userForm.role}
-                onChange={(e) => setUserForm({ ...userForm, role: e.target.value as Role })}
-                required
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              >
-                <option value="WAREHOUSE_STAFF">Warehouse Staff</option>
-                <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
-                <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
-                <option value="ACCOUNTANT">Accountant</option>
-                <option value="ACCOUNTS_TEAM">Accounts Team</option>
-                <option value="PRODUCT_RECEIVER">Product Receiver</option>
-                <option value="PLATFORM_ADMIN">Platform Admin</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Organization
-              </label>
-              <select
-                value={userForm.tenantId}
-                onChange={(e) => setUserForm({ ...userForm, tenantId: e.target.value })}
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              >
-                <option value="">System-wide (No Tenant)</option>
-                {tenants.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              Assigned Role
+            </label>
+            <div className="px-3 py-2 rounded-xl bg-slate-800/80 border border-slate-700 text-xs text-rose-300 font-semibold flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-rose-400" />
+              PLATFORM_ADMIN (System Administrator)
             </div>
           </div>
 
@@ -1628,16 +1880,30 @@ export const AdminDashboardPage: React.FC = () => {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setShowAddUser(false)}
+              onClick={() => setShowAddPlatformAdmin(false)}
             >
               Cancel
             </Button>
             <Button type="submit" size="sm" isLoading={submitting}>
-              Create User
+              Create Platform Admin
             </Button>
           </div>
         </form>
       </Modal>
+
+      {/* REUSABLE WAREHOUSE ADD EMPLOYEE MODAL */}
+      <AddEmployeeModal
+        isOpen={showAddWarehouseEmployee}
+        onClose={() => setShowAddWarehouseEmployee(false)}
+        onSuccess={async () => {
+          setActionMessage({ type: "success", text: "Warehouse employee created successfully with Supabase Auth credentials!" });
+          await loadData();
+          await refreshUsers();
+        }}
+        tenantId={selectedWarehouseTenantId || (tenants[0]?.id || "")}
+        isPlatformAdmin={role === "PLATFORM_ADMIN"}
+        allTenants={tenants}
+      />
 
       {/* MODAL: ADD CLIENT COMPANY */}
       <Modal
@@ -2018,14 +2284,20 @@ export const AdminDashboardPage: React.FC = () => {
                 onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
-                <option value="PLATFORM_ADMIN">Platform Admin</option>
-                <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
-                <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
-                <option value="WAREHOUSE_STAFF">Warehouse Staff</option>
-                <option value="PRODUCT_RECEIVER">Product Receiver</option>
-                <option value="ACCOUNTANT">Accountant</option>
-                <option value="ACCOUNTS_TEAM">Accounts Team</option>
-                <option value="CLIENT">Client (External)</option>
+                {editingUser.role === "PLATFORM_ADMIN" ? (
+                  <option value="PLATFORM_ADMIN">Platform Admin</option>
+                ) : editingUser.role === "CLIENT" ? (
+                  <option value="CLIENT">Client (External)</option>
+                ) : (
+                  <>
+                    <option value="WAREHOUSE_STAFF">Warehouse Staff</option>
+                    <option value="WAREHOUSE_MODERATOR">Warehouse Moderator</option>
+                    <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
+                    <option value="ACCOUNTANT">Accountant</option>
+                    <option value="ACCOUNTS_TEAM">Accounts Team</option>
+                    <option value="PRODUCT_RECEIVER">Product Receiver</option>
+                  </>
+                )}
               </select>
             </div>
           )}
