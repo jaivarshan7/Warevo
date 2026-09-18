@@ -127,7 +127,6 @@ export const AdminDashboardPage: React.FC = () => {
     email: "",
     password: "",
     employeeRole: "RECEIVER" as ClientEmployeeRole,
-    shippingAddress: "",
     tenantId: ""
   });
   const [showEmployeePassword, setShowEmployeePassword] = useState(false);
@@ -429,8 +428,6 @@ export const AdminDashboardPage: React.FC = () => {
         role: "CLIENT",
         clientEmployeeRole: employeeForm.employeeRole,
         companyName: employeeForm.companyName.trim(),
-        shippingAddress: employeeForm.shippingAddress.trim() || "Main Office",
-        billingAddress: employeeForm.shippingAddress.trim() || "Main Office",
         tenantId: employeeForm.tenantId || tenants[0]?.id || undefined,
       });
 
@@ -449,7 +446,6 @@ export const AdminDashboardPage: React.FC = () => {
         email: "",
         password: "",
         employeeRole: "RECEIVER",
-        shippingAddress: "",
         tenantId: tenants[0]?.id || ""
       });
       setShowEmployeePassword(false);
@@ -2166,7 +2162,8 @@ export const AdminDashboardPage: React.FC = () => {
               </div>
             </div>
           </div>
-
+          
+          {/* 
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
               Store / Delivery Location Address
@@ -2178,7 +2175,7 @@ export const AdminDashboardPage: React.FC = () => {
               placeholder="Branch/Store address where this receiver accepts delivery"
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
-          </div>
+          </div> */}
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
             <Button
