@@ -883,11 +883,15 @@ export async function submitOrderVerification(
 // ======================== INVOICE NUMBER GENERATION ========================
 
 // Generate the next invoice number for a tenant
+// Uses same formatting as the database RPCs: prefix + 6-digit zero-padded sequence
 async function generateNextInvoiceNumber(tenantId: string, settings?: TenantSettings | null): Promise<string> {
   // Get prefix from settings (defaults to empty string)
-  const prefix = settings?.invoicePrefix?.trim() || "";
+  const prefix = settings?.invoicePrefix?.trim() ?? "";
 
-  // Get latest invoice to determine next number
+  // Read authoritative next sequence from settings
+  let nextNum = settings?.nextInvoiceNumber ?? 1;
+
+  // Cross-check: also look at existing invoices for safety
   const latestRes = await supabase
     .from("Invoice")
     .select("invoiceNumber")
@@ -895,22 +899,20 @@ async function generateNextInvoiceNumber(tenantId: string, settings?: TenantSett
     .order("createdAt", { ascending: false })
     .limit(1);
 
-  // Parse the latest invoice number to find next sequence
   const latestInvoice = latestRes.data?.[0];
-  let nextNum = 1;
-
   if (latestInvoice?.invoiceNumber) {
-    // Remove prefix to get the numeric part
-    const numPart = latestInvoice.invoiceNumber.replace(prefix, "");
-    // Try to parse as number
-    const parsed = parseInt(numPart, 10);
-    if (!isNaN(parsed)) {
-      nextNum = parsed + 1;
+    // Extract trailing digits from any format (e.g. INV-2026-000024 → 24)
+    const trailingMatch = latestInvoice.invoiceNumber.match(/([0-9]+)$/);
+    if (trailingMatch) {
+      const existingMax = parseInt(trailingMatch[1], 10);
+      if (!isNaN(existingMax) && existingMax >= nextNum) {
+        nextNum = existingMax + 1;
+      }
     }
   }
 
-  // Format invoice number with prefix
-  return `${prefix}${nextNum}`;
+  // Format: prefix + 6-digit zero-padded sequence (matches DB RPCs)
+  return `${prefix}${String(nextNum).padStart(6, "0")}`;
 }
 
 // ======================== CLIENT RECEIVER VERIFICATION ========================
@@ -2493,7 +2495,7 @@ export async function createTenantSettings(payload: {
       .upsert({
         id,
         tenantId: payload.tenantId,
-        invoicePrefix: payload.invoicePrefix?.trim() || "INV",
+        invoicePrefix: payload.invoicePrefix?.trim() ?? "",
         orderPrefix: payload.orderPrefix || "ORD",
         updatedAt: now
       }, { onConflict: "tenantId" })
@@ -2508,7 +2510,7 @@ export async function createTenantSettings(payload: {
     .from("TenantSettings")
     .insert({
       tenantId: payload.tenantId,
-      invoicePrefix: payload.invoicePrefix?.trim() || null
+      invoicePrefix: payload.invoicePrefix?.trim() ?? null
     })
     .select()
     .single();
@@ -2520,7 +2522,7 @@ export async function createTenantSettings(payload: {
 export async function getOrCreateTenantSettings(tenantId: string) {
   const settings = await fetchTenantSettings(tenantId);
   if (settings) return settings;
-  return await createTenantSettings({ tenantId, invoicePrefix: "INV" });
+  return await createTenantSettings({ tenantId, invoicePrefix: "" });
 }
 
 // ======================== NOTIFICATION SETTINGS ========================

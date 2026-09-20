@@ -454,7 +454,8 @@ model WarehouseSetting {
   id                      String   @id @default(cuid())
   tenantId                String   @unique
   orderPrefix             String   @default("ORD")
-  invoicePrefix           String   @default("INV")
+  invoicePrefix           String   @default("")
+  nextInvoiceNumber       Int      @default(1)
   gstSettings             Json     @default("{}")
   notificationPreferences Json     @default("{}")
   createdAt               DateTime @default(now())

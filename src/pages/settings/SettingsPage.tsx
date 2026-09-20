@@ -88,47 +88,49 @@ export const SettingsPage: React.FC = () => {
         return;
       }
 
-      // 1. Load Invoice Prefix Settings
+      // 1. Load Invoice Prefix + Next Invoice Number from WarehouseSetting
       try {
-        const localPrefix = localStorage.getItem(`wms_invoice_prefix_${tenantId}`);
         const settings = await fetchTenantSettings(tenantId);
         if (isMounted) {
-          if (settings?.invoicePrefix !== undefined && settings?.invoicePrefix !== null) {
-            setInvoicePrefix(settings.invoicePrefix.trim());
-          } else if (localPrefix !== null) {
-            setInvoicePrefix(localPrefix);
-          } else {
-            setInvoicePrefix("INV-");
+          // invoicePrefix: use DB value (may be empty string), default to ""
+          const dbPrefix = settings?.invoicePrefix;
+          setInvoicePrefix(dbPrefix != null ? dbPrefix.trim() : "");
+
+          // nextInvoiceNumber: authoritative from WarehouseSetting
+          let nextNum = (settings as any)?.nextInvoiceNumber ?? 1;
+
+          // Cross-check against existing invoices for safety
+          try {
+            const latestRes = await supabase
+              .from("Invoice")
+              .select("invoiceNumber")
+              .eq("tenantId", tenantId)
+              .order("createdAt", { ascending: false })
+              .limit(1);
+
+            if (latestRes.data?.[0]?.invoiceNumber) {
+              const trailingMatch = latestRes.data[0].invoiceNumber.match(/([0-9]+)$/);
+              if (trailingMatch) {
+                const existingMax = parseInt(trailingMatch[1], 10);
+                if (!isNaN(existingMax) && existingMax >= nextNum) {
+                  nextNum = existingMax + 1;
+                }
+              }
+            }
+          } catch {
+            // Non-critical: sequence from settings is still valid
           }
+
+          setNextInvoiceNumber(nextNum);
         }
       } catch (error) {
         console.error("Failed to load invoice settings:", error);
         if (isMounted) {
-          const localPrefix = localStorage.getItem(`wms_invoice_prefix_${tenantId}`);
-          setInvoicePrefix(localPrefix || "INV-");
+          setInvoicePrefix("");
+          setNextInvoiceNumber(1);
         }
       } finally {
         if (isMounted) setLoadingInvoiceSettings(false);
-      }
-
-      // 2. Calculate next invoice number
-      try {
-        const latestRes = await supabase
-          .from("Invoice")
-          .select("invoiceNumber")
-          .eq("tenantId", tenantId)
-          .order("createdAt", { ascending: false })
-          .limit(1);
-
-        if (isMounted && latestRes.data?.[0]?.invoiceNumber) {
-          const rawNum = latestRes.data[0].invoiceNumber.replace(/^\D+/, "");
-          const parsed = parseInt(rawNum, 10);
-          setNextInvoiceNumber(!isNaN(parsed) ? parsed + 1 : 1);
-        } else if (isMounted) {
-          setNextInvoiceNumber(1);
-        }
-      } catch {
-        if (isMounted) setNextInvoiceNumber(1);
       }
 
       // 3. Load Notification Settings
@@ -168,27 +170,25 @@ export const SettingsPage: React.FC = () => {
     if (!tenant?.id) return;
     setSavingInvoice(true);
     setInvoiceSuccessMessage(null);
+    // Preserve the exact prefix — empty string means no prefix
     const prefixValue = invoicePrefix.trim();
 
     try {
-      // Save locally
-      localStorage.setItem(`wms_invoice_prefix_${tenant.id}`, prefixValue);
-
       let settings = await fetchTenantSettings(tenant.id);
       if (!settings) {
         settings = await createTenantSettings({
           tenantId: tenant.id,
-          invoicePrefix: prefixValue || null
+          invoicePrefix: prefixValue
         });
       } else {
         settings = await updateTenantSettings(settings.id || tenant.id, {
-          invoicePrefix: prefixValue || null
+          invoicePrefix: prefixValue
         });
       }
 
-      if (settings?.invoicePrefix !== undefined && settings?.invoicePrefix !== null) {
-        setInvoicePrefix(settings.invoicePrefix.trim());
-      }
+      // Refresh the displayed prefix from DB response
+      const savedPrefix = settings?.invoicePrefix;
+      setInvoicePrefix(savedPrefix != null ? savedPrefix.trim() : "");
       setInvoiceSuccessMessage("Invoice prefix settings saved successfully!");
       setTimeout(() => setInvoiceSuccessMessage(null), 4000);
     } catch (error) {
@@ -341,24 +341,22 @@ export const SettingsPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Invoice Prefix *
+                Invoice Prefix
               </label>
               <input
                 type="text"
                 value={invoicePrefix}
-                onChange={(e) => setInvoicePrefix(e.target.value.trim())}
-                placeholder="e.g. INV-, WMS-, SI-"
+                onChange={(e) => setInvoicePrefix(e.target.value)}
+                placeholder="Leave empty for no prefix"
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
                 maxLength={10}
                 disabled={loadingInvoiceSettings}
               />
-              {invoicePrefix && (
-                <div className="mt-2 text-xs text-amber-300">
-                  <span className="font-mono bg-slate-900/50 px-1.5 py-0.5 rounded border border-slate-800">
-                    Preview: {invoicePrefix}{nextInvoiceNumber}
-                  </span>
-                </div>
-              )}
+              <div className="mt-2 text-xs text-amber-300">
+                <span className="font-mono bg-slate-900/50 px-1.5 py-0.5 rounded border border-slate-800">
+                  Preview: {invoicePrefix.trim()}{String(nextInvoiceNumber).padStart(6, "0")}
+                </span>
+              </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
@@ -371,7 +369,7 @@ export const SettingsPage: React.FC = () => {
                 className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-400 cursor-not-allowed"
               />
               <p className="mt-2 text-[11px] text-slate-500">
-                Automatically incremented based on the tenant's latest invoice.
+                Automatically incremented by the database when invoices are created.
               </p>
             </div>
           </div>

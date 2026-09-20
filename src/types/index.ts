@@ -368,6 +368,7 @@ export interface TenantSettings {
   id: string;
   tenantId: string;
   invoicePrefix?: string | null;
+  nextInvoiceNumber?: number | null;
   notificationSettings?: NotificationSettings | null;
   createdAt: string;
   updatedAt?: string;
