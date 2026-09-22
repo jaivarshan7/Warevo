@@ -61,10 +61,12 @@ export const LoginPage: React.FC = () => {
     const priority: Record<string, number> = {
       PLATFORM_ADMIN: 1,
       WAREHOUSE_OWNER: 2,
-      ACCOUNTANT: 3,
-      WAREHOUSE_STAFF: 4,
-      PRODUCT_RECEIVER: 5,
-      CLIENT: 6
+      WAREHOUSE_MODERATOR: 3,
+      ACCOUNTANT: 4,
+      ACCOUNTS_TEAM: 5,
+      WAREHOUSE_STAFF: 6,
+      CLIENT: 7,
+      CLIENT_ACCOUNTANT: 8
     };
     return [...allUsers].sort(
       (a, b) => (priority[a.role] || 99) - (priority[b.role] || 99)

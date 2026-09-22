@@ -40,7 +40,7 @@ export const App: React.FC = () => {
             <Route
               path="operations/orders"
               element={
-                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT", "CLIENT_ACCOUNTANT", "ACCOUNTS_TEAM", "ACCOUNTANT"]}>
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "CLIENT", "CLIENT_ACCOUNTANT", "ACCOUNTS_TEAM", "ACCOUNTANT"]}>
                   <OrdersPage />
                 </ProtectedRoute>
               }
@@ -48,7 +48,7 @@ export const App: React.FC = () => {
             <Route
               path="operations/orders/import"
               element={
-                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
                   <InvoiceImportPage />
                 </ProtectedRoute>
               }
@@ -56,7 +56,7 @@ export const App: React.FC = () => {
             <Route
               path="operations/orders/track"
               element={
-                <ProtectedRoute allowedRoles={["WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "PRODUCT_RECEIVER", "CLIENT"]}>
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "CLIENT"]}>
                   <OrderTrackPage />
                 </ProtectedRoute>
               }
@@ -103,7 +103,14 @@ export const App: React.FC = () => {
             />
 
             {/* Settings & Profile */}
-            <Route path="settings" element={<SettingsPage />} />
+            <Route
+              path="settings"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER"]}>
+                  <SettingsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="profile" element={<ProfilePage />} />
 
             {/* Fallback */}

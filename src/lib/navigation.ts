@@ -75,8 +75,8 @@ export function getNavigationItems(
     ];
   }
 
-  // Product Receiver: Super simple
-  if (role === "PRODUCT_RECEIVER" || (role === "CLIENT" && employeeRole === "RECEIVER")) {
+  // Receiver / Store client employee
+  if (role === "CLIENT" && (employeeRole === "RECEIVER" || employeeRole === "STORE")) {
     return [
       {
         id: "dashboard",
@@ -340,7 +340,7 @@ export function getMobileNavItems(
   role: Role,
   employeeRole?: ClientEmployeeRole | null
 ): Array<{ label: string; path: string; icon: typeof LayoutDashboard }> {
-  if (role === "PRODUCT_RECEIVER" || (role === "CLIENT" && employeeRole === "RECEIVER")) {
+  if (role === "CLIENT" && (employeeRole === "RECEIVER" || employeeRole === "STORE")) {
     return [
       { label: "Tasks", path: "/dashboard", icon: LayoutDashboard },
       { label: "Verify", path: "/operations/orders", icon: Package },
@@ -369,11 +369,15 @@ export function getMobileNavItems(
     ];
   }
 
+  const canAccessSettings = role === "PLATFORM_ADMIN" || role === "WAREHOUSE_OWNER";
+
   return [
     { label: "Home", path: "/dashboard", icon: LayoutDashboard },
     { label: "Orders", path: "/operations/orders", icon: Package },
     { label: "Stock", path: "/operations/inventory", icon: Boxes },
     { label: "Finance", path: "/accounting", icon: CircleDollarSign },
-    { label: "More", path: "/settings", icon: Settings }
+    canAccessSettings
+      ? { label: "More", path: "/settings", icon: Settings }
+      : { label: "Profile", path: "/profile", icon: UserCheck }
   ];
 }

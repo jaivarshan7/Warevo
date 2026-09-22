@@ -21,8 +21,6 @@ export const Header: React.FC = () => {
         return "bg-blue-950 text-blue-300 border-blue-800";
       case "WAREHOUSE_STAFF":
         return "bg-emerald-950 text-emerald-300 border-emerald-800";
-      case "PRODUCT_RECEIVER":
-        return "bg-cyan-950 text-cyan-300 border-cyan-800";
       case "ACCOUNTANT":
       case "ACCOUNTS_TEAM":
         return "bg-amber-950 text-amber-300 border-amber-800";

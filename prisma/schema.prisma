@@ -22,6 +22,7 @@ model Tenant {
   auditLogs             AuditLog[]
   categories            Category[]
   clients               Client[]
+  clientEmployees       ClientEmployee[]
   companyGroups         CompanyGroup[]
   deliveryVerifications DeliveryVerification[]
   documents             Document[]
@@ -82,7 +83,7 @@ model User {
   updatedAt        DateTime          @default(now()) @updatedAt
   avatarUrl        String?
   auditLogs        AuditLog[]
-  client           Client?
+  clientEmployee   ClientEmployee?
   importedInvoices ImportedInvoice[] @relation("InvoiceImportUploadedBy")
   notifications    Notification[]
   assignedOrders   Order[]           @relation("OrderAssignedStaff")
@@ -95,11 +96,7 @@ model User {
 model Client {
   id                    String                 @id @default(dbgenerated("(gen_random_uuid())::text"))
   tenantId              String
-  userId                String?                @unique
   companyName           String
-  contactPerson         String
-  mobile                String
-  email                 String?
   gstNumber             String?
   billingAddress        String
   shippingAddress       String
@@ -107,18 +104,39 @@ model Client {
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @default(now()) @updatedAt
   companyGroupId        String?
-  employeeRole          ClientEmployeeRole?
   companyGroup          CompanyGroup?          @relation(fields: [companyGroupId], references: [id])
   tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user                  User?                  @relation(fields: [userId], references: [id])
+  employees             ClientEmployee[]
   deliveryVerifications DeliveryVerification[]
   importedInvoices      ImportedInvoice[]
   invoices              Invoice[]
   orders                Order[]
 
-  @@unique([tenantId, mobile])
+  @@unique([tenantId, companyName])
   @@index([tenantId])
   @@index([companyGroupId])
+}
+
+model ClientEmployee {
+  id            String             @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId      String
+  clientId      String
+  userId        String?            @unique
+  employeeRole  ClientEmployeeRole @default(RECEIVER)
+  contactPerson String
+  mobile        String
+  email         String?
+  status        UserStatus         @default(ACTIVE)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @default(now()) @updatedAt
+  client        Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, mobile])
+  @@index([tenantId])
+  @@index([clientId])
+  @@index([userId])
 }
 
 model Category {

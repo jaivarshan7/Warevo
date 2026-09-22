@@ -67,7 +67,7 @@ export const AuthCallbackPage: React.FC = () => {
         // 3. Look up the WMS User by supabaseUserId
         const { data: wmsUsers, error: usersError } = await supabase
           .from("User")
-          .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), client:Client(*)")
+          .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
           .eq("supabaseUserId", authUserId)
           .limit(1);
 
@@ -82,13 +82,69 @@ export const AuthCallbackPage: React.FC = () => {
           return;
         }
 
-        const wmsUser = wmsUsers?.[0] as any;
-        // Supabase may return the client relation as an array; normalize to single object or null
-        if (wmsUser && Array.isArray(wmsUser.client)) {
-          wmsUser.client = wmsUser.client[0] || null;
+        let rawUser = wmsUsers?.[0] as any;
+
+        // 4. If no WMS User found by supabaseUserId, attempt secure linkage by email
+        if (!rawUser && authUser.email) {
+          const { data: linkData, error: linkError } = await supabase.rpc(
+            "rpc_link_auth_user_by_email",
+            {
+              p_auth_user_id: authUserId,
+              p_email: authUser.email,
+            }
+          );
+
+          if (cancelled) return;
+
+          if (linkError || !linkData?.success) {
+            console.warn("[AuthCallback] Account linkage failed:", linkError?.message || linkData);
+            await supabase.auth.signOut();
+            setErrorMessage("No WMS account is associated with this authenticated account.");
+            setErrorDetail(
+              `The authenticated account (${authUser.email}) is not registered or active in this WMS. ` +
+              "Please contact your administrator."
+            );
+            setStatus("error");
+            return;
+          }
+
+          // Re-query WMS User now that supabaseUserId is linked
+          const { data: linkedUsers, error: linkedQueryError } = await supabase
+            .from("User")
+            .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
+            .eq("supabaseUserId", authUserId)
+            .limit(1);
+
+          if (cancelled) return;
+
+          if (linkedQueryError || !linkedUsers || linkedUsers.length === 0) {
+            console.error("[AuthCallback] Re-query after linkage failed:", linkedQueryError);
+            await supabase.auth.signOut();
+            setErrorMessage("Failed to load WMS user profile after account linkage.");
+            setStatus("error");
+            return;
+          }
+
+          rawUser = linkedUsers[0];
         }
 
-        // 4a. No matching WMS user
+        let wmsUser = rawUser;
+        if (rawUser) {
+          const clientEmployee = Array.isArray(rawUser.clientEmployee)
+            ? rawUser.clientEmployee[0] || null
+            : rawUser.clientEmployee || null;
+          const client = clientEmployee?.client
+            ? (Array.isArray(clientEmployee.client) ? clientEmployee.client[0] : clientEmployee.client)
+            : null;
+          wmsUser = {
+            ...rawUser,
+            clientEmployee: clientEmployee || null,
+            client: client || null,
+            clientId: client?.id || clientEmployee?.clientId || null,
+          };
+        }
+
+        // 5a. No matching WMS user
         if (!wmsUser) {
           console.warn("[AuthCallback] No WMS user found for supabaseUserId:", authUserId);
           await supabase.auth.signOut();
@@ -101,7 +157,7 @@ export const AuthCallbackPage: React.FC = () => {
           return;
         }
 
-        // 4b. Inactive WMS user
+        // 5b. Inactive WMS user
         if (wmsUser.status !== "ACTIVE") {
           console.warn("[AuthCallback] WMS user is inactive:", wmsUser.id);
           await supabase.auth.signOut();
@@ -113,30 +169,13 @@ export const AuthCallbackPage: React.FC = () => {
           return;
         }
 
-        // 5. Valid, active WMS user — persist their WMS userId so AuthContext can pick it up
-        // IMPORTANT: Update User.supabaseUserId to link the WMS User record to the Supabase Auth account.
-        // This is required for Storage RLS policies that validate auth.uid() against User.supabaseUserId.
-        if (wmsUser.supabaseUserId !== authUser.id) {
-          const { error: updateError } = await supabase
-            .from("User")
-            .update({ supabaseUserId: authUser.id })
-            .eq("id", wmsUser.id);
-          
-          if (updateError) {
-            console.warn("[AuthCallback] Failed to update User.supabaseUserId:", updateError);
-            // Continue anyway - this is a best-effort update for Storage RLS compatibility
-          } else {
-            console.info("[AuthCallback] Updated User.supabaseUserId:", authUser.id);
-          }
-        }
-        
+        // 6. Valid, active WMS user — persist session keys
         localStorage.removeItem("warehouse_os_logged_out");
         localStorage.setItem("warehouse_os_user_id", wmsUser.id);
-        // Also store the supabase auth user id for future session checks
         localStorage.setItem("warehouse_os_supabase_uid", authUser.id);
 
         console.info(
-          `[AuthCallback] Google login success: ${wmsUser.name} (${wmsUser.role})`
+          `[AuthCallback] Login success: ${wmsUser.name} (${wmsUser.role})`
         );
 
         // Navigate to dashboard — AppShell / AuthContext will finalize user state

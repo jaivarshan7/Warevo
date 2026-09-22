@@ -1,12 +1,9 @@
 export type Role =
   | "PLATFORM_ADMIN"
-  | "MANAGER"
-  | "GM"
   | "WAREHOUSE_OWNER"
   | "WAREHOUSE_MODERATOR"
   | "ACCOUNTS_TEAM"
   | "WAREHOUSE_STAFF"
-  | "PRODUCT_RECEIVER"
   | "ACCOUNTANT"
   | "CLIENT"
   | "CLIENT_ACCOUNTANT";
@@ -125,25 +122,54 @@ export interface User {
   tenant?: Tenant | null;
   client?: Client | null;
   clientId?: string | null;
+  clientEmployee?: ClientEmployee | null;
+}
+
+export interface ClientEmployee {
+  id: string;
+  tenantId: string;
+  clientId: string;
+  userId?: string | null;
+  employeeRole: ClientEmployeeRole;
+  contactPerson: string;
+  mobile: string;
+  email?: string | null;
+  status: UserStatus;
+  createdAt: string;
+  updatedAt?: string;
+  client?: Client | null;
+  user?: User | null;
 }
 
 export interface Client {
   id: string;
   tenantId: string;
-  userId?: string | null;
   companyGroupId?: string | null;
   companyName: string;
-  contactPerson: string;
-  mobile: string;
-  email?: string | null;
   gstNumber?: string | null;
   billingAddress: string;
   shippingAddress: string;
-  employeeRole?: ClientEmployeeRole | null;
   status: ClientStatus;
   createdAt: string;
   updatedAt?: string;
+  employees?: ClientEmployee[];
+  // Optional backward-compat during transition
+  contactPerson?: string;
+  mobile?: string;
+  email?: string | null;
+  employeeRole?: ClientEmployeeRole | null;
+  userId?: string | null;
   user?: User | null;
+}
+
+export interface CompanyGroup {
+  id: string;
+  tenantId: string;
+  name: string;
+  description?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  clients?: Client[];
 }
 
 export interface Warehouse {

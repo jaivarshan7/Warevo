@@ -31,19 +31,11 @@ export const OrderDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Verification Modal
+  // Verification Modal - Individual Item Checkboxes
+  const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>({});
   const [isVerifyOpen, setIsVerifyOpen] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<VerificationStatus>("VERIFIED");
   const [verifyComments, setVerifyComments] = useState("");
-  const [checklist, setChecklist] = useState([
-    { text: "Correct product received", checked: true },
-    { text: "Correct quantity received", checked: true },
-    { text: "Product condition acceptable", checked: true },
-    { text: "Packaging acceptable", checked: true },
-    { text: "No visible damage", checked: true },
-    { text: "Required delivery documents received", checked: true },
-    { text: "Delivery details correct", checked: true }
-  ]);
   const [isVerifying, setIsVerifying] = useState(false);
 
   // Warehouse Transition
@@ -76,13 +68,36 @@ export const OrderDetailPage: React.FC = () => {
     loadOrder();
   }, [id]);
 
-  const allChecklistChecked = checklist.every((item) => item.checked);
+  const totalItems = order?.items?.length || 0;
+  const verifiedCount = order?.items?.filter((item) => itemCheckboxes[item.id]).length || 0;
+  const allItemsChecked = totalItems > 0 && verifiedCount === totalItems;
+
+  const handleToggleItemCheckbox = (itemId: string, checked: boolean) => {
+    setItemCheckboxes((prev) => ({
+      ...prev,
+      [itemId]: checked,
+    }));
+  };
+
+  const handleOpenVerifyModal = () => {
+    if (!order || order.verificationStatus === "VERIFIED") return;
+    const initial: Record<string, boolean> = {};
+    order.items?.forEach((item) => {
+      initial[item.id] = false;
+    });
+    setItemCheckboxes(initial);
+    setVerifyComments("");
+    setVerifyStatus("VERIFIED");
+    setIsVerifyOpen(true);
+    setActionMessage(null);
+  };
 
   const handleVerificationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!order) return;
 
-    if (role === "CLIENT" && user?.client?.employeeRole !== "RECEIVER") {
+    const currentEmpRole = user?.clientEmployee?.employeeRole || user?.client?.employeeRole;
+    if (role === "CLIENT" && currentEmpRole !== "RECEIVER") {
       setActionMessage({
         type: "error",
         text: "Only client receivers can verify deliveries."
@@ -99,23 +114,31 @@ export const OrderDetailPage: React.FC = () => {
       return;
     }
 
-    if (!allChecklistChecked) {
+    if (!allItemsChecked) {
       setActionMessage({
         type: "error",
-        text: "All inspection checklist items must be checked before submission."
+        text: `All ${totalItems} order items must be physically verified and checked before submission.`
       });
       return;
     }
 
     setActionMessage(null);
-
     setIsVerifying(true);
 
     try {
+      const responses =
+        order.items?.map((item) => ({
+          text: `${item.product?.name || "Item"} (Ordered Qty: ${item.quantity}, Verified Qty: ${item.quantity})`,
+          checked: itemCheckboxes[item.id] || false,
+          orderItemId: item.id,
+          orderedQty: item.quantity,
+          verifiedQty: item.quantity,
+        })) || [];
+
       await submitOrderVerification(
         order.id,
         verifyStatus,
-        checklist,
+        responses,
         verifyComments,
         null,
         user?.id
@@ -152,7 +175,9 @@ export const OrderDetailPage: React.FC = () => {
 
   // Only CLIENT role with employeeRole === "RECEIVER" can perform delivery verification
   const isClientReceiver =
-    role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
+    role === "CLIENT" &&
+    (user?.clientEmployee?.employeeRole === "RECEIVER" ||
+      user?.client?.employeeRole === "RECEIVER");
 
   const isTenantAuthorized =
     Boolean(order) && (!tenant?.id || order.tenantId === tenant.id);
@@ -201,7 +226,7 @@ export const OrderDetailPage: React.FC = () => {
               </span>
               <span className="flex items-center gap-1.5">
                 <User className="w-4 h-4 text-indigo-400" />
-                Contact: {order.client?.contactPerson} ({order.client?.mobile})
+                Contact: {order.client?.employees?.[0]?.contactPerson || order.client?.contactPerson || "N/A"} ({order.client?.employees?.[0]?.mobile || order.client?.mobile || "N/A"})
               </span>
             </div>
           </div>
@@ -211,8 +236,8 @@ export const OrderDetailPage: React.FC = () => {
             {canVerify && (
               <Button
                 variant="primary"
-                onClick={() => setIsVerifyOpen(true)}
-                className="bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950"
+                onClick={handleOpenVerifyModal}
+                className="bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950 gap-1.5"
               >
                 <CheckCircle2 className="w-4 h-4 mr-1.5" />
                 Verify Delivery Order
@@ -370,8 +395,8 @@ export const OrderDetailPage: React.FC = () => {
         <Modal
           isOpen={isVerifyOpen}
           onClose={() => setIsVerifyOpen(false)}
-          title="Submit Delivery Verification"
-          description={`Order ${order.orderNumber} Delivery Inspection Checklist`}
+          title="Verify Delivery Order"
+          description={`Order ${order.orderNumber} — Verify each delivered item below`}
           maxWidth="lg"
         >
           <form onSubmit={handleVerificationSubmit} className="space-y-4">
@@ -390,29 +415,62 @@ export const OrderDetailPage: React.FC = () => {
               </select>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-2">
-                Mandatory Inspection Checklist
-              </label>
-              <div className="space-y-2">
-                {checklist.map((item, idx) => (
-                  <label
-                    key={idx}
-                    className="flex items-center gap-2.5 p-2 rounded-lg bg-slate-800/40 hover:bg-slate-800/70 cursor-pointer border border-slate-700/60"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={item.checked}
-                      onChange={(e) => {
-                        const newChecklist = [...checklist];
-                        newChecklist[idx].checked = e.target.checked;
-                        setChecklist(newChecklist);
-                      }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-0 bg-slate-900 border-slate-700"
-                    />
-                    <span className="text-xs text-slate-200">{item.text}</span>
-                  </label>
-                ))}
+            {/* Individual Item Verification Checkboxes */}
+            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                  Delivered Items Checklist
+                </span>
+                <span className="text-xs font-mono font-semibold text-indigo-400">
+                  {verifiedCount} / {totalItems} items verified
+                </span>
+              </div>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {order.items?.map((item) => {
+                  const isChecked = Boolean(itemCheckboxes[item.id]);
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handleToggleItemCheckbox(item.id, !isChecked)}
+                      className={`p-3 rounded-lg border text-xs cursor-pointer select-none transition-all flex items-start gap-3 ${
+                        isChecked
+                          ? "bg-indigo-950/30 border-indigo-500/60 shadow-sm"
+                          : "bg-slate-950/40 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleItemCheckbox(item.id, e.target.checked);
+                        }}
+                        className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                      />
+                      <div className="flex-1 space-y-1">
+                        <span className="font-semibold text-white block text-sm">
+                          {item.product?.name || "Product Item"}
+                        </span>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-0.5">
+                          <div>
+                            Ordered Qty: <strong className="text-slate-200 font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                          </div>
+                          <div>
+                            Verified Qty: <strong className="text-emerald-400 font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
+                <span className="text-slate-400 font-medium">Verification Progress:</span>
+                <span className="font-mono font-semibold text-indigo-400">
+                  {verifiedCount} / {totalItems} items verified
+                </span>
               </div>
             </div>
 
@@ -429,9 +487,9 @@ export const OrderDetailPage: React.FC = () => {
               />
             </div>
 
-            {!allChecklistChecked && (
+            {!allItemsChecked && (
               <p className="text-[11px] text-amber-400">
-                All checklist items must be checked before submitting verification.
+                Every order item must be physically verified and checked before submitting verification.
               </p>
             )}
 
@@ -439,8 +497,17 @@ export const OrderDetailPage: React.FC = () => {
               <Button type="button" variant="outline" onClick={() => setIsVerifyOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" isLoading={isVerifying} disabled={!allChecklistChecked}>
-                Confirm & Record Verification
+              <Button
+                type="submit"
+                isLoading={isVerifying}
+                disabled={!allItemsChecked}
+                className={
+                  allItemsChecked
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
+                }
+              >
+                Verify Delivery Order
               </Button>
             </div>
           </form>

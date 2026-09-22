@@ -21,6 +21,7 @@ interface CreateEmployeeResponse {
   success: boolean;
   userId?: string;
   clientId?: string;
+  employeeId?: string;
   error?: string;
   code?: string;
 }
@@ -219,12 +220,11 @@ serve(async (req: Request) => {
     let targetTenantId: string;
 
     if (callerWmsUser.role === "PLATFORM_ADMIN") {
-      // Platform admin can create: warehouse employees, WAREHOUSE_OWNER, CLIENT, PRODUCT_RECEIVER
+      // Platform admin can create: warehouse employees, WAREHOUSE_OWNER, CLIENT
       const adminAllowedRoles = [
         ...WAREHOUSE_EMPLOYEE_ROLES,
         "WAREHOUSE_OWNER",
         "CLIENT",
-        "PRODUCT_RECEIVER",
       ];
       if (!adminAllowedRoles.includes(role)) {
         return new Response(
@@ -293,11 +293,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // 7. Validate Client Employee specifics if role is CLIENT
-    let resolvedCompanyName = "";
-    let resolvedBillingAddress = "";
-    let resolvedShippingAddress = "";
-    let resolvedGstNumber: string | null = null;
+    let targetClientId: string | undefined = undefined;
 
     if (role === "CLIENT") {
       if (!clientEmployeeRole || !VALID_CLIENT_EMPLOYEE_ROLES.includes(clientEmployeeRole)) {
@@ -311,66 +307,58 @@ serve(async (req: Request) => {
         );
       }
 
-      if (clientId) {
-        // Look up existing Client company and verify it belongs to targetTenantId
-        const { data: existingClient, error: clientFetchErr } = await supabaseAdmin
-          .from("Client")
-          .select("id, companyName, billingAddress, shippingAddress, gstNumber, tenantId")
-          .eq("id", clientId)
-          .single();
-
-        if (clientFetchErr || !existingClient) {
-          return new Response(
-            JSON.stringify({ success: false, error: "Selected client company does not exist", code: "INVALID_CLIENT_ID" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        if (existingClient.tenantId !== targetTenantId) {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: "Client company does not belong to your organization",
-              code: "TENANT_MISMATCH",
-            }),
-            { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        resolvedCompanyName = existingClient.companyName;
-        resolvedBillingAddress = billingAddress?.trim() || existingClient.billingAddress || "Main Office";
-        resolvedShippingAddress = shippingAddress?.trim() || existingClient.shippingAddress || resolvedBillingAddress;
-        resolvedGstNumber = gstNumber?.trim() || existingClient.gstNumber || null;
-      } else if (companyName && companyName.trim()) {
-        resolvedCompanyName = companyName.trim();
-        resolvedBillingAddress = billingAddress?.trim() || "Main Office";
-        resolvedShippingAddress = shippingAddress?.trim() || resolvedBillingAddress;
-        resolvedGstNumber = gstNumber?.trim() || null;
-      } else {
+      if (!clientId) {
         return new Response(
           JSON.stringify({
             success: false,
-            error: "A client company must be selected or specified",
+            error: "A valid client company must be selected to add an employee.",
             code: "MISSING_CLIENT_COMPANY",
           }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      // Check Client unique constraint: (tenantId, mobile)
+      // Look up existing Client company and verify it belongs to targetTenantId
+      const { data: existingClient, error: clientFetchErr } = await supabaseAdmin
+        .from("Client")
+        .select("id, companyName, tenantId")
+        .eq("id", clientId)
+        .single();
+
+      if (clientFetchErr || !existingClient) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Selected client company does not exist", code: "INVALID_CLIENT_ID" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (existingClient.tenantId !== targetTenantId) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: "Client company does not belong to your organization",
+            code: "TENANT_MISMATCH",
+          }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      targetClientId = existingClient.id;
+
+      // Check ClientEmployee unique constraint: (tenantId, mobile)
       if (mobile && mobile.trim()) {
-        const { data: existingClientMobile } = await supabaseAdmin
-          .from("Client")
+        const { data: existingEmployeeMobile } = await supabaseAdmin
+          .from("ClientEmployee")
           .select("id, contactPerson")
           .eq("tenantId", targetTenantId)
           .eq("mobile", mobile.trim())
           .maybeSingle();
 
-        if (existingClientMobile) {
+        if (existingEmployeeMobile) {
           return new Response(
             JSON.stringify({
               success: false,
-              error: `A client contact with mobile number ${mobile.trim()} already exists in this organization`,
+              error: `A client employee with mobile number ${mobile.trim()} already exists in this organization`,
               code: "DUPLICATE_CLIENT_MOBILE",
             }),
             { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -495,32 +483,29 @@ serve(async (req: Request) => {
       );
     }
 
-    // 11. Step 3: If role === "CLIENT", create linked Client record
-    let createdClientRecordId: string | undefined = undefined;
+    // 11. Step 3: If role === "CLIENT", create linked ClientEmployee record
+    let createdEmployeeId: string | undefined = undefined;
 
-    if (role === "CLIENT") {
-      const newClientId = `cl_${Math.random().toString(36).substring(2, 11)}${Math.random().toString(36).substring(2, 11)}`;
-      const { data: createdClient, error: clientCreateError } = await supabaseAdmin
-        .from("Client")
+    if (role === "CLIENT" && targetClientId) {
+      const newEmployeeId = `ce_${Math.random().toString(36).substring(2, 11)}${Math.random().toString(36).substring(2, 11)}`;
+      const { data: createdEmployee, error: employeeCreateError } = await supabaseAdmin
+        .from("ClientEmployee")
         .insert({
-          id: newClientId,
+          id: newEmployeeId,
           tenantId: targetTenantId,
+          clientId: targetClientId,
           userId: createdWmsUser.id,
-          companyName: resolvedCompanyName,
           contactPerson: name.trim(),
           mobile: mobile?.trim() || "",
           email: normalizedEmail,
-          gstNumber: resolvedGstNumber,
-          billingAddress: resolvedBillingAddress,
-          shippingAddress: resolvedShippingAddress,
           employeeRole: clientEmployeeRole,
           status: "ACTIVE",
         })
         .select()
         .single();
 
-      if (clientCreateError) {
-        console.error("Failed to create Client record for user:", clientCreateError.message);
+      if (employeeCreateError) {
+        console.error("Failed to create ClientEmployee record for user:", employeeCreateError.message);
 
         // COMPENSATING ROLLBACK:
         // 1. Delete created WMS User
@@ -529,16 +514,16 @@ serve(async (req: Request) => {
           .delete()
           .eq("id", createdWmsUser.id);
         if (deleteWmsError) {
-          console.error("Failed to rollback WMS User after Client failure:", deleteWmsError.message);
+          console.error("Failed to rollback WMS User after ClientEmployee failure:", deleteWmsError.message);
         }
 
         // 2. Delete created Supabase Auth user
         const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
         if (deleteAuthError) {
-          console.error("Failed to rollback Auth user after Client failure:", deleteAuthError.message);
+          console.error("Failed to rollback Auth user after ClientEmployee failure:", deleteAuthError.message);
         }
 
-        if (clientCreateError.code === "23505" || clientCreateError.message.includes("unique")) {
+        if (employeeCreateError.code === "23505" || employeeCreateError.message.includes("unique")) {
           return new Response(
             JSON.stringify({
               success: false,
@@ -553,20 +538,21 @@ serve(async (req: Request) => {
           JSON.stringify({
             success: false,
             error: "Failed to create client employee record",
-            code: "CLIENT_CREATE_FAILED",
+            code: "CLIENT_EMPLOYEE_CREATE_FAILED",
           }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      createdClientRecordId = createdClient.id;
+      createdEmployeeId = createdEmployee.id;
     }
 
     // 12. Success response
     const response: CreateEmployeeResponse = {
       success: true,
       userId: createdWmsUser.id,
-      clientId: createdClientRecordId,
+      clientId: targetClientId,
+      employeeId: createdEmployeeId,
     };
 
     return new Response(JSON.stringify(response), {

@@ -18,7 +18,8 @@ const ROLE_LABELS: Record<string, string> = {
   WAREHOUSE_STAFF: "Warehouse Staff",
   ACCOUNTS_TEAM: "Accounts Team",
   ACCOUNTANT: "Accountant",
-  WAREHOUSE_MODERATOR: "Warehouse Moderator"
+  WAREHOUSE_MODERATOR: "Warehouse Moderator",
+  WAREHOUSE_OWNER: "Warehouse Owner"
 };
 
 export const AddEmployeeModal: React.FC<AddEmployeeModalProps> = ({
@@ -180,7 +181,9 @@ export const AddEmployeeModal: React.FC<AddEmployeeModalProps> = ({
             disabled={isSubmitting}
             required
           >
-            {ALLOWED_EMPLOYEE_ROLES.map((role) => (
+            {((isPlatformAdmin
+              ? [...ALLOWED_EMPLOYEE_ROLES, "WAREHOUSE_OWNER" as Role]
+              : ALLOWED_EMPLOYEE_ROLES) as Role[]).map((role) => (
               <option key={role} value={role}>
                 {ROLE_LABELS[role] || role}
               </option>

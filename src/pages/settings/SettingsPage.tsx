@@ -7,7 +7,8 @@ import {
   Settings as SettingsIcon,
   Server,
   Bell,
-  CheckCircle2
+  CheckCircle2,
+  AlertCircle
 } from "lucide-react";
 import {
   fetchTenantSettings,
@@ -61,6 +62,7 @@ export const SettingsPage: React.FC = () => {
   const [loadingInvoiceSettings, setLoadingInvoiceSettings] = useState<boolean>(true);
   const [savingInvoice, setSavingInvoice] = useState<boolean>(false);
   const [invoiceSuccessMessage, setInvoiceSuccessMessage] = useState<string | null>(null);
+  const [invoiceErrorMessage, setInvoiceErrorMessage] = useState<string | null>(null);
 
   // Notification settings state
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
@@ -75,6 +77,7 @@ export const SettingsPage: React.FC = () => {
   const [loadingNotificationSettings, setLoadingNotificationSettings] = useState<boolean>(true);
   const [savingNotifications, setSavingNotifications] = useState<boolean>(false);
   const [notificationSuccessMessage, setNotificationSuccessMessage] = useState<string | null>(null);
+  const [notificationErrorMessage, setNotificationErrorMessage] = useState<string | null>(null);
 
   // Load tenant settings and next invoice number on mount
   useEffect(() => {
@@ -170,6 +173,7 @@ export const SettingsPage: React.FC = () => {
     if (!tenant?.id) return;
     setSavingInvoice(true);
     setInvoiceSuccessMessage(null);
+    setInvoiceErrorMessage(null);
     // Preserve the exact prefix — empty string means no prefix
     const prefixValue = invoicePrefix.trim();
 
@@ -191,10 +195,10 @@ export const SettingsPage: React.FC = () => {
       setInvoicePrefix(savedPrefix != null ? savedPrefix.trim() : "");
       setInvoiceSuccessMessage("Invoice prefix settings saved successfully!");
       setTimeout(() => setInvoiceSuccessMessage(null), 4000);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to save invoice settings:", error);
-      setInvoiceSuccessMessage("Saved successfully!");
-      setTimeout(() => setInvoiceSuccessMessage(null), 4000);
+      setInvoiceErrorMessage(error?.message || "Failed to save invoice settings.");
+      setTimeout(() => setInvoiceErrorMessage(null), 5000);
     } finally {
       setSavingInvoice(false);
     }
@@ -205,6 +209,7 @@ export const SettingsPage: React.FC = () => {
     if (!tenant?.id) return;
     setSavingNotifications(true);
     setNotificationSuccessMessage(null);
+    setNotificationErrorMessage(null);
 
     const payload = {
       enabled: notificationsEnabled,
@@ -219,10 +224,10 @@ export const SettingsPage: React.FC = () => {
 
       setNotificationSuccessMessage("Notification preferences saved successfully!");
       setTimeout(() => setNotificationSuccessMessage(null), 4000);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to save notification settings:", error);
-      setNotificationSuccessMessage("Saved successfully!");
-      setTimeout(() => setNotificationSuccessMessage(null), 4000);
+      setNotificationErrorMessage(error?.message || "Failed to save notification preferences.");
+      setTimeout(() => setNotificationErrorMessage(null), 5000);
     } finally {
       setSavingNotifications(false);
     }
@@ -336,6 +341,12 @@ export const SettingsPage: React.FC = () => {
                 {invoiceSuccessMessage}
               </span>
             )}
+            {invoiceErrorMessage && (
+              <span className="flex items-center gap-1.5 text-xs text-rose-400 bg-rose-950/60 border border-rose-800/60 px-3 py-1 rounded-lg">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {invoiceErrorMessage}
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -402,6 +413,12 @@ export const SettingsPage: React.FC = () => {
               <span className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-lg">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 {notificationSuccessMessage}
+              </span>
+            )}
+            {notificationErrorMessage && (
+              <span className="flex items-center gap-1.5 text-xs text-rose-400 bg-rose-950/60 border border-rose-800/60 px-3 py-1 rounded-lg">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {notificationErrorMessage}
               </span>
             )}
           </div>

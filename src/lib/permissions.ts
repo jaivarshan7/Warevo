@@ -16,34 +16,6 @@ export const permissions: Record<Role, string[]> = {
     "invoices:manage",
     "payments:manage"
   ],
-  MANAGER: [
-    "dashboard:read",
-    "tenant:settings",
-    "users:manage",
-    "clients:manage",
-    "products:manage",
-    "inventory:manage",
-    "orders:manage",
-    "verification:configure",
-    "accounting:read",
-    "invoice-import:manage",
-    "reports:read",
-    "audit:read"
-  ],
-  GM: [
-    "dashboard:read",
-    "tenant:settings",
-    "users:manage",
-    "clients:manage",
-    "products:manage",
-    "inventory:manage",
-    "orders:manage",
-    "verification:configure",
-    "accounting:read",
-    "invoice-import:manage",
-    "reports:read",
-    "audit:read"
-  ],
   WAREHOUSE_OWNER: [
     "dashboard:read",
     "tenant:settings",
@@ -84,12 +56,6 @@ export const permissions: Record<Role, string[]> = {
     "inventory:operate",
     "orders:operate"
   ],
-  PRODUCT_RECEIVER: [
-    "dashboard:read",
-    "orders:operate",
-    "verification:read",
-    "verification:confirm"
-  ],
   ACCOUNTANT: [
     "dashboard:read",
     "orders:financial-read",
@@ -126,11 +92,7 @@ export function canAccessRoute(
 ): boolean {
   if (role === "PLATFORM_ADMIN") return true;
 
-  if (role === "CLIENT" && employeeRole === "RECEIVER") {
-    return ["/dashboard", "/operations/orders"].includes(route);
-  }
-
-  if (role === "PRODUCT_RECEIVER") {
+  if (role === "CLIENT" && (employeeRole === "RECEIVER" || employeeRole === "STORE")) {
     return ["/dashboard", "/operations/orders"].includes(route);
   }
 

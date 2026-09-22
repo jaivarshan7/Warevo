@@ -3,11 +3,13 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { getNavigationItems } from "@/lib/navigation";
 import { ChevronRight } from "lucide-react";
-
 export const Sidebar: React.FC = () => {
   const { role, user } = useAuth();
   const location = useLocation();
-  const navItems = getNavigationItems(role, user?.client?.employeeRole);
+  const navItems = getNavigationItems(
+    role,
+    user?.clientEmployee?.employeeRole || user?.client?.employeeRole
+  );
 
   return (
     <aside className="hidden lg:flex flex-col w-64 bg-slate-900 border-r border-slate-800 shrink-0">

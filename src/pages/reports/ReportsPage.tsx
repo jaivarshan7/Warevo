@@ -31,8 +31,8 @@ export const ReportsPage: React.FC = () => {
       try {
         setLoading(true);
         const [o, inv, i] = await Promise.all([
-          fetchOrders(tenant?.id, role, user?.client?.id),
-          fetchInvoices(tenant?.id, user?.client?.id, role, user?.id),
+          fetchOrders(tenant?.id, role, user?.clientId || user?.client?.id),
+          fetchInvoices(tenant?.id, user?.clientId || user?.client?.id, role, user?.id),
           fetchInventory(tenant?.id)
         ]);
         setOrders(o);
@@ -45,7 +45,7 @@ export const ReportsPage: React.FC = () => {
       }
     }
     load();
-  }, [tenant?.id, role, user?.client?.id]);
+  }, [tenant?.id, role, user?.clientId, user?.client?.id]);
 
   if (loading) return <LoadingSpinner message="Synthesizing analytics..." />;
 

@@ -51,7 +51,7 @@ export const AccountingPage: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const list = await fetchInvoices(tenant?.id, user?.client?.id, role, user?.id);
+      const list = await fetchInvoices(tenant?.id, user?.clientId || user?.client?.id, role, user?.id);
       setInvoices(list);
     } catch (err) {
       console.error("Error loading accounting data:", err);
@@ -62,7 +62,7 @@ export const AccountingPage: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, [tenant?.id, user?.client?.id]);
+  }, [tenant?.id, user?.clientId, user?.client?.id]);
 
   const handleTabChange = (tabId: string) => {
     setSearchParams({ tab: tabId });
@@ -73,7 +73,7 @@ export const AccountingPage: React.FC = () => {
       const signedUrl = await getPaymentProofUrl(
         paymentId,
         tenant?.id || "",
-        user?.client?.id,
+        user?.clientId || user?.client?.id,
         role
       );
       if (signedUrl) {

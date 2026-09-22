@@ -5,7 +5,10 @@ import { getMobileNavItems } from "@/lib/navigation";
 
 export const MobileNav: React.FC = () => {
   const { role, user } = useAuth();
-  const items = getMobileNavItems(role, user?.client?.employeeRole);
+  const items = getMobileNavItems(
+    role,
+    user?.clientEmployee?.employeeRole || user?.client?.employeeRole
+  );
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 safe-area-inset-bottom">

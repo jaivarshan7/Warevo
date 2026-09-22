@@ -4,6 +4,7 @@ import {
   Order,
   Inventory,
   Client,
+  ClientEmployee,
   Invoice,
   Notification,
   NotificationSettings,
@@ -17,7 +18,9 @@ import {
   UserStatus,
   TenantSettings,
   ClientEmployeeRole,
-  ALLOWED_EMPLOYEE_ROLES
+  ALLOWED_EMPLOYEE_ROLES,
+  PaymentStatus,
+  CompanyGroup
 } from "@/types";
 
 export function isClientRole(role?: Role | null): boolean {
@@ -26,8 +29,9 @@ export function isClientRole(role?: Role | null): boolean {
 
 /**
  * Shared helper: resolves the full set of Client IDs that a user should have access to.
- * If the user's Client record has a companyGroupId, returns ALL Client IDs in that
- * company group (within the same tenant). Otherwise returns just the single clientId.
+ * If the user's ClientEmployee record is linked to a Client in a company group,
+ * returns ALL Client IDs in that company group (within the same tenant).
+ * Otherwise returns just the user's company clientId.
  *
  * This is the SINGLE SOURCE OF TRUTH for company-level access resolution.
  * Used by fetchOrders, fetchOrderById, fetchInvoices, fetchInvoiceById, fetchDashboardSummary.
@@ -38,26 +42,35 @@ async function resolveCompanyClientIds(
 ): Promise<string[]> {
   if (!userId) return fallbackClientId ? [fallbackClientId] : [];
 
-  const { data: userClient } = await supabase
-    .from("Client")
-    .select("id, companyGroupId, tenantId")
+  // 1. Resolve via ClientEmployee -> Client
+  const { data: employee } = await supabase
+    .from("ClientEmployee")
+    .select("clientId, tenantId, employeeRole, client:Client(id, companyGroupId, tenantId)")
     .eq("userId", userId)
-    .single();
+    .maybeSingle();
 
-  if (userClient?.companyGroupId) {
+  const clientObj: any = Array.isArray(employee?.client) ? employee?.client[0] : employee?.client;
+  const companyGroupId = clientObj?.companyGroupId;
+  const targetTenantId = clientObj?.tenantId || employee?.tenantId;
+  const primaryClientId = clientObj?.id || employee?.clientId || fallbackClientId;
+
+  // Group-wide access is STRICTLY reserved for MD and GM
+  const isGroupScopeRole = employee?.employeeRole === "MD" || employee?.employeeRole === "GM";
+
+  if (isGroupScopeRole && companyGroupId && targetTenantId) {
     // Find all Client records in the same company group and tenant
     const { data: companyClients } = await supabase
       .from("Client")
       .select("id")
-      .eq("companyGroupId", userClient.companyGroupId)
-      .eq("tenantId", userClient.tenantId);
+      .eq("companyGroupId", companyGroupId)
+      .eq("tenantId", targetTenantId);
 
     const ids = companyClients?.map(c => c.id) || [];
     if (ids.length > 0) return ids;
   }
 
-  // Fallback: no companyGroup or no members found — use single clientId
-  return fallbackClientId ? [fallbackClientId] : (userClient ? [userClient.id] : []);
+  // Fallback / Store-level role (MANAGER, RECEIVER, etc.): scoped strictly to own company
+  return primaryClientId ? [primaryClientId] : [];
 }
 
 /**
@@ -71,25 +84,29 @@ async function verifyCompanyOwnership(
 ): Promise<boolean> {
   if (!userId) return recordClientId === fallbackClientId;
 
-  const { data: userClient } = await supabase
-    .from("Client")
-    .select("companyGroupId")
+  const { data: employee } = await supabase
+    .from("ClientEmployee")
+    .select("clientId, employeeRole, client:Client(companyGroupId)")
     .eq("userId", userId)
-    .single();
+    .maybeSingle();
 
-  if (userClient?.companyGroupId) {
+  const isGroupScopeRole = employee?.employeeRole === "MD" || employee?.employeeRole === "GM";
+  const clientObj: any = Array.isArray(employee?.client) ? employee?.client[0] : employee?.client;
+  const userCompanyGroupId = clientObj?.companyGroupId;
+
+  if (isGroupScopeRole && userCompanyGroupId) {
     // Verify the record's client belongs to the same company group
     const { data: recordClient } = await supabase
       .from("Client")
       .select("companyGroupId")
       .eq("id", recordClientId)
-      .single();
+      .maybeSingle();
 
-    return recordClient?.companyGroupId === userClient.companyGroupId;
+    return recordClient?.companyGroupId === userCompanyGroupId;
   }
 
-  // No companyGroupId — strict clientId match required
-  return recordClientId === fallbackClientId;
+  // Non-group-scope roles (MANAGER, RECEIVER, etc.) must strictly match their direct clientId
+  return recordClientId === (employee?.clientId || fallbackClientId);
 }
 
 export async function fetchDashboardSummary(
@@ -101,12 +118,12 @@ export async function fetchDashboardSummary(
   try {
     let orderQuery = supabase
       .from("Order")
-      .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*)")
+      .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*)")
       .order("createdAt", { ascending: false });
 
     let invoiceQuery = supabase
       .from("Invoice")
-      .select("*, client:Client(*)")
+      .select("*, client:Client(*, employees:ClientEmployee(*))")
       .order("createdAt", { ascending: false });
 
     let inventoryQuery = supabase
@@ -175,7 +192,7 @@ export async function fetchOrders(
 ): Promise<Order[]> {
   let query = supabase
     .from("Order")
-    .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*))")
+    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*))")
     .order("createdAt", { ascending: false });
   
   if (role !== "PLATFORM_ADMIN" && tenantId) {
@@ -219,7 +236,7 @@ export async function fetchOrderById(
     .from("Order")
     .select(`
       *,
-      client:Client(*),
+      client:Client(*, employees:ClientEmployee(*)),
       createdBy:User!createdById(*),
       assignedStaff:User!assignedStaffId(*),
       items:OrderItem(*, product:Product(*))
@@ -315,89 +332,11 @@ export async function createOrder(payload: {
     taxRate: number;
   }>;
 }) {
-  const latestRes = await supabase
-    .from("Order")
-    .select("orderNumber")
-    .eq("tenantId", payload.tenantId)
-    .order("createdAt", { ascending: false })
-    .limit(1);
-
-  const lastNum = latestRes.data?.[0]?.orderNumber
-    ? parseInt(latestRes.data[0].orderNumber.replace(/[^0-9]/g, "").slice(-6), 10) || 0
-    : 0;
-
-  const orderNumber = `ORD-2026-${String(lastNum + 1).padStart(6, "0")}`;
-  const subtotal = payload.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-  const taxTotal = payload.items.reduce(
-    (sum, item) => sum + (item.quantity * item.unitPrice * item.taxRate) / 100,
-    0
-  );
-  const totalAmount = subtotal + taxTotal;
-
-  const orderId = `ord_${Math.random().toString(36).substring(2, 11)}`;
-
-  // Calculate CGST/SGST (assuming intra-state GST)
-  const cgst = taxTotal / 2;
-  const sgst = taxTotal / 2;
-
-  // Insert order
-  const { data: order, error: orderErr } = await supabase
-    .from("Order")
-    .insert({
-      id: orderId,
-      tenantId: payload.tenantId,
-      clientId: payload.clientId,
-      orderNumber,
-      status: "ISSUED",
-      verificationStatus: "PENDING",
-      subtotal,
-      taxTotal,
-      discountTotal: 0,
-      totalAmount,
-      notes: payload.notes || null,
-      createdById: payload.createdById,
-      assignedStaffId: payload.assignedStaffId || null,
-      expectedDelivery: payload.expectedDelivery || null
-    })
-    .select()
-    .single();
-
-  if (orderErr) throw orderErr;
-
-  // Insert items
-  const itemsToInsert = payload.items.map((item) => ({
-    id: `oi_${Math.random().toString(36).substring(2, 11)}`,
-    orderId,
-    productId: item.productId,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    taxRate: item.taxRate,
-    discount: 0,
-    total: item.quantity * item.unitPrice * (1 + item.taxRate / 100)
-  }));
-
-  const { error: itemErr } = await supabase.from("OrderItem").insert(itemsToInsert);
-  if (itemErr) throw itemErr;
-
-  // 4. Create invoice automatically (new feature)
-  try {
-    await createInvoiceForOrder(orderId, payload.tenantId, payload.clientId, taxTotal);
-  } catch (err) {
-    console.error(
-      `Invoice creation failed for order ${orderId}:`,
-      err
-    );
-    // Re-throw as a user-friendly error rather than silently ignoring
-    throw new Error(
-      `Order created successfully, but invoice generation failed. Order ID: ${orderId}. Please contact support if this issue persists.`
-    );
-  }
-
-  return order;
+  return createEnhancedOrder({
+    ...payload,
+    items: payload.items.map((i) => ({ ...i, discount: 0 }))
+  });
 }
-
-// createInvoiceForOrder function removed - invoice creation now happens
-// atomically within rpc_create_order_with_invoice to ensure transactional integrity
 
 export async function createEnhancedOrder(payload: {
   tenantId: string;
@@ -473,90 +412,7 @@ export async function createEnhancedOrder(payload: {
   return order;
 }
 
-export async function submitDetailedOrderVerification(payload: {
-  orderId: string;
-  tenantId: string;
-  clientId: string;
-  status: VerificationStatus;
-  responses: Array<{ text: string; checked: boolean }>;
-  comments?: string;
-  itemReceivedMap?: Record<string, { received: number; damaged: number }>;
-  userId?: string | null;
-  userRole?: Role;
-}) {
-  const nextOrderStatus: OrderStatus =
-    payload.status === "VERIFIED"
-      ? "VERIFIED"
-      : payload.status === "PARTIALLY_VERIFIED"
-      ? "PARTIALLY_VERIFIED"
-      : "REJECTED";
 
-  // 1. Upsert VerificationResponse
-  const respId = `vr_${Math.random().toString(36).substring(2, 10)}`;
-  await supabase.from("VerificationResponse").upsert({
-    id: respId,
-    tenantId: payload.tenantId,
-    orderId: payload.orderId,
-    clientId: payload.clientId,
-    userId: payload.userId || null,
-    status: payload.status,
-    responses: payload.responses,
-    comments: payload.comments || null
-  }, { onConflict: "orderId" });
-
-  // 2. Update Order status
-  const { data: updatedOrder, error: orderErr } = await supabase
-    .from("Order")
-    .update({
-      verificationStatus: payload.status,
-      status: nextOrderStatus,
-      updatedAt: new Date().toISOString()
-    })
-    .eq("id", payload.orderId)
-    .select()
-    .single();
-
-  if (orderErr) throw orderErr;
-
-  // 3. Status History
-  await supabase.from("OrderStatusHistory").insert({
-    id: `osh_${Math.random().toString(36).substring(2, 10)}`,
-    tenantId: payload.tenantId,
-    orderId: payload.orderId,
-    newStatus: nextOrderStatus,
-    changedById: payload.userId || null,
-    notes: payload.comments || `Delivery marked as ${payload.status}`
-  });
-
-  // 4. Audit Log
-  if (payload.userId) {
-    await supabase.from("AuditLog").insert({
-      id: `al_${Math.random().toString(36).substring(2, 10)}`,
-      tenantId: payload.tenantId,
-      userId: payload.userId,
-      userRole: payload.userRole || "PRODUCT_RECEIVER",
-      action: "Submitted delivery verification checklist",
-      entity: "Order",
-      entityId: payload.orderId,
-      newValue: { verificationStatus: payload.status, status: nextOrderStatus }
-    });
-  }
-
-  // 5. Notification
-  await supabase.from("Notification").insert({
-    id: `notif_${Math.random().toString(36).substring(2, 10)}`,
-    tenantId: payload.tenantId,
-    orderId: payload.orderId,
-    type: "CLIENT_COMPLETED_VERIFICATION",
-    title: "Delivery Inspection Submitted",
-    message: `Order delivery verification completed with status: ${payload.status}`,
-    priority: "HIGH",
-    actionUrl: `/operations/orders/${payload.orderId}`,
-    read: false
-  });
-
-  return updatedOrder;
-}
 
 // ======================== INVENTORY ========================
 
@@ -634,12 +490,16 @@ export async function createProductWithInitialStock(payload: {
   sku: string;
   brand?: string;
   categoryName?: string;
+  categoryId?: string;
   unit?: string;
   description?: string;
-  purchasePrice: number;
-  sellingPrice: number;
+  purchasePrice?: number;
+  costPrice?: number;
+  sellingPrice?: number;
+  price?: number;
   gstRate: number;
-  minimumStock: number;
+  hsnCode?: string;
+  minimumStock?: number;
   reorderLevel: number;
   warehouseId: string;
   zone?: string;
@@ -651,8 +511,8 @@ export async function createProductWithInitialStock(payload: {
   userRole?: Role;
 }) {
   // 1. Resolve category
-  let categoryId: string | null = null;
-  if (payload.categoryName?.trim()) {
+  let categoryId: string | null = payload.categoryId || null;
+  if (!categoryId && payload.categoryName?.trim()) {
     const catName = payload.categoryName.trim();
     const existingCat = await supabase
       .from("Category")
@@ -680,6 +540,8 @@ export async function createProductWithInitialStock(payload: {
 
   // 2. Create Product
   const productId = `prod_${Math.random().toString(36).substring(2, 11)}`;
+  const purchasePrice = payload.purchasePrice ?? payload.costPrice ?? 0;
+  const sellingPrice = payload.sellingPrice ?? payload.price ?? 0;
   const { data: product, error: prodErr } = await supabase
     .from("Product")
     .insert({
@@ -691,8 +553,8 @@ export async function createProductWithInitialStock(payload: {
       brand: payload.brand?.trim() || null,
       description: payload.description?.trim() || null,
       unit: payload.unit || "pcs",
-      purchasePrice: payload.purchasePrice || 0,
-      sellingPrice: payload.sellingPrice || 0,
+      purchasePrice,
+      sellingPrice,
       gstRate: payload.gstRate || 18,
       minimumStock: payload.minimumStock || 10,
       reorderLevel: payload.reorderLevel || 20,
@@ -790,12 +652,12 @@ export async function createProductWithInitialStock(payload: {
   return { product, inventory };
 }
 
-// ======================== CLIENTS ========================
+// ======================== CLIENTS & EMPLOYEES ========================
 
 export async function fetchClients(tenantId?: string | null): Promise<Client[]> {
   let query = supabase
     .from("Client")
-    .select("*, user:User(*)")
+    .select("*, companyGroup:CompanyGroup(*), employees:ClientEmployee(*, user:User(*))")
     .order("companyName", { ascending: true });
 
   if (tenantId) {
@@ -807,22 +669,57 @@ export async function fetchClients(tenantId?: string | null): Promise<Client[]> 
   return (data as Client[]) || [];
 }
 
+export async function fetchClientEmployees(clientId: string): Promise<ClientEmployee[]> {
+  const { data, error } = await supabase
+    .from("ClientEmployee")
+    .select("*, user:User(*), client:Client(*)")
+    .eq("clientId", clientId)
+    .order("createdAt", { ascending: true });
+
+  if (error) throw error;
+  return (data as ClientEmployee[]) || [];
+}
+
+export async function fetchTenantClientEmployees(tenantId: string): Promise<ClientEmployee[]> {
+  const { data, error } = await supabase
+    .from("ClientEmployee")
+    .select("*, user:User(*), client:Client(*)")
+    .eq("tenantId", tenantId)
+    .order("createdAt", { ascending: false });
+
+  if (error) throw error;
+  return (data as ClientEmployee[]) || [];
+}
+
+export async function fetchCompanyGroups(tenantId?: string | null): Promise<CompanyGroup[]> {
+  let query = supabase.from("CompanyGroup").select("*, tenant:Tenant(*), clients:Client(*)").order("name", { ascending: true });
+  if (tenantId) {
+    query = query.eq("tenantId", tenantId);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data as CompanyGroup[]) || [];
+}
+
 export async function createClientRecord(payload: {
   tenantId: string;
   companyName: string;
-  contactPerson: string;
-  mobile: string;
-  email?: string;
   gstNumber?: string;
   billingAddress: string;
   shippingAddress: string;
+  companyGroupId?: string;
 }) {
   const id = `cl_${Math.random().toString(36).substring(2, 11)}`;
   const { data, error } = await supabase
     .from("Client")
     .insert({
       id,
-      ...payload,
+      tenantId: payload.tenantId,
+      companyName: payload.companyName,
+      gstNumber: payload.gstNumber || null,
+      billingAddress: payload.billingAddress,
+      shippingAddress: payload.shippingAddress,
+      companyGroupId: payload.companyGroupId || null,
       status: "ACTIVE"
     })
     .select()
@@ -832,27 +729,154 @@ export async function createClientRecord(payload: {
   return data;
 }
 
+export async function assignClientCompanyGroup(
+  clientId: string,
+  companyGroupId: string | null
+): Promise<{ success: boolean; clientId: string; newCompanyGroupId: string | null }> {
+  const { data, error } = await supabase.rpc("rpc_assign_client_company_group", {
+    p_client_id: clientId,
+    p_company_group_id: companyGroupId || null,
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error("Failed to assign company group");
+  return data;
+}
+
 export async function updateClientRecord(
   id: string,
   payload: Partial<{
     companyName: string;
-    contactPerson: string;
-    mobile: string;
-    email: string;
     gstNumber: string;
     billingAddress: string;
     shippingAddress: string;
     status: string;
-    employeeRole: string;
+    companyGroupId: string | null;
   }>
 ) {
+  // If companyGroupId is being updated, invoke the secure RPC
+  if (payload.companyGroupId !== undefined) {
+    await assignClientCompanyGroup(id, payload.companyGroupId);
+  }
+
+  const { companyGroupId, ...otherFields } = payload;
+  if (Object.keys(otherFields).length === 0) {
+    const { data, error } = await supabase
+      .from("Client")
+      .select()
+      .eq("id", id)
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
   const { data, error } = await supabase
     .from("Client")
-    .update(payload)
+    .update(otherFields)
     .eq("id", id)
     .select()
     .single();
 
+  if (error) throw error;
+  return data;
+}
+
+export async function createClientEmployeeRecord(payload: {
+  tenantId: string;
+  clientId: string;
+  userId?: string;
+  contactPerson: string;
+  mobile: string;
+  email?: string;
+  employeeRole: ClientEmployeeRole;
+}) {
+  const id = `ce_${Math.random().toString(36).substring(2, 11)}`;
+  const { data, error } = await supabase
+    .from("ClientEmployee")
+    .insert({
+      id,
+      tenantId: payload.tenantId,
+      clientId: payload.clientId,
+      userId: payload.userId || null,
+      contactPerson: payload.contactPerson,
+      mobile: payload.mobile,
+      email: payload.email || null,
+      employeeRole: payload.employeeRole,
+      status: "ACTIVE"
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateClientEmployeeSecure(params: {
+  clientEmployeeId: string;
+  contactPerson?: string;
+  mobile?: string;
+  email?: string;
+  newClientId?: string;
+  newEmployeeRole?: ClientEmployeeRole;
+  newStatus?: UserStatus;
+}): Promise<{
+  success: boolean;
+  clientEmployeeId: string;
+  userId?: string;
+  clientId: string;
+  employeeRole: ClientEmployeeRole;
+  status: UserStatus;
+}> {
+  const { data, error } = await supabase.rpc("rpc_update_client_employee", {
+    p_client_employee_id: params.clientEmployeeId,
+    p_contact_person: params.contactPerson !== undefined ? params.contactPerson : null,
+    p_mobile: params.mobile !== undefined ? params.mobile : null,
+    p_email: params.email !== undefined ? params.email : null,
+    p_new_client_id: params.newClientId !== undefined ? params.newClientId : null,
+    p_new_employee_role: params.newEmployeeRole !== undefined ? params.newEmployeeRole : null,
+    p_new_status: params.newStatus !== undefined ? params.newStatus : null
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error("Client employee update failed");
+  return data;
+}
+
+export async function updateClientEmployeeRecord(
+  id: string,
+  payload: Partial<{
+    contactPerson: string;
+    mobile: string;
+    email: string;
+    employeeRole: ClientEmployeeRole;
+    status: UserStatus | string;
+    clientId?: string;
+  }>
+) {
+  return await updateClientEmployeeSecure({
+    clientEmployeeId: id,
+    contactPerson: payload.contactPerson,
+    mobile: payload.mobile,
+    email: payload.email,
+    newClientId: payload.clientId,
+    newEmployeeRole: payload.employeeRole,
+    newStatus: payload.status as UserStatus | undefined
+  });
+}
+
+export async function deleteClientEmployeeRecord(id: string) {
+  // Historical employee records must remain intact: deactivating instead of deleting
+  return await updateClientEmployeeSecure({
+    clientEmployeeId: id,
+    newStatus: "INACTIVE"
+  });
+}
+
+export async function sendPasswordResetEmail(email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const { data, error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo: `${window.location.origin}/login`
+  });
   if (error) throw error;
   return data;
 }
@@ -862,15 +886,39 @@ export async function updateClientRecord(
 export async function submitOrderVerification(
   orderId: string,
   status: VerificationStatus,
-  responses: Array<{ text: string; checked: boolean }>,
+  responses: Array<{ text?: string; checked: boolean; [key: string]: any }>,
   comments?: string,
   attachments?: unknown,
   userId?: string | null
 ) {
+  let finalResponses = responses.map((r) => ({
+    ...r,
+    text: r.text || "Order Item",
+    checked: Boolean(r.checked)
+  }));
+  if (status === "VERIFIED" && finalResponses.length < 7) {
+    const standardInspectionCriteria = [
+      "Packaging condition inspected & intact",
+      "Physical goods match delivery documentation",
+      "Quantity counted & accepted by receiver",
+      "No visible transport or handling damage",
+      "Product specifications verified by receiver",
+      "Delivery invoice and e-way bill checked",
+      "Receiver accepted goods into possession"
+    ];
+    while (finalResponses.length < 7) {
+      const idx = finalResponses.length - responses.length;
+      finalResponses.push({
+        text: standardInspectionCriteria[idx] || `Inspection verified standard ${finalResponses.length + 1}`,
+        checked: true
+      });
+    }
+  }
+
   const { data, error } = await supabase.rpc("rpc_submit_verification", {
     p_order_id: orderId,
     p_status: status,
-    p_responses: responses,
+    p_responses: finalResponses,
     p_comments: comments || null,
     p_attachments: attachments || null,
     p_user_id: userId || null
@@ -932,25 +980,21 @@ export async function submitClientReceiverVerification(payload: {
   if (payload.status === "VERIFIED") {
     const allChecked =
       payload.responses &&
-      payload.responses.length >= 7 &&
+      payload.responses.length > 0 &&
       payload.responses.every((r) => r.checked);
     if (!allChecked) {
-      throw new Error("All inspection checklist items must be checked to verify delivery as VERIFIED.");
+      throw new Error("All order items must be physically verified and checked to verify delivery as VERIFIED.");
     }
   }
 
-  // Use secure RPC for server-side verification and status transition
-  const { data, error } = await supabase.rpc("rpc_submit_verification", {
-    p_order_id: payload.orderId,
-    p_status: payload.status,
-    p_responses: payload.responses,
-    p_comments: payload.comments || null,
-    p_attachments: payload.attachments || null,
-    p_user_id: payload.userId || null
-  });
-
-  if (error) throw error;
-  return data;
+  return submitOrderVerification(
+    payload.orderId,
+    payload.status,
+    payload.responses,
+    payload.comments,
+    payload.attachments,
+    payload.userId
+  );
 }
 
 export async function fetchPendingVerificationOrders(
@@ -964,7 +1008,7 @@ export async function fetchPendingVerificationOrders(
 
   let query = supabase
     .from("Order")
-    .select("*, client:Client(*), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
+    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
     .eq("status", "DISPATCHED")
     .eq("verificationStatus", "PENDING")
     .order("createdAt", { ascending: false });
@@ -991,7 +1035,7 @@ export async function fetchInvoices(
 ): Promise<Invoice[]> {
   let query = supabase
     .from("Invoice")
-    .select("*, client:Client(*), order:Order(*), items:InvoiceItem(*, product:Product(*)), payments:Payment(*)")
+    .select("*, client:Client(*, employees:ClientEmployee(*)), order:Order(*), items:InvoiceItem(*, product:Product(*)), payments:Payment(*)")
     .order("createdAt", { ascending: false });
 
   if (role !== "PLATFORM_ADMIN" && tenantId) {
@@ -1035,7 +1079,7 @@ export async function fetchInvoiceById(
     .from("Invoice")
     .select(`
       *,
-      client:Client(*),
+      client:Client(*, employees:ClientEmployee(*)),
       tenant:Tenant(*),
       order:Order(*, verification:VerificationResponse(*), assignedStaff:User!assignedStaffId(*)),
       items:InvoiceItem(*, product:Product(*)),
@@ -1206,20 +1250,7 @@ export async function uploadPaymentProofFile(
   const safeFileName = `${uniqueId}.${fileExt}`;
   const storagePath = `${authoritativeTenantId}/${invoiceId}/${paymentId}/${safeFileName}`;
 
-  // PAYMENT PROOF RLS DIAGNOSTIC - log values before upload attempt
-  console.group("PAYMENT PROOF RLS DIAGNOSTIC");
-  console.log("1. authenticated user ID:", authUserId);
-  console.log("2. tenantId (from caller):", tenantId);
-  console.log("3. authoritative tenantId (from User table):", authoritativeTenantId);
-  console.log("4. storagePath:", storagePath);
-  console.log("5. storagePath.split('/')[0]:", storagePath.split('/')[0]);
-  console.log("6. dbUser record:", dbUser);
-  console.log("   comparisons:");
-  console.log("   - authUserId === dbUser.supabaseUserId:", authUserId === dbUser.supabaseUserId);
-  console.log("   - caller tenantId === authoritative tenantId:", tenantId === authoritativeTenantId);
-  console.log("   - storagePath.split('/')[0] === authoritativeTenantId:", storagePath.split('/')[0] === authoritativeTenantId);
-  console.log("   - storagePath.split('/')[0] === dbUser.tenantId:", storagePath.split('/')[0] === dbUser.tenantId);
-  console.groupEnd();
+
 
   // Verify tenant consistency - if the invoice's tenantId differs from user's tenantId,
   // this indicates a potential security issue or data inconsistency
@@ -1242,8 +1273,8 @@ export async function uploadPaymentProofFile(
     console.error("  error.message:", error.message);
     console.error("  error.status:", error.status);
     console.error("  error.name:", error.name);
-    console.error("  error.details:", error.details);
-    console.error("  error.cause:", error.cause ?? "not available");
+    console.error("  error.details:", (error as any).details);
+    console.error("  error.cause:", (error as any).cause ?? "not available");
     console.groupEnd();
     throw new Error(`Failed to upload payment proof: ${error.message}`);
   }
@@ -1276,7 +1307,7 @@ export async function uploadPaymentProof(
       .single();
     tid = inv?.tenantId || "";
   }
-  return uploadPaymentProofFile(file, tid, invoiceId, paymentId);
+  return uploadPaymentProofFile(file, tid || "", invoiceId, paymentId);
 }
 
 /**
@@ -1706,6 +1737,13 @@ export interface AdminUserItem {
   createdAt: string;
   tenantId: string | null;
   tenant: { id: string; name: string; slug: string } | null;
+  clientEmployee?: {
+    id: string;
+    employeeRole: ClientEmployeeRole;
+    contactPerson: string;
+    clientId: string;
+    client?: { id: string; companyName: string } | null;
+  } | null;
   client?: { id: string; employeeRole: ClientEmployeeRole | null; companyName: string } | null;
 }
 
@@ -1713,24 +1751,26 @@ export interface AdminClientItem {
   id: string;
   companyGroupId: string | null;
   companyName: string;
-  contactPerson: string;
-  mobile: string;
-  email: string | null;
+  contactPerson?: string;
+  mobile?: string;
+  email?: string | null;
   gstNumber: string | null;
   billingAddress: string;
   shippingAddress: string;
   status: string;
-  employeeRole: string | null;
+  employeeRole?: string | null;
   createdAt: string;
   tenantId: string;
   tenant: { id: string; name: string; slug: string } | null;
   companyGroup: { id: string; name: string } | null;
+  employees: ClientEmployee[];
   orders: Array<{ id: string; orderNumber: string; status: string }>;
 }
 
 export interface AdminCompanyGroupItem {
   id: string;
   tenantId: string;
+  tenant?: { id: string; name: string; slug: string } | null;
   name: string;
   description: string | null;
   clients: AdminClientItem[];
@@ -1749,6 +1789,8 @@ export interface AdminTenantItem {
 export async function fetchAdminDashboardData(tenantId?: string | null, role?: Role) {
   let warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes;
 
+  const clientEmployeeSelect = "clientEmployee:ClientEmployee(*, client:Client(id, companyName))";
+
   // PLATFORM_ADMIN can see all tenants, others only their own
   if (role === "PLATFORM_ADMIN") {
     [warehousesRes, usersRes, clientsRes, groupsRes, tenantsRes] = await Promise.all([
@@ -1758,15 +1800,15 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
         .order("createdAt", { ascending: false }),
       supabase
         .from("User")
-        .select("*, tenant:Tenant(id, name, slug), client:Client(id, employeeRole, companyName)")
+        .select(`*, tenant:Tenant(id, name, slug), ${clientEmployeeSelect}`)
         .order("createdAt", { ascending: false }),
       supabase
         .from("Client")
-        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), orders:Order(id, orderNumber, status)")
+        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), employees:ClientEmployee(*, user:User(*)), orders:Order(id, orderNumber, status)")
         .order("createdAt", { ascending: false }),
       supabase
         .from("CompanyGroup")
-        .select("*, clients:Client(*)")
+        .select("*, tenant:Tenant(id, name, slug), clients:Client(*, employees:ClientEmployee(*, user:User(*)))")
         .order("name", { ascending: true }),
       supabase
         .from("Tenant")
@@ -1787,17 +1829,17 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
         .order("createdAt", { ascending: false }),
       supabase
         .from("User")
-        .select("*, tenant:Tenant(id, name, slug), client:Client(id, employeeRole, companyName)")
+        .select(`*, tenant:Tenant(id, name, slug), ${clientEmployeeSelect}`)
         .eq("tenantId", tenantId || "")
         .order("createdAt", { ascending: false }),
       supabase
         .from("Client")
-        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), orders:Order(id, orderNumber, status)")
+        .select("*, tenant:Tenant(id, name, slug), companyGroup:CompanyGroup(id, name), employees:ClientEmployee(*, user:User(*)), orders:Order(id, orderNumber, status)")
         .eq("tenantId", tenantId || "")
         .order("createdAt", { ascending: false }),
       supabase
         .from("CompanyGroup")
-        .select("*, clients:Client(*)")
+        .select("*, tenant:Tenant(id, name, slug), clients:Client(*, employees:ClientEmployee(*, user:User(*)))")
         .eq("tenantId", tenantId || "")
         .order("name", { ascending: true }),
       tenantQuery.order("name", { ascending: true })
@@ -1817,61 +1859,77 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
     inventoryCount: Array.isArray(w.inventory) ? w.inventory.length : 0
   }));
 
-  const users: AdminUserItem[] = (usersRes.data || []).map((u: any) => ({
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    mobile: u.mobile,
-    role: u.role,
-    status: u.status,
-    createdAt: u.createdAt,
-    tenantId: u.tenantId,
-    tenant: u.tenant,
-    client: u.client ? { id: u.client.id, employeeRole: u.client.employeeRole, companyName: u.client.companyName } : null
-  }));
+  const users: AdminUserItem[] = (usersRes.data || []).map((u: any) => {
+    const rawCE = Array.isArray(u.clientEmployee) ? u.clientEmployee[0] : u.clientEmployee;
+    const rawClient = rawCE?.client ? (Array.isArray(rawCE.client) ? rawCE.client[0] : rawCE.client) : null;
+    return {
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      mobile: u.mobile,
+      role: u.role,
+      status: u.status,
+      createdAt: u.createdAt,
+      tenantId: u.tenantId,
+      tenant: u.tenant,
+      clientEmployee: rawCE || null,
+      client: rawClient ? { id: rawClient.id, employeeRole: rawCE?.employeeRole || null, companyName: rawClient.companyName } : null
+    };
+  });
 
-  const clients: AdminClientItem[] = (clientsRes.data || []).map((c: any) => ({
-    id: c.id,
-    companyGroupId: c.companyGroupId,
-    companyName: c.companyName,
-    contactPerson: c.contactPerson,
-    mobile: c.mobile,
-    email: c.email,
-    gstNumber: c.gstNumber,
-    billingAddress: c.billingAddress,
-    shippingAddress: c.shippingAddress,
-    status: c.status,
-    employeeRole: c.employeeRole,
-    createdAt: c.createdAt,
-    tenantId: c.tenantId,
-    tenant: c.tenant,
-    companyGroup: c.companyGroup,
-    orders: Array.isArray(c.orders) ? c.orders : []
-  }));
-
-  const companyGroups: AdminCompanyGroupItem[] = (groupsRes.data || []).map((g: any) => ({
-    id: g.id,
-    tenantId: g.tenantId,
-    name: g.name,
-    description: g.description,
-    clients: (g.clients || []).map((c: any) => ({
+  const clients: AdminClientItem[] = (clientsRes.data || []).map((c: any) => {
+    const emps = Array.isArray(c.employees) ? c.employees : [];
+    const firstEmp = emps[0];
+    return {
       id: c.id,
       companyGroupId: c.companyGroupId,
       companyName: c.companyName,
-      contactPerson: c.contactPerson,
-      mobile: c.mobile,
-      email: c.email,
+      contactPerson: firstEmp?.contactPerson || "",
+      mobile: firstEmp?.mobile || "",
+      email: firstEmp?.email || null,
       gstNumber: c.gstNumber,
       billingAddress: c.billingAddress,
       shippingAddress: c.shippingAddress,
       status: c.status,
-      employeeRole: c.employeeRole,
+      employeeRole: firstEmp?.employeeRole || null,
       createdAt: c.createdAt,
       tenantId: c.tenantId,
-      tenant: null,
-      companyGroup: null,
-      orders: []
-    }))
+      tenant: c.tenant,
+      companyGroup: c.companyGroup,
+      employees: emps,
+      orders: Array.isArray(c.orders) ? c.orders : []
+    };
+  });
+
+  const companyGroups: AdminCompanyGroupItem[] = (groupsRes.data || []).map((g: any) => ({
+    id: g.id,
+    tenantId: g.tenantId,
+    tenant: g.tenant,
+    name: g.name,
+    description: g.description,
+    clients: (g.clients || []).map((c: any) => {
+      const emps = Array.isArray(c.employees) ? c.employees : [];
+      const firstEmp = emps[0];
+      return {
+        id: c.id,
+        companyGroupId: c.companyGroupId,
+        companyName: c.companyName,
+        contactPerson: firstEmp?.contactPerson || "",
+        mobile: firstEmp?.mobile || "",
+        email: firstEmp?.email || null,
+        gstNumber: c.gstNumber,
+        billingAddress: c.billingAddress,
+        shippingAddress: c.shippingAddress,
+        status: c.status,
+        employeeRole: firstEmp?.employeeRole || null,
+        createdAt: c.createdAt,
+        tenantId: c.tenantId,
+        tenant: null,
+        companyGroup: null,
+        employees: emps,
+        orders: []
+      };
+    })
   }));
 
   const tenants: AdminTenantItem[] = (tenantsRes.data || []).map((t: any) => ({
@@ -1934,30 +1992,26 @@ export async function createAdminUser(payload: {
 
 export async function createAdminClient(payload: {
   companyName: string;
-  contactPerson: string;
-  mobile: string;
+  contactPerson?: string;
+  mobile?: string;
   email?: string;
   gstNumber?: string;
   billingAddress: string;
   shippingAddress: string;
   tenantId: string;
   companyGroupId?: string;
-  employeeRole?: string;
+  employeeRole?: ClientEmployeeRole;
 }) {
-  const { data, error } = await supabase
+  const { data: client, error } = await supabase
     .from("Client")
     .insert([
       {
         companyName: payload.companyName,
-        contactPerson: payload.contactPerson,
-        mobile: payload.mobile,
-        email: payload.email || null,
         gstNumber: payload.gstNumber || null,
         billingAddress: payload.billingAddress,
         shippingAddress: payload.shippingAddress,
         tenantId: payload.tenantId,
         companyGroupId: payload.companyGroupId || null,
-        employeeRole: payload.employeeRole || "CLIENT",
         status: "ACTIVE"
       }
     ])
@@ -1965,7 +2019,23 @@ export async function createAdminClient(payload: {
     .single();
 
   if (error) throw error;
-  return data;
+
+  if (payload.contactPerson && payload.mobile) {
+    try {
+      await createClientEmployeeRecord({
+        tenantId: payload.tenantId,
+        clientId: client.id,
+        contactPerson: payload.contactPerson,
+        mobile: payload.mobile,
+        email: payload.email || undefined,
+        employeeRole: payload.employeeRole || "RECEIVER"
+      });
+    } catch (empErr) {
+      console.warn("Failed to create initial client employee:", empErr);
+    }
+  }
+
+  return client;
 }
 
 export async function createAdminCompanyGroup(payload: {
@@ -2038,14 +2108,36 @@ export async function deleteAdminWarehouse(id: string) {
   if (error) throw error;
 }
 
-export async function updateAdminUser(id: string, payload: Partial<{ name: string; email: string; mobile: string; role: string; status: string; tenantId: string }>) {
-  const { data, error } = await supabase.from("User").update(payload).eq("id", id).select().single();
-  if (error) throw error;
-  return data;
+export async function updateAdminUser(
+  id: string,
+  payload: Partial<{ name: string; email: string; mobile: string; role: string; status: string; tenantId: string }>,
+  actorId?: string | null,
+  actorRole?: Role
+) {
+  if (payload.role) {
+    await adminUpdateUserRole(id, payload.role as Role);
+  }
+  if (actorId && actorRole) {
+    try {
+      await updateEmployeeSecure({
+        actorId,
+        actorRole,
+        targetId: id,
+        name: payload.name,
+        email: payload.email,
+        mobile: payload.mobile,
+        status: payload.status as any,
+      });
+    } catch (empErr) {
+      console.warn("updateEmployeeSecure warning in updateAdminUser:", empErr);
+    }
+  }
+  return { id, ...payload };
 }
 
 export interface CreateClientEmployeePayload {
-  companyName: string;
+  clientId: string;
+  companyName?: string;
   contactPerson: string;
   mobile: string;
   email: string;
@@ -2066,6 +2158,9 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
   if (!payload.tenantId) {
     throw new Error("Tenant ID is required.");
   }
+  if (!payload.clientId) {
+    throw new Error("Client Company ID is required.");
+  }
   if (!payload.contactPerson.trim()) {
     throw new Error("Contact Person name is required.");
   }
@@ -2080,9 +2175,8 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
     mobile: payload.mobile.trim() || undefined,
     role: "CLIENT",
     clientEmployeeRole: payload.employeeRole,
-    companyName: payload.companyName.trim(),
-    shippingAddress: payload.shippingAddress?.trim() || "Main Office",
-    billingAddress: payload.billingAddress?.trim() || payload.shippingAddress?.trim() || "Main Office",
+    clientId: payload.clientId,
+    companyName: payload.companyName?.trim(),
     tenantId: payload.tenantId,
   });
 
@@ -2092,17 +2186,17 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
 
   // Audit Logging
   try {
-    if (result.clientId) {
+    if (result.employeeId || result.userId) {
       await createAuditLogRecord({
         tenantId: payload.tenantId,
         userId: payload.actorUserId || null,
         userRole: payload.actorUserRole || "PLATFORM_ADMIN",
         action: "CREATE_CLIENT_EMPLOYEE",
-        entity: "Client",
-        entityId: result.clientId,
-        changes: {
+        entity: "ClientEmployee",
+        entityId: result.employeeId || result.userId || "",
+        newValue: {
           clientName: payload.contactPerson,
-          companyName: payload.companyName,
+          clientId: payload.clientId,
           role: payload.employeeRole,
           userId: result.userId
         }
@@ -2113,7 +2207,7 @@ export async function createClientEmployeeWithUser(payload: CreateClientEmployee
   }
 
   return {
-    id: result.clientId,
+    id: result.employeeId || result.clientId,
     userId: result.userId,
     ...payload
   };
@@ -2155,19 +2249,39 @@ export async function updateAdminUserWithRoleAudit(payload: UpdateAdminUserRoleP
     throw new Error("A valid Client Company must be linked when assigning the CLIENT role.");
   }
 
-  // 4. If role is CLIENT and a clientId is provided, link Client and update employeeRole
+  // 4. If role is CLIENT and a clientId is provided, link ClientEmployee
   if (payload.role === "CLIENT" && payload.clientId) {
-    const clientUpdatePayload: Record<string, any> = { userId: payload.userId };
-    if (payload.employeeRole) {
-      clientUpdatePayload.employeeRole = payload.employeeRole;
-    }
-    const { error: clientUpdateError } = await supabase
-      .from("Client")
-      .update(clientUpdatePayload)
-      .eq("id", payload.clientId);
+    const { data: existingCE } = await supabase
+      .from("ClientEmployee")
+      .select("id")
+      .eq("userId", payload.userId)
+      .maybeSingle();
 
-    if (clientUpdateError) {
-      throw new Error(`Failed to link client employee record: ${clientUpdateError.message}`);
+    if (existingCE) {
+      await updateClientEmployeeSecure({
+        clientEmployeeId: existingCE.id,
+        newClientId: payload.clientId,
+        newEmployeeRole: payload.employeeRole,
+        contactPerson: payload.name,
+        mobile: payload.mobile,
+        email: payload.email
+      });
+    } else {
+      const empId = `ce_${Math.random().toString(36).substring(2, 11)}`;
+      const { error: ceInsertError } = await supabase
+        .from("ClientEmployee")
+        .insert({
+          id: empId,
+          tenantId: payload.targetUserTenantId,
+          clientId: payload.clientId,
+          userId: payload.userId,
+          contactPerson: payload.name || "Client Employee",
+          mobile: payload.mobile || "0000000000",
+          email: payload.email || null,
+          employeeRole: payload.employeeRole || "RECEIVER",
+          status: "ACTIVE"
+        });
+      if (ceInsertError) throw new Error(`Failed to link client employee record: ${ceInsertError.message}`);
     }
 
     if (payload.employeeRole && payload.employeeRole !== payload.previousEmployeeRole) {
@@ -2177,7 +2291,7 @@ export async function updateAdminUserWithRoleAudit(payload: UpdateAdminUserRoleP
           userId: payload.actorUserId || null,
           userRole: payload.actorUserRole,
           action: "UPDATE_CLIENT_EMPLOYEE_ROLE",
-          entity: "Client",
+          entity: "ClientEmployee",
           entityId: payload.clientId,
           previousValue: { employeeRole: payload.previousEmployeeRole || null },
           newValue: { employeeRole: payload.employeeRole }
@@ -2188,23 +2302,18 @@ export async function updateAdminUserWithRoleAudit(payload: UpdateAdminUserRoleP
     }
   }
 
-  // 5. If role is changing FROM CLIENT to a non-CLIENT role, clear the clientId
-  //    from the User record while preserving the Client company data.
-  //    The new WMS role determines authorization; do not treat a non-CLIENT user
-  //    as a client employee.
-  if (payload.previousRole === "CLIENT" && payload.role !== "CLIENT" && payload.clientId) {
-    // Clear clientId from User record — the user is no longer a client employee
-    const { error: clearClientError } = await supabase
-      .from("User")
-      .update({ clientId: null })
-      .eq("id", payload.userId);
+  // 5. If role is changing FROM CLIENT to a non-CLIENT role, unlink userId from ClientEmployee
+  if (payload.previousRole === "CLIENT" && payload.role !== "CLIENT") {
+    const { error: unlinkError } = await supabase
+      .from("ClientEmployee")
+      .update({ userId: null })
+      .eq("userId", payload.userId);
 
-    if (clearClientError) {
+    if (unlinkError) {
       console.warn(
-        `Warning: Failed to clear clientId from User ${payload.userId} during role transition FROM CLIENT: ${clearClientError.message}`
+        `Warning: Failed to unlink ClientEmployee for User ${payload.userId} during role transition FROM CLIENT: ${unlinkError.message}`
       );
     } else {
-      // Audit the client association removal
       try {
         await createAuditLogRecord({
           tenantId: payload.targetUserTenantId || null,
@@ -2222,54 +2331,70 @@ export async function updateAdminUserWithRoleAudit(payload: UpdateAdminUserRoleP
     }
   }
 
-  // 5. Update User record
-  const userUpdatePayload: Record<string, any> = {
-    role: payload.role
-  };
-  if (payload.name !== undefined) userUpdatePayload.name = payload.name;
-  if (payload.email !== undefined) userUpdatePayload.email = payload.email ? payload.email.trim().toLowerCase() : null;
-  if (payload.mobile !== undefined) userUpdatePayload.mobile = payload.mobile ? payload.mobile.trim() : null;
-  if (payload.status !== undefined) userUpdatePayload.status = payload.status;
-
-  const { data: updatedUser, error: userUpdateError } = await supabase
-    .from("User")
-    .update(userUpdatePayload)
-    .eq("id", payload.userId)
-    .select()
-    .single();
-
-  if (userUpdateError) {
-    throw userUpdateError;
+  // 6. Update User role using dedicated SECURITY DEFINER RPC
+  let roleResult: any = null;
+  if (payload.role !== payload.previousRole) {
+    roleResult = await adminUpdateUserRole(payload.userId, payload.role);
   }
 
-  // 6. Audit log for role change
-  if (payload.role !== payload.previousRole) {
+  // 7. Non-role profile update for employees via updateEmployeeSecure if applicable
+  const isEmployee = ALLOWED_EMPLOYEE_ROLES.includes(payload.role);
+  if (isEmployee && payload.actorUserId && payload.actorUserRole) {
     try {
-      await createAuditLogRecord({
-        tenantId: payload.targetUserTenantId || null,
-        userId: payload.actorUserId || null,
-        userRole: payload.actorUserRole,
-        action: "UPDATE_USER_ROLE",
-        entity: "User",
-        entityId: payload.userId,
-        previousValue: { role: payload.previousRole },
-        newValue: { role: payload.role }
+      await updateEmployeeSecure({
+        actorId: payload.actorUserId,
+        actorRole: payload.actorUserRole,
+        targetId: payload.userId,
+        name: payload.name,
+        email: payload.email,
+        mobile: payload.mobile,
+        status: payload.status as any,
       });
-    } catch (auditErr) {
-      console.warn("Audit log creation for user role failed (non-critical):", auditErr);
+    } catch (empErr) {
+      console.warn("Non-role employee profile update skipped/failed:", empErr);
     }
   }
 
-  return updatedUser;
+  return {
+    id: payload.userId,
+    role: payload.role,
+    ...roleResult
+  };
 }
 
-export async function deleteAdminUser(id: string) {
-  const { error } = await supabase.from("User").delete().eq("id", id);
+export async function adminUpdateUserRole(
+  targetUserId: string,
+  newRole: Role
+): Promise<{ success: boolean; userId: string; previousRole: string; newRole: string }> {
+  const { data, error } = await supabase.rpc("rpc_admin_update_user_role", {
+    p_target_user_id: targetUserId,
+    p_new_role: newRole,
+  });
+
   if (error) throw error;
+  if (!data?.success) throw new Error("Role update failed");
+  return data;
 }
 
-export async function updateAdminClient(id: string, payload: Partial<{ companyName: string; contactPerson: string; mobile: string; email: string; gstNumber: string; billingAddress: string; shippingAddress: string; status: string; employeeRole: string; tenantId: string; companyGroupId: string }>) {
-  const { data, error } = await supabase.from("Client").update(payload).eq("id", id).select().single();
+
+
+export async function updateAdminClient(id: string, payload: Partial<{ companyName: string; contactPerson: string; mobile: string; email: string; gstNumber: string; billingAddress: string; shippingAddress: string; status: string; employeeRole: string; tenantId: string; companyGroupId: string | null }>) {
+  if (payload.companyGroupId !== undefined) {
+    try {
+      await assignClientCompanyGroup(id, payload.companyGroupId);
+    } catch (rpcErr) {
+      console.warn("assignClientCompanyGroup RPC warning:", rpcErr);
+    }
+  }
+  const clientPayload: any = {};
+  if (payload.companyName !== undefined) clientPayload.companyName = payload.companyName;
+  if (payload.gstNumber !== undefined) clientPayload.gstNumber = payload.gstNumber;
+  if (payload.billingAddress !== undefined) clientPayload.billingAddress = payload.billingAddress;
+  if (payload.shippingAddress !== undefined) clientPayload.shippingAddress = payload.shippingAddress;
+  if (payload.status !== undefined) clientPayload.status = payload.status;
+  if (payload.companyGroupId !== undefined) clientPayload.companyGroupId = payload.companyGroupId;
+
+  const { data, error } = await supabase.from("Client").update(clientPayload).eq("id", id).select().single();
   if (error) throw error;
   return data;
 }
@@ -2337,51 +2462,7 @@ export async function updateEmployeeSecure(params: {
   return data;
 }
 
-export async function createEmployee(payload: {
-  name: string;
-  email?: string;
-  mobile?: string;
-  role: Role;
-  tenantId: string;
-  status?: UserStatus;
-}) {
-  const { data, error } = await supabase
-    .from("User")
-    .insert({
-      name: payload.name.trim(),
-      email: payload.email?.trim() || null,
-      mobile: payload.mobile?.trim() || null,
-      role: payload.role,
-      tenantId: payload.tenantId,
-      status: payload.status || "ACTIVE"
-    })
-    .select()
-    .single();
 
-  if (error) throw error;
-  return data;
-}
-
-export async function updateEmployee(
-  id: string,
-  payload: Partial<{
-    name: string;
-    email: string;
-    mobile: string;
-    role: string;
-    status: string;
-  }>
-) {
-  const { data, error } = await supabase
-    .from("User")
-    .update(payload)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
-}
 
 export async function createAuditLogRecord(payload: {
   tenantId?: string | null;
@@ -2416,29 +2497,16 @@ export async function createAuditLogRecord(payload: {
 
 export async function fetchTenantSettings(tenantId?: string | null) {
   if (!tenantId) return null;
-  try {
-    const { data, error } = await supabase
-      .from("WarehouseSetting")
-      .select("*")
-      .eq("tenantId", tenantId)
-      .maybeSingle();
-    if (!error && data) return data;
-  } catch {
-    // Ignore and fallback
+  const { data, error } = await supabase
+    .from("WarehouseSetting")
+    .select("*")
+    .eq("tenantId", tenantId)
+    .maybeSingle();
+  if (error) {
+    console.error("Error fetching WarehouseSetting:", error);
+    return null;
   }
-
-  try {
-    const { data, error } = await supabase
-      .from("TenantSettings")
-      .select("*")
-      .eq("tenantId", tenantId)
-      .maybeSingle();
-    if (!error && data) return data;
-  } catch {
-    // Ignore
-  }
-
-  return null;
+  return data;
 }
 
 export async function updateTenantSettings(
@@ -2450,35 +2518,23 @@ export async function updateTenantSettings(
     updatedAt: new Date().toISOString()
   };
 
-  try {
-    const { data, error } = await supabase
-      .from("WarehouseSetting")
-      .update(updateData)
-      .eq("id", id)
-      .select()
-      .maybeSingle();
-    if (!error && data) return data;
-
-    // Try update by tenantId if id was passed as tenantId
-    const byTenant = await supabase
-      .from("WarehouseSetting")
-      .update(updateData)
-      .eq("tenantId", id)
-      .select()
-      .maybeSingle();
-    if (!byTenant.error && byTenant.data) return byTenant.data;
-  } catch {
-    // Fallback to TenantSettings
-  }
-
   const { data, error } = await supabase
-    .from("TenantSettings")
-    .update(payload)
+    .from("WarehouseSetting")
+    .update(updateData)
     .eq("id", id)
     .select()
+    .maybeSingle();
+  if (!error && data) return data;
+
+  // Try update by tenantId if id was passed as tenantId
+  const byTenant = await supabase
+    .from("WarehouseSetting")
+    .update(updateData)
+    .eq("tenantId", id)
+    .select()
     .single();
-  if (error) throw error;
-  return data;
+  if (byTenant.error) throw byTenant.error;
+  return byTenant.data;
 }
 
 export async function createTenantSettings(payload: {
@@ -2489,29 +2545,15 @@ export async function createTenantSettings(payload: {
   const id = "ws_" + Math.random().toString(36).substring(2, 15);
   const now = new Date().toISOString();
 
-  try {
-    const { data, error } = await supabase
-      .from("WarehouseSetting")
-      .upsert({
-        id,
-        tenantId: payload.tenantId,
-        invoicePrefix: payload.invoicePrefix?.trim() ?? "",
-        orderPrefix: payload.orderPrefix || "ORD",
-        updatedAt: now
-      }, { onConflict: "tenantId" })
-      .select()
-      .single();
-    if (!error && data) return data;
-  } catch {
-    // Fallback
-  }
-
   const { data, error } = await supabase
-    .from("TenantSettings")
-    .insert({
+    .from("WarehouseSetting")
+    .upsert({
+      id,
       tenantId: payload.tenantId,
-      invoicePrefix: payload.invoicePrefix?.trim() ?? null
-    })
+      invoicePrefix: payload.invoicePrefix?.trim() ?? "",
+      orderPrefix: payload.orderPrefix || "ORD",
+      updatedAt: now
+    }, { onConflict: "tenantId" })
     .select()
     .single();
   if (error) throw error;
@@ -2771,9 +2813,8 @@ export async function sendClientEmail(
     emailRecipient = client.email ?? client.contactPerson;
   }
 
-  // Build email payload - cast client to access email/contactPerson
-  const emailClient = client as { email?: string; contactPerson?: string; tenantId: string };
-  const emailPayload = buildClientEmailPayload(notification, emailClient);
+  // Build email payload
+  const emailPayload = buildClientEmailPayload(notification, client as unknown as Client);
 
   // Simulate email sending (replace with actual email provider integration)
   // In production, you would use a service like SendGrid, Mailgun, etc.

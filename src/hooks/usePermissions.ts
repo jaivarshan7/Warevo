@@ -9,7 +9,7 @@ export function usePermissions() {
     user,
     tenant,
     can: (permission: string) => hasPermission(role, permission),
-    canRoute: (route: string) => canAccessRoute(role, route, user?.client?.employeeRole),
+    canRoute: (route: string) => canAccessRoute(role, route, user?.clientEmployee?.employeeRole || user?.client?.employeeRole),
     canTenant: (resourceTenantId: string) => canAccessTenant(role, user?.tenantId, resourceTenantId)
   };
 }

@@ -17,7 +17,8 @@ import {
   Trash2,
   Eye,
   EyeOff,
-  ShieldCheck
+  ShieldCheck,
+  Key
 } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -38,13 +39,16 @@ import {
   updateAdminUserWithRoleAudit,
   updateAdminClient,
   updateAdminTenant,
+  assignClientCompanyGroup,
+  updateClientEmployeeSecure,
+  sendPasswordResetEmail,
   AdminWarehouseItem,
   AdminUserItem,
   AdminClientItem,
   AdminCompanyGroupItem,
   AdminTenantItem
 } from "@/lib/services";
-import { Role, ClientEmployeeRole } from "@/types";
+import { Role, ClientEmployeeRole, UserStatus } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
 
 export const AdminDashboardPage: React.FC = () => {
@@ -80,6 +84,16 @@ export const AdminDashboardPage: React.FC = () => {
   const [editingWarehouse, setEditingWarehouse] = useState<AdminWarehouseItem | null>(null);
   const [editingUser, setEditingUser] = useState<AdminUserItem | null>(null);
   const [editingClient, setEditingClient] = useState<AdminClientItem | null>(null);
+  const [editingClientEmployee, setEditingClientEmployee] = useState<{
+    id: string;
+    clientId: string;
+    tenantId?: string;
+    contactPerson: string;
+    mobile: string;
+    email: string;
+    employeeRole: ClientEmployeeRole;
+    status: UserStatus;
+  } | null>(null);
   const [editingTenant, setEditingTenant] = useState<AdminTenantItem | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
 
@@ -121,6 +135,7 @@ export const AdminDashboardPage: React.FC = () => {
   });
 
   const [employeeForm, setEmployeeForm] = useState({
+    clientId: "",
     companyName: "",
     contactPerson: "",
     mobile: "",
@@ -136,6 +151,11 @@ export const AdminDashboardPage: React.FC = () => {
     description: "",
     tenantId: ""
   });
+  const [groupTenantId, setGroupTenantId] = useState("");
+
+  const [showAttachCompany, setShowAttachCompany] = useState(false);
+  const [selectedAttachGroupId, setSelectedAttachGroupId] = useState("");
+  const [selectedAttachClientId, setSelectedAttachClientId] = useState("");
 
   const loadData = async () => {
     try {
@@ -146,12 +166,12 @@ export const AdminDashboardPage: React.FC = () => {
       setCompanyGroups(data.companyGroups);
       setTenants(data.tenants);
 
-      if (data.tenants.length > 0) {
-        setWarehouseForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
-        setPlatformAdminForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
-        setClientForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
-        setEmployeeForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
-        setGroupForm((prev) => ({ ...prev, tenantId: prev.tenantId || data.tenants[0].id }));
+      const defaultTenantId = user?.tenantId || (data.tenants.length === 1 ? data.tenants[0].id : "");
+      if (defaultTenantId) {
+        setWarehouseForm((prev) => ({ ...prev, tenantId: prev.tenantId || defaultTenantId }));
+        setPlatformAdminForm((prev) => ({ ...prev, tenantId: prev.tenantId || defaultTenantId }));
+        setClientForm((prev) => ({ ...prev, tenantId: prev.tenantId || defaultTenantId }));
+        setEmployeeForm((prev) => ({ ...prev, tenantId: prev.tenantId || defaultTenantId }));
       }
     } catch (err) {
       console.error("Failed to load admin dashboard data:", err);
@@ -248,8 +268,8 @@ export const AdminDashboardPage: React.FC = () => {
       const q = searchQuery.toLowerCase();
       const matchesSearch =
         c.companyName.toLowerCase().includes(q) ||
-        c.contactPerson.toLowerCase().includes(q) ||
-        c.mobile.toLowerCase().includes(q) ||
+        Boolean(c.contactPerson?.toLowerCase().includes(q)) ||
+        Boolean(c.mobile?.includes(q)) ||
         (c.gstNumber ?? "").toLowerCase().includes(q) ||
         (c.tenant?.name ?? "").toLowerCase().includes(q);
       const matchesStatus = statusFilter === "ALL" || c.status === statusFilter;
@@ -275,16 +295,35 @@ export const AdminDashboardPage: React.FC = () => {
     return Array.from(new Set(clients.map((c) => c.companyName.trim()).filter(Boolean)));
   }, [clients]);
 
+  // Effective Tenant Context for Corporate Groups
+  const effectiveGroupTenantId = role === "PLATFORM_ADMIN" ? groupTenantId : (user?.tenantId || "");
+
   // Filtered Groups
   const filteredGroups = useMemo(() => {
     const q = searchQuery.toLowerCase();
+    // For PLATFORM_ADMIN: if no tenant selected, return empty list
+    if (role === "PLATFORM_ADMIN" && !groupTenantId) {
+      return [];
+    }
+
     return companyGroups.filter((g) => {
-      if (!q) return true;
-      // Search across distinct company names (not individual employee rows)
       const distinctCompanyNames = Array.from(new Set(g.clients.map((c) => c.companyName))).join(" ").toLowerCase();
-      return g.name.toLowerCase().includes(q) || distinctCompanyNames.includes(q);
+      const matchesSearch =
+        !q ||
+        g.name.toLowerCase().includes(q) ||
+        distinctCompanyNames.includes(q) ||
+        Boolean(g.tenant?.name?.toLowerCase().includes(q));
+      const matchesTenant = effectiveGroupTenantId ? g.tenantId === effectiveGroupTenantId : true;
+      return matchesSearch && matchesTenant;
     });
-  }, [companyGroups, searchQuery]);
+  }, [companyGroups, searchQuery, role, groupTenantId, effectiveGroupTenantId]);
+
+  // Clients matching the currently selected attach group's tenant
+  const matchingAttachClients = useMemo(() => {
+    const targetGroup = companyGroups.find((g) => g.id === selectedAttachGroupId);
+    if (!targetGroup) return [];
+    return clients.filter((c) => c.tenantId === targetGroup.tenantId);
+  }, [companyGroups, selectedAttachGroupId, clients]);
 
   /**
    * Groups a corporate group's flat Client[] (which may contain multiple employee rows
@@ -292,14 +331,24 @@ export const AdminDashboardPage: React.FC = () => {
    * This correctly implements: Corporate Group → Companies → Employees
    */
   const groupGroupClients = (clients: AdminClientItem[]) => {
-    const map = new Map<string, AdminClientItem[]>();
-    for (const c of clients) {
-      const key = c.companyName.trim() || "Unnamed Company";
-      const current = map.get(key) ?? [];
-      current.push(c);
-      map.set(key, current);
-    }
-    return Array.from(map.entries()).map(([companyName, employees]) => ({ companyName, employees }));
+    return clients.map((c) => ({
+      companyName: c.companyName.trim() || "Unnamed Company",
+      companyId: c.id,
+      employees:
+        c.employees && c.employees.length > 0
+          ? c.employees
+          : c.contactPerson
+          ? [
+              {
+                id: c.id,
+                contactPerson: c.contactPerson,
+                employeeRole: c.employeeRole,
+                mobile: c.mobile,
+                email: c.email
+              } as any
+            ]
+          : []
+    }));
   };
 
   // Handlers
@@ -309,7 +358,7 @@ export const AdminDashboardPage: React.FC = () => {
     try {
       await createAdminWarehouse(warehouseForm);
       setShowAddWarehouse(false);
-      setWarehouseForm({ name: "", code: "", address: "", tenantId: tenants[0]?.id || "" });
+      setWarehouseForm({ name: "", code: "", address: "", tenantId: user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || "" });
       setActionMessage({ type: "success", text: "Warehouse created successfully!" });
       await loadData();
     } catch (err: any) {
@@ -351,7 +400,7 @@ export const AdminDashboardPage: React.FC = () => {
       }
 
       setShowAddPlatformAdmin(false);
-      setPlatformAdminForm({ name: "", email: "", password: "", mobile: "", tenantId: tenants[0]?.id || "" });
+      setPlatformAdminForm({ name: "", email: "", password: "", mobile: "", tenantId: user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || "" });
       setShowPlatformAdminPassword(false);
       setActionMessage({ type: "success", text: "Platform Admin created successfully with Supabase Auth credentials!" });
       await loadData();
@@ -380,7 +429,7 @@ export const AdminDashboardPage: React.FC = () => {
         gstNumber: "",
         billingAddress: "",
         shippingAddress: "",
-        tenantId: tenants[0]?.id || ""
+        tenantId: user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || ""
       });
       setActionMessage({ type: "success", text: "Client company created successfully!" });
       await loadData();
@@ -405,8 +454,25 @@ export const AdminDashboardPage: React.FC = () => {
       setActionMessage({ type: "error", text: "Password must be at least 8 characters." });
       return;
     }
-    if (!employeeForm.companyName.trim()) {
-      setActionMessage({ type: "error", text: "Client company name is required." });
+    if (!employeeForm.mobile.trim()) {
+      setActionMessage({ type: "error", text: "Mobile number is required for employee account." });
+      return;
+    }
+    if (!employeeForm.clientId) {
+      setActionMessage({ type: "error", text: "Client company is required." });
+      return;
+    }
+
+    const targetCompany = clients.find((c) => c.id === employeeForm.clientId);
+
+    if (!targetCompany) {
+      setActionMessage({ type: "error", text: "Selected client company does not exist. Please select an existing company." });
+      return;
+    }
+
+    const targetTenantId = targetCompany.tenantId;
+    if (!targetTenantId) {
+      setActionMessage({ type: "error", text: "Selected company does not have an assigned tenant." });
       return;
     }
 
@@ -417,18 +483,20 @@ export const AdminDashboardPage: React.FC = () => {
         contactPerson: employeeForm.contactPerson,
         email: employeeForm.email,
         employeeRole: employeeForm.employeeRole,
-        tenantId: employeeForm.tenantId || tenants[0]?.id,
+        tenantId: targetTenantId,
+        clientId: targetCompany.id
       });
 
       const result = await createEmployeeWithAuth({
         name: employeeForm.contactPerson.trim(),
         email: employeeForm.email.trim(),
         password: employeeForm.password,
-        mobile: employeeForm.mobile.trim() || undefined,
+        mobile: employeeForm.mobile.trim(),
         role: "CLIENT",
         clientEmployeeRole: employeeForm.employeeRole,
-        companyName: employeeForm.companyName.trim(),
-        tenantId: employeeForm.tenantId || tenants[0]?.id || undefined,
+        clientId: targetCompany.id,
+        companyName: targetCompany.companyName.trim(),
+        tenantId: targetTenantId,
       });
 
       if (!result.success) {
@@ -440,13 +508,14 @@ export const AdminDashboardPage: React.FC = () => {
 
       setShowAddEmployee(false);
       setEmployeeForm({
+        clientId: "",
         companyName: "",
         contactPerson: "",
         mobile: "",
         email: "",
         password: "",
         employeeRole: "RECEIVER",
-        tenantId: tenants[0]?.id || ""
+        tenantId: user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || ""
       });
       setShowEmployeePassword(false);
       setActionMessage({ type: "success", text: "Employee added successfully! Supabase Auth login account active with CLIENT role." });
@@ -463,14 +532,79 @@ export const AdminDashboardPage: React.FC = () => {
 
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
+    const targetTenantId = role === "PLATFORM_ADMIN" ? groupTenantId : (user?.tenantId || groupForm.tenantId);
+    if (!targetTenantId) {
+      setActionMessage({ type: "error", text: "Please select an organization before creating a Corporate Group." });
+      return;
+    }
+    if (!groupForm.name.trim()) {
+      setActionMessage({ type: "error", text: "Group name is required." });
+      return;
+    }
     setSubmitting(true);
     try {
-      await createAdminCompanyGroup(groupForm);
-      setGroupForm({ name: "", description: "", tenantId: tenants[0]?.id || "" });
-      setActionMessage({ type: "success", text: "Company group created successfully!" });
+      await createAdminCompanyGroup({
+        name: groupForm.name.trim(),
+        description: groupForm.description.trim() || undefined,
+        tenantId: targetTenantId
+      });
+      setGroupForm({
+        name: "",
+        description: "",
+        tenantId: targetTenantId
+      });
+      setActionMessage({ type: "success", text: "Corporate group created successfully!" });
       await loadData();
     } catch (err: any) {
-      setActionMessage({ type: "error", text: err.message || "Failed to create company group." });
+      setActionMessage({ type: "error", text: err.message || "Failed to create corporate group." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAttachCompany = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAttachClientId || !selectedAttachGroupId) {
+      setActionMessage({ type: "error", text: "Please select both a Corporate Group and a Client Company." });
+      return;
+    }
+    const targetGroup = companyGroups.find((g) => g.id === selectedAttachGroupId);
+    const targetClient = clients.find((c) => c.id === selectedAttachClientId);
+    if (!targetGroup || !targetClient) {
+      setActionMessage({ type: "error", text: "Invalid Corporate Group or Client Company selection." });
+      return;
+    }
+    if (targetClient.tenantId !== targetGroup.tenantId) {
+      setActionMessage({
+        type: "error",
+        text: `Tenant mismatch: "${targetClient.companyName}" (${targetClient.tenant?.name || targetClient.tenantId}) does not match Corporate Group "${targetGroup.name}" (${targetGroup.tenant?.name || targetGroup.tenantId}). They must belong to the same organization.`
+      });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await assignClientCompanyGroup(selectedAttachClientId, selectedAttachGroupId);
+      setShowAttachCompany(false);
+      setSelectedAttachClientId("");
+      setSelectedAttachGroupId("");
+      setActionMessage({ type: "success", text: "Client company attached to Corporate Group successfully!" });
+      await loadData();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to attach company to group." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDetachCompany = async (clientId: string, companyName: string) => {
+    if (!window.confirm(`Are you sure you want to remove "${companyName}" from this corporate group?`)) return;
+    setSubmitting(true);
+    try {
+      await assignClientCompanyGroup(clientId, null);
+      setActionMessage({ type: "success", text: `"${companyName}" removed from corporate group.` });
+      await loadData();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to remove company from group." });
     } finally {
       setSubmitting(false);
     }
@@ -513,18 +647,23 @@ export const AdminDashboardPage: React.FC = () => {
             status: editForm.status,
             role: editForm.role as Role,
             previousRole: editingUser.role,
-            clientId: editingUser.client?.id || undefined,
+            clientId: editingUser.clientEmployee?.clientId || editingUser.client?.id || undefined,
             employeeRole: editForm.employeeRole as ClientEmployeeRole | undefined,
-            previousEmployeeRole: editingUser.client?.employeeRole || undefined,
+            previousEmployeeRole: editingUser.clientEmployee?.employeeRole || editingUser.client?.employeeRole || undefined,
             targetUserTenantId: editingUser.tenantId || undefined,
             actorUserId: user?.id || null,
             actorUserRole: role,
           });
         } else {
-          await updateAdminUser(editingUser.id, editForm);
+          await updateAdminUser(editingUser.id, editForm, user?.id, role);
         }
       }
-      if (editingClient) await updateAdminClient(editingClient.id, editForm);
+      if (editingClient) {
+        await updateAdminClient(editingClient.id, {
+          ...editForm,
+          companyGroupId: editForm.companyGroupId || null,
+        });
+      }
       if (editingTenant) await updateAdminTenant(editingTenant.id, editForm);
       setEditingWarehouse(null);
       setEditingUser(null);
@@ -535,6 +674,72 @@ export const AdminDashboardPage: React.FC = () => {
       await refreshUsers();
     } catch (err: any) {
       setActionMessage({ type: "error", text: err.message || "Failed to update record." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpdateClientEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingClientEmployee) return;
+    setSubmitting(true);
+    try {
+      await updateClientEmployeeSecure({
+        clientEmployeeId: editingClientEmployee.id,
+        newClientId: editingClientEmployee.clientId,
+        contactPerson: editingClientEmployee.contactPerson.trim(),
+        mobile: editingClientEmployee.mobile.trim(),
+        email: editingClientEmployee.email.trim(),
+        newEmployeeRole: editingClientEmployee.employeeRole,
+        newStatus: editingClientEmployee.status
+      });
+      setActionMessage({ type: "success", text: `Client employee "${editingClientEmployee.contactPerson}" updated successfully.` });
+      setEditingClientEmployee(null);
+      await loadData();
+      await refreshUsers();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to update client employee." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleToggleClientEmployeeStatus = async (emp: any) => {
+    const nextStatus: UserStatus = emp.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    const confirmMsg = emp.status === "ACTIVE"
+      ? `Deactivate client employee "${emp.contactPerson}"? Linked login sessions will be blocked immediately.`
+      : `Reactivate client employee "${emp.contactPerson}"?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setSubmitting(true);
+    try {
+      await updateClientEmployeeSecure({
+        clientEmployeeId: emp.id,
+        newStatus: nextStatus
+      });
+      setActionMessage({ type: "success", text: `Employee "${emp.contactPerson}" is now ${nextStatus}.` });
+      await loadData();
+      await refreshUsers();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to update status." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSendResetEmail = async (email?: string | null, name: string = "User") => {
+    if (!email) {
+      setActionMessage({ type: "error", text: `Cannot send reset email: ${name} does not have an email registered.` });
+      return;
+    }
+    if (!window.confirm(`Send password reset email to ${email} for ${name}?`)) return;
+
+    setSubmitting(true);
+    try {
+      await sendPasswordResetEmail(email);
+      setActionMessage({ type: "success", text: `Password reset email sent to ${email}.` });
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err.message || "Failed to send reset email." });
     } finally {
       setSubmitting(false);
     }
@@ -630,7 +835,7 @@ export const AdminDashboardPage: React.FC = () => {
             <Button
               size="sm"
               onClick={() => {
-                setSelectedWarehouseTenantId(tenants[0]?.id || "");
+                setSelectedWarehouseTenantId(user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || "");
                 setShowAddWarehouseEmployee(true);
               }}
               className="flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white"
@@ -875,7 +1080,6 @@ export const AdminDashboardPage: React.FC = () => {
                 <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
                 <option value="ACCOUNTANT">Accountant</option>
                 <option value="ACCOUNTS_TEAM">Accounts Team</option>
-                <option value="PRODUCT_RECEIVER">Product Receiver</option>
               </select>
             )}
 
@@ -1079,23 +1283,34 @@ export const AdminDashboardPage: React.FC = () => {
                         {new Date(u.createdAt).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => {
-                            setEditingUser(u);
-                            setEditForm({
-                              name: u.name,
-                              email: u.email || "",
-                              mobile: u.mobile || "",
-                              role: u.role,
-                              status: u.status,
-                              tenantId: u.tenantId || ""
-                            });
-                          }}
-                          className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
-                          title="Edit platform admin"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={() => {
+                              setEditingUser(u);
+                              setEditForm({
+                                name: u.name,
+                                email: u.email || "",
+                                mobile: u.mobile || "",
+                                role: u.role,
+                                status: u.status,
+                                tenantId: u.tenantId || ""
+                              });
+                            }}
+                            className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                            title="Edit platform admin"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          {u.email && (
+                            <button
+                              onClick={() => handleSendResetEmail(u.email, u.name)}
+                              className="p-1.5 rounded-lg hover:bg-amber-950/60 text-slate-400 hover:text-amber-400 transition-colors"
+                              title="Send password reset email"
+                            >
+                              <Key className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1139,7 +1354,7 @@ export const AdminDashboardPage: React.FC = () => {
                     size="sm"
                     variant="outline"
                     onClick={() => {
-                      setSelectedWarehouseTenantId(tenantId === "system" ? (tenants[0]?.id || "") : tenantId);
+                      setSelectedWarehouseTenantId(tenantId === "system" ? (user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || "") : tenantId);
                       setShowAddWarehouseEmployee(true);
                     }}
                     className="text-xs flex items-center gap-1 self-start sm:self-auto"
@@ -1201,23 +1416,34 @@ export const AdminDashboardPage: React.FC = () => {
                             {new Date(emp.createdAt).toLocaleDateString()}
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            <button
-                              onClick={() => {
-                                setEditingUser(emp);
-                                setEditForm({
-                                  name: emp.name,
-                                  email: emp.email || "",
-                                  mobile: emp.mobile || "",
-                                  role: emp.role,
-                                  status: emp.status,
-                                  tenantId: emp.tenantId || ""
-                                });
-                              }}
-                              className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
-                              title="Edit warehouse employee"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  setEditingUser(emp);
+                                  setEditForm({
+                                    name: emp.name,
+                                    email: emp.email || "",
+                                    mobile: emp.mobile || "",
+                                    role: emp.role,
+                                    status: emp.status,
+                                    tenantId: emp.tenantId || ""
+                                  });
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                                title="Edit warehouse employee"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              {emp.email && (
+                                <button
+                                  onClick={() => handleSendResetEmail(emp.email, emp.name)}
+                                  className="p-1.5 rounded-lg hover:bg-amber-950/60 text-slate-400 hover:text-amber-400 transition-colors"
+                                  title="Send password reset email"
+                                >
+                                  <Key className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1241,6 +1467,21 @@ export const AdminDashboardPage: React.FC = () => {
             </Card>
           ) : (
             groupedClientCompanies.map(({ companyName, items }) => {
+              const allEmployees: any[] = items.flatMap((i) =>
+                (i.employees && i.employees.length > 0
+                  ? (i.employees as any[])
+                  : [
+                      {
+                        id: i.id,
+                        contactPerson: i.contactPerson,
+                        employeeRole: i.employeeRole || "RECEIVER",
+                        mobile: i.mobile,
+                        email: i.email,
+                        shippingAddress: i.shippingAddress,
+                        status: i.status
+                      }
+                    ])
+              );
               const totalOrders = items.reduce((sum, item) => sum + item.orders.length, 0);
               const primaryGst = items.find((i) => i.gstNumber)?.gstNumber;
 
@@ -1262,28 +1503,52 @@ export const AdminDashboardPage: React.FC = () => {
                               GSTIN: {primaryGst}
                             </span>
                           )}
-                          <span>{items.length} employee account(s)</span>
+                          <span>{allEmployees.length} employee account(s)</span>
                           <span>• {totalOrders} total orders</span>
                           <span>• Tenant: {items[0]?.tenant?.name || "Global"}</span>
                         </div>
                       </div>
                     </div>
 
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setEmployeeForm((prev) => ({
-                          ...prev,
-                          companyName: companyName,
-                          tenantId: items[0]?.tenantId || prev.tenantId
-                        }));
-                        setShowAddEmployee(true);
-                      }}
-                      className="text-xs flex items-center gap-1 self-start sm:self-auto"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Add Employee
-                    </Button>
+                    <div className="flex items-center gap-2 self-start sm:self-auto">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const targetClient = items[0];
+                          setEditingClient(targetClient);
+                          setEditForm({
+                            companyName: targetClient?.companyName || companyName,
+                            gstNumber: targetClient?.gstNumber || "",
+                            billingAddress: targetClient?.billingAddress || "",
+                            shippingAddress: targetClient?.shippingAddress || "",
+                            companyGroupId: targetClient?.companyGroupId || "",
+                            status: targetClient?.status || "ACTIVE"
+                          });
+                        }}
+                        className="text-xs flex items-center gap-1"
+                        title="Edit company profile, GSTIN, or group affiliation"
+                      >
+                        <Pencil className="w-3.5 h-3.5" /> Edit Company
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const targetClient = items[0];
+                          setEmployeeForm((prev) => ({
+                            ...prev,
+                            clientId: targetClient?.id || "",
+                            companyName: companyName,
+                            tenantId: targetClient?.tenantId || prev.tenantId
+                          }));
+                          setShowAddEmployee(true);
+                        }}
+                        className="text-xs flex items-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Employee
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto">
@@ -1301,7 +1566,7 @@ export const AdminDashboardPage: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
-                        {items.map((emp) => (
+                        {allEmployees.map((emp: any) => (
                           <tr key={emp.id} className="hover:bg-slate-800/20 transition-colors">
                             <td className="px-4 py-2.5 font-semibold text-white flex items-center gap-2">
                               <UserCheck className="w-3.5 h-3.5 text-slate-400" />
@@ -1319,27 +1584,57 @@ export const AdminDashboardPage: React.FC = () => {
                             <td className="px-4 py-2.5 font-mono text-slate-300">{emp.mobile}</td>
                             <td className="px-4 py-2.5 text-slate-400">{emp.email || "—"}</td>
                             <td className="px-4 py-2.5 text-slate-300 max-w-xs truncate">
-                              {emp.shippingAddress}
+                              {emp.shippingAddress || items[0]?.shippingAddress || items[0]?.billingAddress}
                             </td>
                             <td className="px-4 py-2.5 text-center font-bold text-white">
-                              {emp.orders.length}
+                              {items[0]?.orders?.length || 0}
                             </td>
                             <td className="px-4 py-2.5">
                               <Badge variant={emp.status === "ACTIVE" ? "success" : "default"}>
-                                {emp.status}
+                                {emp.status || "ACTIVE"}
                               </Badge>
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <button
-                                onClick={() => {
-                                  setEditingClient(emp);
-                                  setEditForm({ companyName: emp.companyName, contactPerson: emp.contactPerson, mobile: emp.mobile, email: emp.email || "", status: emp.status, shippingAddress: emp.shippingAddress, employeeRole: emp.employeeRole || "RECEIVER" });
-                                }}
-                                className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
-                                title="Edit client"
-                              >
-                                <Pencil className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  onClick={() => {
+                                    setEditingClientEmployee({
+                                      id: emp.id,
+                                      clientId: emp.clientId || items[0]?.id || "",
+                                      tenantId: items[0]?.tenantId || items[0]?.tenant?.id,
+                                      contactPerson: emp.contactPerson,
+                                      mobile: emp.mobile,
+                                      email: emp.email || "",
+                                      employeeRole: emp.employeeRole || "RECEIVER",
+                                      status: emp.status || "ACTIVE"
+                                    });
+                                  }}
+                                  className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
+                                  title="Edit client employee"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                {emp.email && (
+                                  <button
+                                    onClick={() => handleSendResetEmail(emp.email, emp.contactPerson)}
+                                    className="p-1.5 rounded-lg hover:bg-amber-950/60 text-slate-400 hover:text-amber-400 transition-colors"
+                                    title="Send password reset email"
+                                  >
+                                    <Key className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleToggleClientEmployeeStatus(emp)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                                    emp.status === "ACTIVE"
+                                      ? "text-rose-400 hover:text-rose-300 bg-rose-950/30 border-rose-800/40"
+                                      : "text-emerald-400 hover:text-emerald-300 bg-emerald-950/30 border-emerald-800/40"
+                                  }`}
+                                  title={emp.status === "ACTIVE" ? "Deactivate employee" : "Reactivate employee"}
+                                >
+                                  {emp.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1356,144 +1651,217 @@ export const AdminDashboardPage: React.FC = () => {
       {/* TAB 4: CORPORATE GROUPS */}
       {activeTab === "groups" && (
         <div className="space-y-6">
-          {/* Create Group Form Card */}
-          <Card className="p-5 bg-slate-900/60 border-slate-800">
-            <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-              <Plus className="w-4 h-4 text-indigo-400" />
-              Create New Corporate Group
-            </h3>
-            <form onSubmit={handleCreateGroup} className="grid gap-3 md:grid-cols-[1fr_1fr_1.5fr_auto] md:items-end">
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Organization
-                </label>
+          {/* Explicit Tenant Context Selector for PLATFORM_ADMIN */}
+          {role === "PLATFORM_ADMIN" && (
+            <Card className="p-4 bg-slate-900/80 border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-lg shadow-indigo-950/20">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                  <Briefcase className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Corporate Group Tenant Context</h3>
+                  <p className="text-xs text-slate-400">
+                    Select an organization to manage its corporate groups, create new groups, or attach client companies
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-slate-300 whitespace-nowrap">Tenant:</label>
                 <select
-                  value={groupForm.tenantId}
-                  onChange={(e) => setGroupForm({ ...groupForm, tenantId: e.target.value })}
-                  required
-                  className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  value={groupTenantId}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setGroupTenantId(val);
+                    setGroupForm((prev) => ({ ...prev, tenantId: val }));
+                  }}
+                  className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 min-w-[220px]"
                 >
-                  {tenants.length === 0 && (
-                    <option value="" disabled>No organizations found</option>
-                  )}
+                  <option value="">[ Select Tenant ▼ ]</option>
                   {tenants.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.name}
+                      {t.name} ({t.slug})
                     </option>
                   ))}
                 </select>
               </div>
+            </Card>
+          )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Group Name
-                </label>
-                <input
-                  type="text"
-                  value={groupForm.name}
-                  onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
-                  placeholder="e.g. Apex Retail Holding"
-                  required
-                  className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">
-                  Description
-                </label>
-                <input
-                  type="text"
-                  value={groupForm.description}
-                  onChange={(e) => setGroupForm({ ...groupForm, description: e.target.value })}
-                  placeholder="Corporate conglomerate group"
-                  className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-              </div>
-
-              <Button type="submit" isLoading={submitting} className="text-xs">
-                Create Group
-              </Button>
-            </form>
-          </Card>
-
-          {/* List of Corporate Groups */}
-          {filteredGroups.length === 0 ? (
+          {/* If PLATFORM_ADMIN has not selected a tenant, show prompt */}
+          {role === "PLATFORM_ADMIN" && !effectiveGroupTenantId ? (
             <Card className="p-12 text-center text-slate-500 bg-slate-900/60 border-slate-800">
               <Layers className="w-10 h-10 mx-auto text-slate-600 mb-2" />
-              <p className="text-sm font-medium">No corporate groups found</p>
-              <p className="text-xs text-slate-400">Create a group above to get started</p>
+              <p className="text-sm font-medium text-slate-300">Please select a Tenant</p>
+              <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
+                Select an organization from the Tenant dropdown above to view, create, and manage its corporate groups and client company assignments.
+              </p>
             </Card>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {filteredGroups.map((g) => {
-                const companiesInGroup = groupGroupClients(g.clients);
-                return (
-                  <Card key={g.id} className="p-5 border-slate-800 bg-slate-900/60">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="font-bold text-base text-white">{g.name}</h4>
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
-                        {companiesInGroup.length} {companiesInGroup.length === 1 ? "company" : "companies"}
-                      </span>
+            <>
+              {/* Create Group Form Card */}
+              <Card className="p-5 bg-slate-900/60 border-slate-800">
+                <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-indigo-400" />
+                  Create New Corporate Group
+                </h3>
+                <form onSubmit={handleCreateGroup} className="grid gap-3 md:grid-cols-[1fr_1fr_1.5fr_auto] md:items-end">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 mb-1">
+                      Organization (Context)
+                    </label>
+                    <div className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-indigo-300 font-medium flex items-center gap-1.5">
+                      <Briefcase className="w-3.5 h-3.5 text-indigo-400" />
+                      {tenants.find((t) => t.id === effectiveGroupTenantId)?.name || effectiveGroupTenantId}
                     </div>
-                    <p className="text-xs text-slate-400 mb-4">{g.description || "No description provided."}</p>
+                  </div>
 
-                    <div className="rounded-xl border border-slate-800 bg-slate-800/40 p-3">
-                      <p className="text-[11px] font-semibold text-slate-300 mb-2 flex items-center gap-1.5">
-                        <Store className="w-3.5 h-3.5 text-indigo-400" />
-                        Associated Companies
-                      </p>
-                      {companiesInGroup.length === 0 ? (
-                        <p className="text-xs text-slate-500">No companies attached yet.</p>
-                      ) : (
-                        <div className="space-y-2 max-h-52 overflow-y-auto">
-                          {companiesInGroup.map(({ companyName, employees }) => {
-                            const hasGst = employees.find((e) => e.gstNumber)?.gstNumber;
-                            return (
-                              <div
-                                key={companyName}
-                                className="px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700/60"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-semibold text-sm text-white">{companyName}</span>
-                                  <span className="text-[10px] text-slate-400">
-                                    {employees.length} {employees.length === 1 ? "employee" : "employees"}
-                                  </span>
-                                </div>
-                                {hasGst && (
-                                  <span className="text-[10px] font-mono text-teal-400 mt-0.5 block">
-                                    GSTIN: {hasGst}
-                                  </span>
-                                )}
-                                <div className="flex flex-wrap gap-1 mt-1.5">
-                                  {employees.slice(0, 4).map((emp) => (
-                                    <span
-                                      key={emp.id}
-                                      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
-                                    >
-                                      <UserCheck className="w-2.5 h-2.5 text-slate-500" />
-                                      {emp.contactPerson}
-                                      {emp.employeeRole && (
-                                        <span className="text-slate-500 font-mono">· {emp.employeeRole}</span>
-                                      )}
-                                    </span>
-                                  ))}
-                                  {employees.length > 4 && (
-                                    <span className="text-[10px] text-slate-500 italic">
-                                      +{employees.length - 4} more
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 mb-1">
+                      Group Name
+                    </label>
+                    <input
+                      type="text"
+                      value={groupForm.name}
+                      onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
+                      placeholder="e.g. Apex Retail Holding"
+                      required
+                      className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 mb-1">
+                      Description
+                    </label>
+                    <input
+                      type="text"
+                      value={groupForm.description}
+                      onChange={(e) => setGroupForm({ ...groupForm, description: e.target.value })}
+                      placeholder="Corporate conglomerate group"
+                      className="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <Button type="submit" isLoading={submitting} className="text-xs">
+                    Create Group
+                  </Button>
+                </form>
+              </Card>
+
+              {/* List of Corporate Groups */}
+              {filteredGroups.length === 0 ? (
+                <Card className="p-12 text-center text-slate-500 bg-slate-900/60 border-slate-800">
+                  <Layers className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+                  <p className="text-sm font-medium">No corporate groups found for this organization</p>
+                  <p className="text-xs text-slate-400">Create a group above to get started</p>
+                </Card>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {filteredGroups.map((g) => {
+                    const companiesInGroup = groupGroupClients(g.clients);
+                    return (
+                      <Card key={g.id} className="p-5 border-slate-800 bg-slate-900/60">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-bold text-base text-white">{g.name}</h4>
+                              {g.tenant && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-950/80 text-purple-300 border border-purple-800/80">
+                                  <Briefcase className="w-2.5 h-2.5" />
+                                  {g.tenant.name}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
+                              {companiesInGroup.length} {companiesInGroup.length === 1 ? "company" : "companies"}
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setSelectedAttachGroupId(g.id);
+                                setSelectedAttachClientId("");
+                                setShowAttachCompany(true);
+                              }}
+                              className="text-[11px] h-7 px-2.5 flex items-center gap-1 border-indigo-700/60 text-indigo-300 hover:bg-indigo-950/60"
+                            >
+                              <Plus className="w-3 h-3" /> Attach Company
+                            </Button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
+                        <p className="text-xs text-slate-400 mb-4">{g.description || "No description provided."}</p>
+
+                        <div className="rounded-xl border border-slate-800 bg-slate-800/40 p-3">
+                          <p className="text-[11px] font-semibold text-slate-300 mb-2 flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 text-indigo-400" />
+                            Associated Companies
+                          </p>
+                          {companiesInGroup.length === 0 ? (
+                            <p className="text-xs text-slate-500">No companies attached yet.</p>
+                          ) : (
+                            <div className="space-y-2 max-h-52 overflow-y-auto">
+                              {companiesInGroup.map(({ companyName, companyId, employees }) => {
+                                const hasGst = employees.find((e) => e.gstNumber)?.gstNumber;
+                                return (
+                                  <div
+                                    key={companyId || companyName}
+                                    className="px-3 py-2 rounded-lg bg-slate-900/70 border border-slate-700/60"
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <span className="font-semibold text-sm text-white">{companyName}</span>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] text-slate-400">
+                                          {employees.length} {employees.length === 1 ? "employee" : "employees"}
+                                        </span>
+                                        {companyId && (
+                                          <button
+                                            onClick={() => handleDetachCompany(companyId, companyName)}
+                                            className="text-[10px] text-red-400 hover:text-red-300 px-1.5 py-0.5 rounded bg-red-950/40 border border-red-800/60 hover:bg-red-900/50 transition-colors"
+                                            title="Remove company from corporate group"
+                                          >
+                                            Detach
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {hasGst && (
+                                      <span className="text-[10px] font-mono text-teal-400 mt-0.5 block">
+                                        GSTIN: {hasGst}
+                                      </span>
+                                    )}
+                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                      {employees.slice(0, 4).map((emp) => (
+                                        <span
+                                          key={emp.id}
+                                          className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300"
+                                        >
+                                          <UserCheck className="w-2.5 h-2.5 text-slate-500" />
+                                          {emp.contactPerson}
+                                          {emp.employeeRole && (
+                                            <span className="text-slate-500 font-mono">· {emp.employeeRole}</span>
+                                          )}
+                                        </span>
+                                      ))}
+                                      {employees.length > 4 && (
+                                        <span className="text-[10px] text-slate-500 italic">
+                                          +{employees.length - 4} more
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -1896,7 +2264,7 @@ export const AdminDashboardPage: React.FC = () => {
           await loadData();
           await refreshUsers();
         }}
-        tenantId={selectedWarehouseTenantId || (tenants[0]?.id || "")}
+        tenantId={selectedWarehouseTenantId || user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || ""}
         isPlatformAdmin={role === "PLATFORM_ADMIN"}
         allTenants={tenants}
       />
@@ -2058,20 +2426,28 @@ export const AdminDashboardPage: React.FC = () => {
             <label className="block text-xs font-semibold text-slate-300 mb-1">
               Client Company *
             </label>
-            <input
-              type="text"
-              value={employeeForm.companyName}
-              onChange={(e) => setEmployeeForm({ ...employeeForm, companyName: e.target.value })}
-              placeholder="e.g. Apex Hypermarket"
-              list="company-names-list"
+            <select
+              value={employeeForm.clientId}
+              onChange={(e) => {
+                const selectedId = e.target.value;
+                const found = clients.find((c) => c.id === selectedId);
+                setEmployeeForm({
+                  ...employeeForm,
+                  clientId: selectedId,
+                  companyName: found?.companyName || "",
+                  tenantId: found?.tenantId || ""
+                });
+              }}
               required
               className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
-            <datalist id="company-names-list">
-              {uniqueCompanyNames.map((name) => (
-                <option key={name} value={name} />
+            >
+              <option value="">Select a Client Company...</option>
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.companyName} {c.tenant?.name ? `(${c.tenant.name})` : ""}
+                </option>
               ))}
-            </datalist>
+            </select>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -2194,6 +2570,272 @@ export const AdminDashboardPage: React.FC = () => {
       </Modal>
 
       <Modal
+        isOpen={showAttachCompany}
+        onClose={() => {
+          setShowAttachCompany(false);
+          setSelectedAttachGroupId("");
+          setSelectedAttachClientId("");
+        }}
+        title="Attach Company to Corporate Group"
+        description="Select an existing Client Company to attach to the corporate group."
+      >
+        <form onSubmit={handleAttachCompany} className="space-y-4">
+          {(() => {
+            const targetGroup = companyGroups.find((g) => g.id === selectedAttachGroupId);
+            return (
+              <>
+                {selectedAttachGroupId && targetGroup ? (
+                  <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-2">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-semibold">
+                        Corporate Group:
+                      </span>
+                      <span className="text-sm font-bold text-white">{targetGroup.name}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-semibold">
+                        Tenant:
+                      </span>
+                      <span className="text-xs font-medium text-purple-300 flex items-center gap-1.5 font-mono">
+                        <Briefcase className="w-3.5 h-3.5 text-purple-400" />
+                        {targetGroup.tenant?.name || "Organization"} ({targetGroup.tenantId})
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Corporate Group *</label>
+                    <select
+                      value={selectedAttachGroupId}
+                      onChange={(e) => {
+                        setSelectedAttachGroupId(e.target.value);
+                        setSelectedAttachClientId("");
+                      }}
+                      required
+                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="">Select Corporate Group...</option>
+                      {companyGroups
+                        .filter((g) => !effectiveGroupTenantId || g.tenantId === effectiveGroupTenantId)
+                        .map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name} ({g.tenant?.name || "Organization"})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Company *</label>
+                  <select
+                    value={selectedAttachClientId}
+                    onChange={(e) => setSelectedAttachClientId(e.target.value)}
+                    required
+                    disabled={!selectedAttachGroupId}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+                  >
+                    <option value="">
+                      {!selectedAttachGroupId
+                        ? "Select a Corporate Group first..."
+                        : matchingAttachClients.length === 0
+                        ? `No companies found in ${targetGroup?.tenant?.name || "this organization"}`
+                        : `Select Client Company in ${targetGroup?.tenant?.name || "organization"}...`}
+                    </option>
+                    {matchingAttachClients.map((c) => {
+                      const isAlreadyInSelected = Boolean(selectedAttachGroupId && c.companyGroupId === selectedAttachGroupId);
+                      return (
+                        <option key={c.id} value={c.id} disabled={isAlreadyInSelected}>
+                          {c.companyName} {c.companyGroupId ? (isAlreadyInSelected ? "(Already in this group)" : "(In another group)") : "(Unassigned)"}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {selectedAttachGroupId && matchingAttachClients.length === 0 && (
+                    <p className="text-[11px] text-amber-400 mt-1.5">
+                      No client companies exist in organization "{targetGroup?.tenant?.name || "selected organization"}". Create a client company under this organization first.
+                    </p>
+                  )}
+                </div>
+              </>
+            );
+          })()}
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowAttachCompany(false);
+                setSelectedAttachGroupId("");
+                setSelectedAttachClientId("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" isLoading={submitting}>
+              Attach Company
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* MODAL: EDIT CLIENT EMPLOYEE */}
+      <Modal
+        isOpen={Boolean(editingClientEmployee)}
+        onClose={() => setEditingClientEmployee(null)}
+        title={`Edit ${editingClientEmployee?.contactPerson || "Client Employee"}`}
+        description="Update contact details, designated role, status, or reassign company within this organization."
+      >
+        {editingClientEmployee && (
+          <form onSubmit={handleUpdateClientEmployee} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Assigned Client Company *
+              </label>
+              <select
+                value={editingClientEmployee.clientId}
+                onChange={(e) =>
+                  setEditingClientEmployee({
+                    ...editingClientEmployee,
+                    clientId: e.target.value
+                  })
+                }
+                required
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {clients
+                  .filter((c) => !editingClientEmployee.tenantId || c.tenantId === editingClientEmployee.tenantId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.companyName}
+                    </option>
+                  ))}
+              </select>
+              <span className="text-[10px] text-slate-500 mt-1 block">
+                Reassigning company preserves employee history and maintains the existing user login account.
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Contact Person *
+                </label>
+                <input
+                  type="text"
+                  value={editingClientEmployee.contactPerson}
+                  onChange={(e) =>
+                    setEditingClientEmployee({
+                      ...editingClientEmployee,
+                      contactPerson: e.target.value
+                    })
+                  }
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Designated Role *
+                </label>
+                <select
+                  value={editingClientEmployee.employeeRole}
+                  onChange={(e) =>
+                    setEditingClientEmployee({
+                      ...editingClientEmployee,
+                      employeeRole: e.target.value as ClientEmployeeRole
+                    })
+                  }
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                >
+                  <option value="RECEIVER">RECEIVER</option>
+                  <option value="STORE">STORE</option>
+                  <option value="ACCOUNT">ACCOUNT</option>
+                  <option value="MANAGER">MANAGER</option>
+                  <option value="GM">GM</option>
+                  <option value="MD">MD</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Mobile Number *
+                </label>
+                <input
+                  type="tel"
+                  value={editingClientEmployee.mobile}
+                  onChange={(e) =>
+                    setEditingClientEmployee({
+                      ...editingClientEmployee,
+                      mobile: e.target.value
+                    })
+                  }
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={editingClientEmployee.email}
+                  onChange={(e) =>
+                    setEditingClientEmployee({
+                      ...editingClientEmployee,
+                      email: e.target.value
+                    })
+                  }
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Status
+              </label>
+              <select
+                value={editingClientEmployee.status}
+                onChange={(e) =>
+                  setEditingClientEmployee({
+                    ...editingClientEmployee,
+                    status: e.target.value as UserStatus
+                  })
+                }
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+              >
+                <option value="ACTIVE">ACTIVE</option>
+                <option value="INACTIVE">INACTIVE</option>
+              </select>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEditingClientEmployee(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" size="sm" isLoading={submitting}>
+                Save Changes
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
         isOpen={Boolean(editingWarehouse || editingUser || editingClient || editingTenant)}
         onClose={() => {
           setEditingWarehouse(null);
@@ -2201,7 +2843,7 @@ export const AdminDashboardPage: React.FC = () => {
           setEditingClient(null);
           setEditingTenant(null);
         }}
-        title={`Edit ${editingWarehouse ? "Warehouse" : editingUser ? "User" : editingClient ? "Client" : "Organization"}`}
+        title={`Edit ${editingWarehouse ? "Warehouse" : editingUser ? "User" : editingClient ? "Client Company" : "Organization"}`}
         description="Update the record and save the changes."
       >
         <form onSubmit={handleUpdateRecord} className="space-y-4">
@@ -2224,33 +2866,33 @@ export const AdminDashboardPage: React.FC = () => {
                   <input value={editForm.companyName || ""} onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Contact Person</label>
-                  <input value={editForm.contactPerson || ""} onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Mobile Number</label>
-                  <input value={editForm.mobile || ""} onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Email</label>
-                  <input type="email" value={editForm.email || ""} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">GSTIN</label>
+                  <input value={editForm.gstNumber || ""} onChange={(e) => setEditForm({ ...editForm, gstNumber: e.target.value })} placeholder="33AABCK1234F1Z5" className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono uppercase" />
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Role in Company *</label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Billing Address</label>
+                <textarea value={editForm.billingAddress || ""} onChange={(e) => setEditForm({ ...editForm, billingAddress: e.target.value })} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-xs text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Shipping Address</label>
+                <textarea value={editForm.shippingAddress || ""} onChange={(e) => setEditForm({ ...editForm, shippingAddress: e.target.value })} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-2.5 text-xs text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Corporate Group</label>
                 <select
-                  value={editForm.employeeRole || "RECEIVER"}
-                  onChange={(e) => setEditForm({ ...editForm, employeeRole: e.target.value })}
+                  value={editForm.companyGroupId || ""}
+                  onChange={(e) => setEditForm({ ...editForm, companyGroupId: e.target.value })}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 >
-                  <option value="RECEIVER">Receiver — Store Delivery Receiver</option>
-                  <option value="STORE">Store Incharge</option>
-                  <option value="ACCOUNT">Accountant</option>
-                  <option value="MANAGER">Store Manager</option>
-                  <option value="GM">General Manager (GM)</option>
-                  <option value="MD">Managing Director (MD)</option>
+                  <option value="">No Corporate Group</option>
+                  {companyGroups
+                    .filter((g) => !editingClient.tenantId || g.tenantId === editingClient.tenantId)
+                    .map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
                 </select>
               </div>
             </>
@@ -2292,7 +2934,6 @@ export const AdminDashboardPage: React.FC = () => {
                     <option value="WAREHOUSE_OWNER">Warehouse Owner</option>
                     <option value="ACCOUNTANT">Accountant</option>
                     <option value="ACCOUNTS_TEAM">Accounts Team</option>
-                    <option value="PRODUCT_RECEIVER">Product Receiver</option>
                   </>
                 )}
               </select>
@@ -2303,8 +2944,6 @@ export const AdminDashboardPage: React.FC = () => {
             <select value={editForm.status || "ACTIVE"} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
               <option value="ACTIVE">ACTIVE</option>
               <option value="INACTIVE">INACTIVE</option>
-              <option value="SUSPENDED">SUSPENDED</option>
-              <option value="DEACTIVATED">DEACTIVATED</option>
             </select>
           </div>
           {editingUser && editForm.role === "CLIENT" && (

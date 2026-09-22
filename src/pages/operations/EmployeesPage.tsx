@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchEmployees,
-  updateEmployee,
   updateEmployeeSecure,
   createAuditLogRecord
 } from "@/lib/services";
@@ -46,7 +45,6 @@ import {
 // Human-readable role labels
 const ROLE_LABELS: Record<string, string> = {
   WAREHOUSE_STAFF: "Warehouse Staff",
-  PRODUCT_RECEIVER: "Product Receiver",
   ACCOUNTS_TEAM: "Accounts Team",
   ACCOUNTANT: "Accountant",
   WAREHOUSE_MODERATOR: "Warehouse Moderator"
@@ -220,16 +218,16 @@ export const EmployeesPage: React.FC = () => {
     setFormError(null);
 
     try {
-      if (user?.id && role) {
-        await updateEmployeeSecure({
-          actorId: user.id,
-          actorRole: role,
-          targetId: employee.id,
-          status: newStatus as UserStatus
-        });
-      } else {
-        await updateEmployee(employee.id, { status: newStatus });
+      if (!user?.id || !role) {
+        throw new Error("You must be authenticated to update employee status");
       }
+
+      await updateEmployeeSecure({
+        actorId: user.id,
+        actorRole: role,
+        targetId: employee.id,
+        status: newStatus as UserStatus
+      });
 
       setSuccessMsg(`${employee.name} ${newStatus === "ACTIVE" ? "activated" : "deactivated"} successfully!`);
       await loadEmployees();

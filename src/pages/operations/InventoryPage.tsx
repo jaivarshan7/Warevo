@@ -95,7 +95,7 @@ export const InventoryPage: React.FC = () => {
 
     try {
       await createProductWithInitialStock({
-        tenantId: tenant?.id,
+        tenantId: tenant?.id || "",
         sku: newProduct.sku,
         name: newProduct.name,
         categoryId: newProduct.categoryId || undefined,

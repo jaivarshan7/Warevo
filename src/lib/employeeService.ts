@@ -20,6 +20,7 @@ export interface CreateEmployeeResult {
   success: boolean;
   userId?: string;
   clientId?: string;
+  employeeId?: string;
   error?: string;
   code?: string;
 }
@@ -55,7 +56,7 @@ export async function createEmployeeWithAuth(
     const accessToken = sessionData.session.access_token;
 
     // Call the Edge Function
-    const supabaseUrl = supabase.supabaseUrl;
+    const supabaseUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL || "";
     const edgeFunctionUrl = `${supabaseUrl}/functions/v1/create-employee`;
 
     const response = await fetch(edgeFunctionUrl, {
@@ -94,7 +95,8 @@ export async function createEmployeeWithAuth(
     return {
       success: true,
       userId: result.userId,
-      clientId: result.clientId
+      clientId: result.clientId,
+      employeeId: result.employeeId
     };
 
   } catch (error: any) {

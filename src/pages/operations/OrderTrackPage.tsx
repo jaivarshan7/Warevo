@@ -44,10 +44,11 @@ export const OrderTrackPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
 
   // Authorization check for CLIENT role users
-  // Only CLIENT users with employeeRole === "RECEIVER" can perform delivery verification
   const isClientReceiver =
-    role === "CLIENT" && user?.client?.employeeRole === "RECEIVER";
-  const hasVerificationAccess = role === "PRODUCT_RECEIVER" || isClientReceiver;
+    role === "CLIENT" &&
+    (user?.clientEmployee?.employeeRole === "RECEIVER" ||
+      user?.client?.employeeRole === "RECEIVER");
+  const hasVerificationAccess = isClientReceiver;
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,8 +169,11 @@ export const OrderTrackPage: React.FC = () => {
       // Convert item checkboxes to text-based responses for submitOrderVerification
       const responses =
         activeOrder.items?.map((item) => ({
-          text: item.product?.name || `Item ${item.product?.sku || item.id}`,
+          text: `${item.product?.name || "Item"} (Ordered Qty: ${item.quantity}, Verified Qty: ${item.quantity})`,
           checked: itemCheckboxes[item.id] || false,
+          orderItemId: item.id,
+          orderedQty: item.quantity,
+          verifiedQty: item.quantity,
         })) || [];
 
       await submitOrderVerification(
@@ -177,6 +181,7 @@ export const OrderTrackPage: React.FC = () => {
         "VERIFIED",
         responses,
         verificationComments,
+        null,
         user?.id,
       );
 
@@ -362,8 +367,10 @@ export const OrderTrackPage: React.FC = () => {
                       Client:{" "}
                       <strong className="text-slate-200">
                         {activeOrder.client?.companyName}
-                      </strong>{" "}
-                      ({activeOrder.client?.contactPerson})
+                      </strong>
+                      {(activeOrder.client?.employees?.[0]?.contactPerson || activeOrder.client?.contactPerson) && (
+                        <span> ({activeOrder.client?.employees?.[0]?.contactPerson || activeOrder.client?.contactPerson})</span>
+                      )}
                     </p>
                   </div>
 
@@ -373,14 +380,12 @@ export const OrderTrackPage: React.FC = () => {
                       disabled={!allItemsChecked}
                       className={`gap-1.5 self-start sm:self-auto ${
                         allItemsChecked
-                          ? "bg-emerald-600 hover:bg-emerald-500"
-                          : "bg-slate-700 cursor-not-allowed opacity-60"
+                          ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                          : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
                       }`}
                     >
                       <ClipboardCheck className="w-4 h-4" />
-                      {allItemsChecked
-                        ? "Verify Delivery"
-                        : `${checkedCount} of ${totalItems} items checked`}
+                      Verify Delivery Order
                     </Button>
                   ) : (
                     <div className="flex items-center gap-2 self-start sm:self-auto">
@@ -469,7 +474,7 @@ export const OrderTrackPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="w-4 h-4 text-indigo-400" />
                     <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                      Delivery Item Checklist
+                      Verify Delivery Order
                     </span>
                   </div>
                   <span className="text-xs font-mono text-indigo-400 font-semibold">
@@ -477,43 +482,79 @@ export const OrderTrackPage: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="p-4 space-y-2">
-                  {activeOrder.items?.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/50 border border-slate-800"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={itemCheckboxes[item.id] || false}
-                        onChange={(e) =>
-                          handleToggleItemCheckbox(item.id, e.target.checked)
-                        }
-                        disabled={activeOrder.verificationStatus === "VERIFIED"}
-                        className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 focus:ring-offset-0"
-                      />
-                      <div className="flex-1">
-                        <p className="text-sm font-semibold text-white">
-                          {item.product?.name || "Product Item"}
-                        </p>
-                        <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
-                          <span>SKU: {item.product?.sku || "N/A"}</span>
-                          <span className="w-1 h-1 rounded-full bg-slate-600" />
-                          <span>
-                            Qty: {item.quantity} {item.product?.unit || "PCS"}
-                          </span>
-                        </p>
-                        <p className="text-[10px] text-slate-500 mt-1">
-                          Unit Price: ₹{Number(item.unitPrice).toFixed(2)}
-                        </p>
+                <div className="p-4 space-y-3">
+                  {activeOrder.items?.map((item) => {
+                    const isChecked = Boolean(itemCheckboxes[item.id]);
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          if (activeOrder.verificationStatus !== "VERIFIED") {
+                            handleToggleItemCheckbox(item.id, !isChecked);
+                          }
+                        }}
+                        className={`flex items-start gap-3.5 p-3.5 rounded-xl border transition-all select-none ${
+                          activeOrder.verificationStatus === "VERIFIED"
+                            ? "bg-slate-900/40 border-slate-800 cursor-default"
+                            : isChecked
+                              ? "bg-indigo-950/20 border-indigo-500/50 shadow-sm cursor-pointer"
+                              : "bg-slate-900/50 border-slate-800 hover:border-slate-700 cursor-pointer"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handleToggleItemCheckbox(item.id, e.target.checked);
+                          }}
+                          disabled={activeOrder.verificationStatus === "VERIFIED"}
+                          className="mt-1 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                        />
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-white">
+                            {item.product?.name || "Product Item"}
+                          </p>
+                          <div className="mt-1.5 grid grid-cols-2 gap-2 text-xs text-slate-400">
+                            <div>
+                              Ordered Qty: <strong className="text-white font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                            </div>
+                            <div>
+                              Verified Qty: <strong className="text-emerald-400 font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {activeOrder.items?.length === 0 && (
                     <div className="p-4 text-center text-sm text-slate-400">
                       No items in this order
                     </div>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-slate-800 bg-slate-950/30 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div>
+                    <span className="text-xs text-slate-400 font-medium">Verification Progress:</span>
+                    <p className="text-sm font-bold font-mono text-indigo-400">
+                      {checkedCount} / {totalItems} items verified
+                    </p>
+                  </div>
+                  {activeOrder.verificationStatus !== "VERIFIED" && (
+                    <Button
+                      onClick={handleOpenVerifyModal}
+                      disabled={!allItemsChecked}
+                      className={`gap-1.5 w-full sm:w-auto ${
+                        allItemsChecked
+                          ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950"
+                          : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
+                      }`}
+                    >
+                      <ClipboardCheck className="w-4 h-4" />
+                      Verify Delivery Order
+                    </Button>
                   )}
                 </div>
               </Card>
@@ -530,8 +571,8 @@ export const OrderTrackPage: React.FC = () => {
                       "N/A"}
                   </p>
                   <p className="text-[11px] text-slate-400 mt-2">
-                    Contact: {activeOrder.client?.contactPerson} •{" "}
-                    {activeOrder.client?.mobile}
+                    Contact: {activeOrder.client?.employees?.[0]?.contactPerson || activeOrder.client?.contactPerson || "N/A"} •{" "}
+                    {activeOrder.client?.employees?.[0]?.mobile || activeOrder.client?.mobile || "N/A"}
                   </p>
                 </Card>
 
@@ -588,51 +629,68 @@ export const OrderTrackPage: React.FC = () => {
               </div>
             )}
 
-            {/* Item Checklist */}
-            <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
-              <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-indigo-400" />
-                <span>
-                  Delivery Checklist ({checkedCount} of {totalItems} items)
+            {/* Item Checklist in Modal */}
+            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 text-xs">
+                <span className="font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                  <span>Verify Delivery Order</span>
+                </span>
+                <span className="font-mono font-semibold text-indigo-400">
+                  {checkedCount} / {totalItems} items verified
                 </span>
               </div>
-              <div className="space-y-1.5">
-                {activeOrder.items?.map((item) => (
-                  <label
-                    key={item.id}
-                    onClick={() =>
-                      handleToggleItemCheckbox(
-                        item.id,
-                        !(itemCheckboxes[item.id] || false),
-                      )
-                    }
-                    className={`flex items-start gap-2 text-xs cursor-pointer select-none ${
-                      activeOrder.verificationStatus === "VERIFIED"
-                        ? "opacity-50 cursor-not-allowed"
-                        : ""
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={itemCheckboxes[item.id] || false}
-                      onChange={() => {}}
-                      disabled={activeOrder.verificationStatus === "VERIFIED"}
-                      className="mt-0.5 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
-                    />
-                    <span>
-                      <span className="font-semibold text-white">
-                        {item.product?.name}
-                      </span>
-                      <span className="text-slate-500">
-                        {" "}
-                        • Qty: {item.quantity} {item.product?.unit}
-                      </span>
-                    </span>
-                  </label>
-                ))}
+
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {activeOrder.items?.map((item) => {
+                  const isChecked = Boolean(itemCheckboxes[item.id]);
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() =>
+                        handleToggleItemCheckbox(
+                          item.id,
+                          !isChecked,
+                        )
+                      }
+                      className={`p-3 rounded-lg border text-xs cursor-pointer select-none transition-all flex items-start gap-3 ${
+                        isChecked
+                          ? "bg-indigo-950/30 border-indigo-500/60 shadow-sm"
+                          : "bg-slate-950/40 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleItemCheckbox(item.id, e.target.checked);
+                        }}
+                        className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                      />
+                      <div className="flex-1 space-y-1">
+                        <span className="font-semibold text-white block text-sm">
+                          {item.product?.name || "Order Item"}
+                        </span>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-0.5">
+                          <div>
+                            Ordered Qty: <strong className="text-slate-200 font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                          </div>
+                          <div>
+                            Verified Qty: <strong className="text-emerald-400 font-mono">{item.quantity}</strong> {item.product?.unit || "PCS"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-500">
-                All items must be checked to complete verification.
+
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
+                <span className="text-slate-400 font-medium">Verification Progress:</span>
+                <span className="font-mono font-semibold text-indigo-400">
+                  {checkedCount} / {totalItems} items verified
+                </span>
               </div>
             </div>
 
@@ -667,12 +725,12 @@ export const OrderTrackPage: React.FC = () => {
                   activeOrder.verificationStatus === "VERIFIED"
                 }
                 className={
-                  activeOrder.verificationStatus === "VERIFIED"
-                    ? "opacity-60 cursor-not-allowed"
-                    : ""
+                  allItemsChecked
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
                 }
               >
-                Confirm Delivery Verification
+                Verify Delivery Order
               </Button>
             </div>
           </form>

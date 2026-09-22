@@ -48,8 +48,8 @@ export const OrdersPage: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   
-  // 2-tier client selection
-  const [selectedCompanyName, setSelectedCompanyName] = useState("");
+  // 2-tier client selection (Company -> ClientEmployee)
+  const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   
   const [orderNotes, setOrderNotes] = useState("");
@@ -81,7 +81,7 @@ export const OrdersPage: React.FC = () => {
     try {
       setLoading(true);
       const [oList, cList, pList] = await Promise.all([
-        fetchOrders(tenant?.id, role, user?.client?.id, user?.id),
+        fetchOrders(tenant?.id, role, user?.clientId || user?.client?.id, user?.id),
         fetchClients(tenant?.id),
         fetchProducts(tenant?.id)
       ]);
@@ -91,10 +91,9 @@ export const OrdersPage: React.FC = () => {
 
       // Default company selection
       if (cList.length > 0) {
-        const firstCo = cList[0].companyName;
-        setSelectedCompanyName(firstCo);
-        const contactsInFirst = cList.filter((c) => c.companyName === firstCo);
-        setSelectedContactIds(contactsInFirst.map((c) => c.id));
+        const firstCo = cList[0];
+        setSelectedCompanyId(firstCo.id);
+        setSelectedContactIds((firstCo.employees || []).map((e) => e.id));
       }
 
       if (pList.length > 0) {
@@ -117,16 +116,16 @@ export const OrdersPage: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, [tenant?.id, role, user?.id, user?.client?.id]);
+  }, [tenant?.id, role, user?.id, user?.clientId, user?.client?.id]);
 
-  // Unique companies
-  const companyNames = Array.from(new Set(clients.map((c) => c.companyName || "Direct Client")));
-  const companyEmployees = clients.filter((c) => c.companyName === selectedCompanyName);
+  // Company & Employees
+  const selectedCompany = clients.find((c) => c.id === selectedCompanyId) || clients[0];
+  const companyEmployees = selectedCompany?.employees || [];
 
-  const handleCompanyChange = (cName: string) => {
-    setSelectedCompanyName(cName);
-    const emps = clients.filter((c) => c.companyName === cName);
-    setSelectedContactIds(emps.map((e) => e.id));
+  const handleCompanyChange = (companyId: string) => {
+    setSelectedCompanyId(companyId);
+    const co = clients.find((c) => c.id === companyId);
+    setSelectedContactIds((co?.employees || []).map((e) => e.id));
   };
 
   const toggleContactSelection = (contactId: string) => {
@@ -144,13 +143,14 @@ export const OrdersPage: React.FC = () => {
 
       // Auto-match company if found
       if (parsed.clientName) {
-        const matchedCo = companyNames.find(
-          (c) => c.toLowerCase().includes(parsed.clientName.toLowerCase()) || parsed.clientName.toLowerCase().includes(c.toLowerCase())
+        const matchedCo = clients.find(
+          (c) =>
+            c.companyName.toLowerCase().includes(parsed.clientName!.toLowerCase()) ||
+            parsed.clientName!.toLowerCase().includes(c.companyName.toLowerCase())
         );
         if (matchedCo) {
-          setSelectedCompanyName(matchedCo);
-          const emps = clients.filter((c) => c.companyName === matchedCo);
-          setSelectedContactIds(emps.map((e) => e.id));
+          setSelectedCompanyId(matchedCo.id);
+          setSelectedContactIds((matchedCo.employees || []).map((e) => e.id));
         }
       }
 
@@ -253,13 +253,9 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
     e.preventDefault();
     if (!tenant?.id || !user?.id) return;
 
-    // Pick primary client ID from selected contacts or first client of selected company
-    const primaryClient =
-      clients.find((c) => selectedContactIds.includes(c.id)) ||
-      clients.find((c) => c.companyName === selectedCompanyName) ||
-      clients[0];
+    const targetCompany = clients.find((c) => c.id === selectedCompanyId) || clients[0];
 
-    if (!primaryClient) {
+    if (!targetCompany) {
       setActionError("Please register at least one client company before creating orders.");
       return;
     }
@@ -270,7 +266,7 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
     try {
       await createEnhancedOrder({
         tenantId: tenant.id,
-        clientId: primaryClient.id,
+        clientId: targetCompany.id,
         selectedContactIds: selectedContactIds.length > 0 ? selectedContactIds : undefined,
         createdById: user.id,
         status: "ISSUED",
@@ -639,14 +635,14 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
                 <span>1. Select Client Company</span>
               </div>
               <select
-                value={selectedCompanyName}
+                value={selectedCompanyId || selectedCompany?.id || ""}
                 onChange={(e) => handleCompanyChange(e.target.value)}
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
                 required
               >
-                {companyNames.map((cName) => (
-                  <option key={cName} value={cName}>
-                    {cName}
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.companyName}
                   </option>
                 ))}
               </select>
