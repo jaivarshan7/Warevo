@@ -1,35 +1,32 @@
-import { OrderStatus, VerificationStatus } from "@/types";
+import { OrderStatus, VerificationStatus, PaymentStatus } from "@/types";
 
-// Active workflow stages displayed in the transition modal (excludes historical RECEIVED and VERIFICATION_PENDING)
+// Active workflow stages strictly per WMS specification:
+// ISSUED -> PROCESSING -> READY_FOR_DISPATCH -> DISPATCHED -> VERIFIED
+// (PAID is not an OrderStatus; it is a PaymentStatus on Invoice)
 export const ORDER_ACTIVE_WORKFLOW: OrderStatus[] = [
   "ISSUED",
   "PROCESSING",
   "READY_FOR_DISPATCH",
   "DISPATCHED",
-  "VERIFIED",
-  "INVOICE_PENDING",
-  "INVOICED",
-  "PAYMENT_PENDING",
-  "PAID",
-  "COMPLETED"
+  "VERIFIED"
 ];
 
 export const validOrderTransitions: Record<OrderStatus, OrderStatus[]> = {
   DRAFT: ["ISSUED", "CANCELLED"],
   ISSUED: ["DISPATCHED", "PROCESSING", "CANCELLED"],
   PROCESSING: ["READY_FOR_DISPATCH", "CANCELLED"],
-  READY_FOR_DISPATCH: ["DISPATCHED"],
-  // DISPATCHED has no generic transitions - must use verification RPC
-  DISPATCHED: [],
-  // RECEIVED and VERIFICATION_PENDING are historical only - not available for new transitions
+  READY_FOR_DISPATCH: ["DISPATCHED", "CANCELLED"],
+  // DISPATCHED has no generic direct status advancement - must use verification RPCs
+  DISPATCHED: ["CANCELLED"],
+  // Historical states preserved for DB compatibility
   RECEIVED: [],
   VERIFICATION_PENDING: [],
-  VERIFIED: ["INVOICE_PENDING"],
+  VERIFIED: ["COMPLETED"],
   PARTIALLY_VERIFIED: ["PROCESSING", "CANCELLED"],
   REJECTED: ["PROCESSING", "CANCELLED"],
-  INVOICE_PENDING: ["INVOICED"],
-  INVOICED: ["PAYMENT_PENDING"],
-  PAYMENT_PENDING: ["PAID"],
+  INVOICE_PENDING: [],
+  INVOICED: [],
+  PAYMENT_PENDING: [],
   PAID: ["COMPLETED"],
   COMPLETED: [],
   CANCELLED: []
@@ -76,3 +73,98 @@ export const verificationBadgeStyles: Record<VerificationStatus, string> = {
   PARTIALLY_VERIFIED: "bg-orange-950 text-orange-300 border-orange-800",
   REJECTED: "bg-rose-950 text-rose-300 border-rose-800"
 };
+
+export interface WorkflowStageItem {
+  id: string;
+  name: string;
+  state: "completed" | "current" | "pending";
+  label: string;
+  detail?: string;
+}
+
+/**
+ * Derives the complete client workflow stages:
+ * ISSUED -> PROCESSING -> READY FOR DISPATCH -> DISPATCHED -> DELIVERY VERIFIED -> INVENTORY VERIFIED -> PAYMENT PENDING -> PAID
+ */
+export function deriveClientWorkflowStages(
+  order: {
+    status: OrderStatus;
+    verificationStatus?: VerificationStatus | null;
+    deliveryVerifiedAt?: string | null;
+    storeVerifiedAt?: string | null;
+  },
+  invoicePaymentStatus?: PaymentStatus | string | null
+): WorkflowStageItem[] {
+  const isOrderIssued = ["ISSUED", "PROCESSING", "READY_FOR_DISPATCH", "DISPATCHED", "VERIFIED", "COMPLETED"].includes(order.status);
+  const isProcessing = ["PROCESSING", "READY_FOR_DISPATCH", "DISPATCHED", "VERIFIED", "COMPLETED"].includes(order.status);
+  const isReadyDispatch = ["READY_FOR_DISPATCH", "DISPATCHED", "VERIFIED", "COMPLETED"].includes(order.status);
+  const isDispatched = ["DISPATCHED", "VERIFIED", "COMPLETED"].includes(order.status);
+
+  const isDeliveryVerified = Boolean(order.deliveryVerifiedAt || order.status === "VERIFIED" || order.status === "COMPLETED");
+  const isStoreVerified = Boolean(order.storeVerifiedAt || (order.status === "VERIFIED" && isDeliveryVerified) || order.status === "COMPLETED");
+
+  const effectivePaymentStatus = invoicePaymentStatus || "UNPAID";
+  const isPaid = effectivePaymentStatus === "PAID";
+  const isPaymentPending = isStoreVerified && !isPaid;
+
+  const stages: WorkflowStageItem[] = [
+    {
+      id: "ISSUED",
+      name: "ISSUED",
+      label: "Issued",
+      state: isOrderIssued ? (order.status === "ISSUED" ? "current" : "completed") : "pending"
+    },
+    {
+      id: "PROCESSING",
+      name: "PROCESSING",
+      label: "Processing",
+      state: isProcessing ? (order.status === "PROCESSING" ? "current" : "completed") : "pending"
+    },
+    {
+      id: "READY_FOR_DISPATCH",
+      name: "READY FOR DISPATCH",
+      label: "Ready for Dispatch",
+      state: isReadyDispatch ? (order.status === "READY_FOR_DISPATCH" ? "current" : "completed") : "pending"
+    },
+    {
+      id: "DISPATCHED",
+      name: "DISPATCHED",
+      label: "Dispatched",
+      state: isDispatched ? (order.status === "DISPATCHED" && !isDeliveryVerified ? "current" : "completed") : "pending"
+    },
+    {
+      id: "DELIVERY_VERIFIED",
+      name: "DELIVERY VERIFIED",
+      label: isDeliveryVerified ? "Delivery: Verified" : "Delivery: Pending",
+      state: isDeliveryVerified
+        ? "completed"
+        : isDispatched
+        ? "current"
+        : "pending"
+    },
+    {
+      id: "INVENTORY_VERIFIED",
+      name: "INVENTORY VERIFIED",
+      label: isStoreVerified ? "Inventory: Verified" : "Inventory: Pending",
+      state: isStoreVerified
+        ? "completed"
+        : isDeliveryVerified
+        ? "current"
+        : "pending"
+    },
+    {
+      id: "PAYMENT_PENDING",
+      name: "PAYMENT PENDING",
+      label: isPaid ? "Payment: Paid" : isPaymentPending ? "Payment: Pending" : "Payment",
+      state: isPaid ? "completed" : isPaymentPending ? "current" : "pending"
+    },
+    {
+      id: "PAID",
+      name: "PAID",
+      label: "Paid",
+      state: isPaid ? "completed" : "pending"
+    }
+  ];
+
+  return stages;
+}

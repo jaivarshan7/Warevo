@@ -37,6 +37,7 @@ model Tenant {
   users                 User[]
   warehouses            Warehouse[]
   settings              WarehouseSetting?
+  roles                 RoleDefinition[]
 }
 
 model CompanyGroup {
@@ -88,6 +89,8 @@ model User {
   notifications    Notification[]
   assignedOrders   Order[]           @relation("OrderAssignedStaff")
   createdOrders    Order[]           @relation("OrderCreatedBy")
+  deliveryVerifiedOrders Order[]     @relation("OrderDeliveryVerifiedBy")
+  storeVerifiedOrders    Order[]     @relation("OrderStoreVerifiedBy")
   tenant           Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, role])
@@ -132,11 +135,14 @@ model ClientEmployee {
   client        Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
   tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  roleId        String?
+  roleDefinition RoleDefinition?   @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, mobile])
   @@index([tenantId])
   @@index([clientId])
   @@index([userId])
+  @@index([roleId])
 }
 
 model Category {
@@ -262,6 +268,12 @@ model Order {
   assignedStaff         User?                  @relation("OrderAssignedStaff", fields: [assignedStaffId], references: [id])
   client                Client                 @relation(fields: [clientId], references: [id])
   createdBy             User                   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  deliveryVerifiedAt    DateTime?
+  deliveryVerifiedById  String?
+  storeVerifiedAt       DateTime?
+  storeVerifiedById     String?
+  deliveryVerifiedBy    User?                  @relation("OrderDeliveryVerifiedBy", fields: [deliveryVerifiedById], references: [id])
+  storeVerifiedBy       User?                  @relation("OrderStoreVerifiedBy", fields: [storeVerifiedById], references: [id])
   tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   items                 OrderItem[]
   statusHistory         OrderStatusHistory[]
@@ -270,6 +282,8 @@ model Order {
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status])
   @@index([clientId])
+  @@index([deliveryVerifiedAt])
+  @@index([storeVerifiedAt])
 }
 
 model OrderItem {
@@ -760,3 +774,44 @@ enum DeliveryVerificationItemStatus {
   MISSING
   REJECTED
 }
+
+model RoleDefinition {
+  id          String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  tenantId    String?
+  name        String
+  description String?
+  systemRole  Boolean          @default(false)
+  status      UserStatus       @default(ACTIVE)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
+  tenant      Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  employees   ClientEmployee[]
+
+  @@map("Role")
+  @@index([tenantId])
+}
+
+model Permission {
+  id          String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  key         String           @unique
+  name        String
+  description String?
+  category    String
+  createdAt   DateTime         @default(now())
+  roles       RolePermission[]
+
+  @@index([category])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         RoleDefinition @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission     @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+

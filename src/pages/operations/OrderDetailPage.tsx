@@ -5,6 +5,7 @@ import {
   fetchOrderById,
   transitionOrderStatus,
   submitOrderVerification,
+  submitOrderStoreVerification,
   isClientRole
 } from "@/lib/services";
 import { Order, OrderStatus, VerificationStatus } from "@/types";
@@ -13,7 +14,9 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
-import { validOrderTransitions } from "@/lib/orderWorkflow";
+import { validOrderTransitions, deriveClientWorkflowStages } from "@/lib/orderWorkflow";
+import { canVerifyDelivery, canVerifyInventory } from "@/lib/permissions";
+import { getRoleDisplay } from "@/lib/roleDisplay";
 import {
   ArrowLeft,
   Calendar,
@@ -21,7 +24,9 @@ import {
   Building,
   CheckCircle2,
   AlertTriangle,
-  Clock
+  Clock,
+  ShieldCheck,
+  PackageCheck
 } from "lucide-react";
 
 export const OrderDetailPage: React.FC = () => {
@@ -31,12 +36,18 @@ export const OrderDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Verification Modal - Individual Item Checkboxes
+  // Delivery Verification Modal - Individual Item Checkboxes
   const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>({});
   const [isVerifyOpen, setIsVerifyOpen] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<VerificationStatus>("VERIFIED");
   const [verifyComments, setVerifyComments] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+
+  // Store / Inventory Verification Modal
+  const [isStoreVerifyOpen, setIsStoreVerifyOpen] = useState(false);
+  const [isStoreVerifying, setIsStoreVerifying] = useState(false);
+  const [storeComments, setStoreComments] = useState("");
+  const [confirmInventoryUpdated, setConfirmInventoryUpdated] = useState(false);
 
   // Warehouse Transition
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -96,11 +107,10 @@ export const OrderDetailPage: React.FC = () => {
     e.preventDefault();
     if (!order) return;
 
-    const currentEmpRole = user?.clientEmployee?.employeeRole || user?.client?.employeeRole;
-    if (role === "CLIENT" && currentEmpRole !== "RECEIVER") {
+    if (!canVerifyDelivery(user)) {
       setActionMessage({
         type: "error",
-        text: "Only client receivers can verify deliveries."
+        text: "Only authorized roles (Receiver, Manager, GM, MD) can verify deliveries."
       });
       return;
     }
@@ -144,7 +154,7 @@ export const OrderDetailPage: React.FC = () => {
         user?.id
       );
       setIsVerifyOpen(false);
-      setActionMessage({ type: "success", text: "Verification successfully submitted!" });
+      setActionMessage({ type: "success", text: "Delivery verification successfully submitted! Awaiting store / inventory verification." });
       await loadOrder();
     } catch (err: any) {
       const errMsg = err?.message || "";
@@ -161,6 +171,44 @@ export const OrderDetailPage: React.FC = () => {
     }
   };
 
+  const handleStoreVerificationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!order) return;
+
+    if (!canVerifyInventory(user)) {
+      setActionMessage({
+        type: "error",
+        text: "Only authorized roles (Store, Manager, GM, MD) can verify received inventory."
+      });
+      return;
+    }
+
+    if (!confirmInventoryUpdated) {
+      setActionMessage({
+        type: "error",
+        text: "You must confirm that client inventory has been updated."
+      });
+      return;
+    }
+
+    setActionMessage(null);
+    setIsStoreVerifying(true);
+
+    try {
+      await submitOrderStoreVerification(order.id, undefined, storeComments, true);
+      setIsStoreVerifyOpen(false);
+      setActionMessage({
+        type: "success",
+        text: "Store & inventory verification complete! Order verified, invoice ready for payment."
+      });
+      await loadOrder();
+    } catch (err: any) {
+      setActionMessage({ type: "error", text: err?.message || "Store verification failed" });
+    } finally {
+      setIsStoreVerifying(false);
+    }
+  };
+
   if (loading) return <LoadingSpinner message="Loading order details and timeline..." />;
   if (!order) {
     return (
@@ -173,26 +221,28 @@ export const OrderDetailPage: React.FC = () => {
     );
   }
 
-  // Only CLIENT role with employeeRole === "RECEIVER" can perform delivery verification
-  const isClientReceiver =
-    role === "CLIENT" &&
-    (user?.clientEmployee?.employeeRole === "RECEIVER" ||
-      user?.client?.employeeRole === "RECEIVER");
-
   const isTenantAuthorized =
     Boolean(order) && (!tenant?.id || order.tenantId === tenant.id);
 
-  // Verification is allowed ONLY when:
-  // - authenticated WMS role = CLIENT
-  // - client.employeeRole = RECEIVER
-  // - order status = DISPATCHED
-  // - order belongs to the authenticated user's authorized tenant/company
-  const canVerify =
+  // Authoritative action permission resolution
+  const canPerformDelivery =
     Boolean(order) &&
-    isClientReceiver &&
-    Boolean(user?.client?.id) &&
+    canVerifyDelivery(user) &&
+    Boolean(user?.client?.id || user?.clientId) &&
     isTenantAuthorized &&
-    (order.status === "DISPATCHED");
+    order.status === "DISPATCHED" &&
+    !order.deliveryVerifiedAt;
+
+  const canPerformStoreVerify =
+    Boolean(order) &&
+    canVerifyInventory(user) &&
+    Boolean(user?.client?.id || user?.clientId) &&
+    isTenantAuthorized &&
+    order.status === "DISPATCHED" &&
+    Boolean(order.deliveryVerifiedAt) &&
+    !order.storeVerifiedAt;
+
+  const orderInvoicePaymentStatus = (order as any).invoices?.[0]?.paymentStatus || (order as any).invoice?.paymentStatus;
 
   return (
     <div className="space-y-6">
@@ -203,6 +253,25 @@ export const OrderDetailPage: React.FC = () => {
       >
         <ArrowLeft className="w-4 h-4" /> Back to Orders
       </Link>
+
+      {/* Action feedback message */}
+      {actionMessage && (
+        <div
+          className={`p-4 rounded-xl text-xs flex items-center justify-between border ${
+            actionMessage.type === "success"
+              ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+              : "bg-rose-950/60 border-rose-800 text-rose-300"
+          }`}
+        >
+          <span>{actionMessage.text}</span>
+          <button
+            onClick={() => setActionMessage(null)}
+            className="text-slate-400 hover:text-white ml-2 text-xs"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Header Banner */}
       <Card className="p-6">
@@ -233,7 +302,7 @@ export const OrderDetailPage: React.FC = () => {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
-            {canVerify && (
+            {canPerformDelivery && (
               <Button
                 variant="primary"
                 onClick={handleOpenVerifyModal}
@@ -243,7 +312,60 @@ export const OrderDetailPage: React.FC = () => {
                 Verify Delivery Order
               </Button>
             )}
+            {canPerformStoreVerify && (
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setStoreComments("");
+                  setConfirmInventoryUpdated(false);
+                  setIsStoreVerifyOpen(true);
+                  setActionMessage(null);
+                }}
+                className="bg-blue-600 hover:bg-blue-500 shadow-blue-950 gap-1.5"
+              >
+                <PackageCheck className="w-4 h-4 mr-1.5" />
+                Verify Received / Inventory Updated
+              </Button>
+            )}
           </div>
+        </div>
+      </Card>
+
+      {/* 8-Stage Client Workflow Stepper */}
+      <Card className="p-4 bg-slate-900/60 border-slate-800">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Order & Payment Lifecycle</h3>
+          <span className="text-xs font-mono text-indigo-400 font-semibold">
+            {order.status === "VERIFIED" ? (orderInvoicePaymentStatus === "PAID" ? "Settled (PAID)" : "Payment Pending") : order.status}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {deriveClientWorkflowStages(order, orderInvoicePaymentStatus).map((stage, idx) => (
+            <div
+              key={stage.id}
+              className={`p-2.5 rounded-xl border text-center transition-all ${
+                stage.state === "completed"
+                  ? "bg-emerald-950/40 border-emerald-700/60 text-emerald-300"
+                  : stage.state === "current"
+                  ? "bg-indigo-950/50 border-indigo-500 text-indigo-200 ring-1 ring-indigo-500/40 font-semibold"
+                  : "bg-slate-950/40 border-slate-800 text-slate-500"
+              }`}
+            >
+              <div className="flex items-center justify-center mb-1">
+                {stage.state === "completed" ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : stage.state === "current" ? (
+                  <Clock className="w-4 h-4 text-indigo-400 animate-pulse" />
+                ) : (
+                  <span className="w-4 h-4 rounded-full border border-slate-700 flex items-center justify-center text-[9px] text-slate-500">
+                    {idx + 1}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] font-medium leading-tight">{stage.label}</p>
+              <p className="text-[9px] text-slate-400 mt-0.5 truncate">{stage.detail || ""}</p>
+            </div>
+          ))}
         </div>
       </Card>
 
@@ -508,6 +630,77 @@ export const OrderDetailPage: React.FC = () => {
                 }
               >
                 Verify Delivery Order
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Store / Inventory Verification Modal */}
+      {isStoreVerifyOpen && (
+        <Modal
+          isOpen={isStoreVerifyOpen}
+          onClose={() => setIsStoreVerifyOpen(false)}
+          title="Verify Store / Inventory Update"
+          description={`Order ${order.orderNumber} — Confirm that goods are received into stock and client inventory is updated.`}
+          maxWidth="md"
+        >
+          <form onSubmit={handleStoreVerificationSubmit} className="space-y-4">
+            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Storekeeper Checklist
+              </h4>
+              <p className="text-xs text-slate-400">
+                Delivery was inspected and accepted on {order.deliveryVerifiedAt ? new Date(order.deliveryVerifiedAt).toLocaleString() : "N/A"}.
+              </p>
+              <div className="pt-2">
+                <label className="flex items-start gap-3 p-3 rounded-lg border bg-slate-950/40 border-slate-800 hover:border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={confirmInventoryUpdated}
+                    onChange={(e) => setConfirmInventoryUpdated(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                  />
+                  <div className="text-xs">
+                    <span className="font-semibold text-white block">
+                      Confirm Goods Received & Inventory Updated
+                    </span>
+                    <span className="text-slate-400 block mt-0.5">
+                      I verify that the delivered quantities have been accepted into store and internal inventory balances are updated.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Store Verification Notes (Optional)
+              </label>
+              <textarea
+                value={storeComments}
+                onChange={(e) => setStoreComments(e.target.value)}
+                placeholder="Storage location, batch verification, or inventory software reference..."
+                rows={3}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setIsStoreVerifyOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                isLoading={isStoreVerifying}
+                disabled={!confirmInventoryUpdated}
+                className={
+                  confirmInventoryUpdated
+                    ? "bg-blue-600 hover:bg-blue-500 text-white"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
+                }
+              >
+                Confirm & Complete Verification
               </Button>
             </div>
           </form>

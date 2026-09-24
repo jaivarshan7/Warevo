@@ -19,6 +19,7 @@ import {
   Truck
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/permissions";
 
 export const DashboardPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
@@ -171,23 +172,28 @@ export const DashboardPage: React.FC = () => {
     );
   }
 
-  // Specialized view for Client Receiver
-  if (
-    role === "CLIENT" &&
-    (user?.clientEmployee?.employeeRole === "RECEIVER" ||
-      user?.client?.employeeRole === "RECEIVER")
-  ) {
+  // Specialized view for Client Receiver (Delivery Verification only)
+  const clientEmpRole = user?.clientEmployee?.employeeRole || user?.client?.employeeRole;
+
+  if (role === "CLIENT" && clientEmpRole === "RECEIVER") {
     const readyForVerification = data.orders.filter((o) =>
-      ["DISPATCHED"].includes(o.status)
+      o.status === "DISPATCHED" && !o.deliveryVerifiedAt
     );
 
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Delivery Verification Tasks</h1>
-          <p className="text-sm text-slate-400">
-            Confirm goods received, document package conditions, and complete delivery verification.
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-white tracking-tight">Delivery Verification Tasks</h1>
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeStyle(user, clientEmpRole)}`}>
+                {getRoleDisplay(user, clientEmpRole)}
+              </span>
+            </div>
+            <p className="text-sm text-slate-400 mt-1">
+              Confirm goods received, document package conditions, and complete delivery verification.
+            </p>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -210,7 +216,7 @@ export const DashboardPage: React.FC = () => {
                   Verified Deliveries
                 </p>
                 <p className="text-3xl font-bold text-white mt-1">
-                  {data.orders.filter((o) => o.verificationStatus === "VERIFIED").length}
+                  {data.orders.filter((o) => o.deliveryVerifiedAt || o.verificationStatus === "VERIFIED").length}
                 </p>
               </div>
               <CheckCircle2 className="w-8 h-8 text-emerald-400" />
@@ -259,16 +265,116 @@ export const DashboardPage: React.FC = () => {
     );
   }
 
-  // Specialized view for Accounts Team / Accountant / Client Accountant
-  if (role === "ACCOUNTS_TEAM" || role === "ACCOUNTANT" || role === "CLIENT_ACCOUNTANT") {
+  // Specialized view for Client Storekeeper (Inventory Verification only)
+  if (role === "CLIENT" && clientEmpRole === "STORE") {
+    const readyForStore = data.orders.filter((o) =>
+      o.status === "DISPATCHED" && Boolean(o.deliveryVerifiedAt) && !o.storeVerifiedAt
+    );
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-white tracking-tight">Store & Inventory Tasks</h1>
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeStyle(user, clientEmpRole)}`}>
+                {getRoleDisplay(user, clientEmpRole)}
+              </span>
+            </div>
+            <p className="text-sm text-slate-400 mt-1">
+              Verify received items, count, and confirm client inventory updates.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Card className="border-amber-900/40 bg-gradient-to-br from-amber-950/30 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+                  Awaiting Store Verification
+                </p>
+                <p className="text-3xl font-bold text-white mt-1">{readyForStore.length}</p>
+              </div>
+              <Clock className="w-8 h-8 text-amber-400" />
+            </div>
+          </Card>
+
+          <Card className="border-emerald-900/40 bg-gradient-to-br from-emerald-950/30 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-400">
+                  Inventory Updated
+                </p>
+                <p className="text-3xl font-bold text-white mt-1">
+                  {data.orders.filter((o) => o.storeVerifiedAt || o.status === "VERIFIED").length}
+                </p>
+              </div>
+              <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+            </div>
+          </Card>
+        </div>
+
+        <Card>
+          <h2 className="text-base font-semibold text-white mb-4">Delivered Orders Requiring Store Confirmation</h2>
+          {readyForStore.length === 0 ? (
+            <EmptyState
+              title="No pending store verifications"
+              description="There are currently no delivered orders waiting for inventory verification."
+            />
+          ) : (
+            <div className="space-y-3">
+              {readyForStore.map((o) => (
+                <div
+                  key={o.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl bg-slate-800/50 border border-slate-700/60 gap-3"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-white">{o.orderNumber}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800">
+                        Delivery Verified
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Delivered on: {o.deliveryVerifiedAt ? new Date(o.deliveryVerifiedAt).toLocaleDateString() : "Recently"}
+                    </p>
+                  </div>
+                  <Link
+                    to={`/operations/orders/${o.id}`}
+                    className="inline-flex items-center justify-center px-4 py-2 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                  >
+                    Verify Store Inventory
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  // Specialized view for Accounts Team / Accountant / Client Accountant / Client Account employee
+  if (
+    role === "ACCOUNTS_TEAM" ||
+    role === "ACCOUNTANT" ||
+    role === "CLIENT_ACCOUNTANT" ||
+    (role === "CLIENT" && clientEmpRole === "ACCOUNT")
+  ) {
     const unpaidInvoices = data.invoices.filter((i) => i.paymentStatus !== "PAID");
     const totalOutstanding = unpaidInvoices.reduce((sum, i) => sum + Number(i.total), 0);
 
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Accounting Dashboard</h1>
-          <p className="text-sm text-slate-400">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white tracking-tight">Accounting Dashboard</h1>
+            <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeStyle(user, clientEmpRole)}`}>
+              {getRoleDisplay(user, clientEmpRole)}
+            </span>
+          </div>
+          <p className="text-sm text-slate-400 mt-1">
             Payment verification, invoices, and billing settlement workflow.
           </p>
         </div>
@@ -292,10 +398,10 @@ export const DashboardPage: React.FC = () => {
 
           <Card className="border-emerald-900/40 bg-gradient-to-br from-emerald-950/40 to-slate-900">
             <p className="text-xs font-semibold uppercase tracking-wider text-emerald-400">
-              Verified Deliveries Awaiting Invoice
+              Verified Deliveries
             </p>
             <p className="text-3xl font-bold text-white mt-1">
-              {data.orders.filter((o) => o.verificationStatus === "VERIFIED" && o.status !== "INVOICED").length}
+              {data.orders.filter((o) => o.verificationStatus === "VERIFIED").length}
             </p>
           </Card>
         </div>

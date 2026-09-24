@@ -30,25 +30,22 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-// Client Receiver status labels
+import { canVerifyDelivery, canVerifyInventory } from "@/lib/permissions";
+
+// Client status labels
 const ORDER_STATUS_LABELS: Record<string, string> = {
   ISSUED: "Order Issued",
   PROCESSING: "Processing",
   READY_FOR_DISPATCH: "Ready for Dispatch",
   DISPATCHED: "Dispatched",
-  VERIFIED: "Delivery Verified",
-  INVOICED: "Invoiced",
+  VERIFIED: "Order Verified",
 };
 
 export const OrderTrackPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
 
-  // Authorization check for CLIENT role users
-  const isClientReceiver =
-    role === "CLIENT" &&
-    (user?.clientEmployee?.employeeRole === "RECEIVER" ||
-      user?.client?.employeeRole === "RECEIVER");
-  const hasVerificationAccess = isClientReceiver;
+  // Authorization check for verification access
+  const hasVerificationAccess = canVerifyDelivery(user) || canVerifyInventory(user);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -249,9 +246,7 @@ export const OrderTrackPage: React.FC = () => {
             Access Denied
           </h3>
           <p className="text-sm text-slate-400">
-            Only Client Receivers (employeeRole: RECEIVER) can verify
-            deliveries. Contact your warehouse manager for delivery verification
-            access.
+            You do not have delivery verification permissions. Contact your company administrator or manager for access.
           </p>
         </Card>
       )}

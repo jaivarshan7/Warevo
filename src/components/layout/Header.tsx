@@ -5,32 +5,14 @@ import { Building2, ChevronDown, UserCircle2, LogOut, ShieldCheck, Shield } from
 import { Link, useNavigate } from "react-router-dom";
 import { config } from "@/lib/config";
 
+import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/permissions";
+
 export const Header: React.FC = () => {
   const { user, tenant, role, allUsers, allTenants, switchUser, switchTenant, signOut } = useAuth();
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showTenantMenu, setShowTenantMenu] = useState(false);
 
-  const getRoleBadgeStyle = (r: string) => {
-    switch (r) {
-      case "PLATFORM_ADMIN":
-        return "bg-purple-950 text-purple-300 border-purple-800";
-      case "WAREHOUSE_OWNER":
-        return "bg-indigo-950 text-indigo-300 border-indigo-800";
-      case "WAREHOUSE_MODERATOR":
-        return "bg-blue-950 text-blue-300 border-blue-800";
-      case "WAREHOUSE_STAFF":
-        return "bg-emerald-950 text-emerald-300 border-emerald-800";
-      case "ACCOUNTANT":
-      case "ACCOUNTS_TEAM":
-        return "bg-amber-950 text-amber-300 border-amber-800";
-      case "CLIENT":
-      case "CLIENT_ACCOUNTANT":
-        return "bg-teal-950 text-teal-300 border-teal-800";
-      default:
-        return "bg-slate-800 text-slate-300 border-slate-700";
-    }
-  };
 
   return (
     <header className="sticky top-0 z-40 flex items-center justify-between h-16 px-4 sm:px-6 bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
@@ -103,11 +85,12 @@ export const Header: React.FC = () => {
         {/* Role badge */}
         <span
           className={`hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wide border ${getRoleBadgeStyle(
-            role
+            user,
+            user?.clientEmployee?.employeeRole
           )}`}
         >
           <ShieldCheck className="w-3 h-3" />
-          {role.replace(/_/g, " ")}
+          {getRoleDisplay(user, user?.clientEmployee?.employeeRole)}
         </span>
 
         {/* Notifications */}
@@ -135,7 +118,7 @@ export const Header: React.FC = () => {
                 {user?.name || "Anonymous"}
               </span>
               <span className="text-[10px] text-slate-400 leading-tight">
-                {user?.email || user?.mobile || role}
+                {user?.email || user?.mobile || getRoleDisplay(user, user?.clientEmployee?.employeeRole)}
               </span>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:block" />
@@ -148,10 +131,11 @@ export const Header: React.FC = () => {
                 <p className="text-[11px] text-slate-400">{user?.email || user?.mobile}</p>
                 <span
                   className={`mt-1.5 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${getRoleBadgeStyle(
-                    role
+                    user,
+                    user?.clientEmployee?.employeeRole
                   )}`}
                 >
-                  {role}
+                  {getRoleDisplay(user, user?.clientEmployee?.employeeRole)}
                 </span>
               </div>
 
@@ -177,7 +161,7 @@ export const Header: React.FC = () => {
                       >
                         <div className="truncate pr-2">
                           <div className="truncate">{u.name}</div>
-                          <div className="text-[10px] text-slate-500">{u.role}</div>
+                          <div className="text-[10px] text-slate-500">{getRoleDisplay(u, (u as any).clientEmployee?.employeeRole)}</div>
                         </div>
                         {u.id === user?.id && (
                           <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />

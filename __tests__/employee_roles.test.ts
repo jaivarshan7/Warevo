@@ -10,6 +10,12 @@ vi.mock("@/src/lib/supabase", () => {
     supabase: {
       from: vi.fn(),
       rpc: vi.fn(),
+      auth: {
+        getSession: vi.fn().mockResolvedValue({
+          data: { session: { access_token: "mock-token" } },
+          error: null
+        })
+      }
     },
   };
 });
@@ -140,6 +146,13 @@ describe("Employee Services", () => {
     const selectMock = vi.fn().mockReturnValue({ eq: eqMock });
     (supabase.from as any).mockReturnValue({ select: selectMock });
 
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      json: async () => ({
+        error: "Cannot convert employee 'John Staff' (WAREHOUSE_STAFF) to a CLIENT",
+      }),
+    } as any);
+
     await expect(
       createClientEmployeeWithUser({
         tenantId: "tenant-123",
@@ -150,5 +163,7 @@ describe("Employee Services", () => {
         employeeRole: "STORE",
       })
     ).rejects.toThrow(/Cannot convert employee 'John Staff' \(WAREHOUSE_STAFF\) to a CLIENT/);
+
+    fetchSpy.mockRestore();
   });
 });

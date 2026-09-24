@@ -75,8 +75,8 @@ export function getNavigationItems(
     ];
   }
 
-  // Receiver / Store client employee
-  if (role === "CLIENT" && (employeeRole === "RECEIVER" || employeeRole === "STORE")) {
+  // Receiver client employee (delivery verification only)
+  if (role === "CLIENT" && employeeRole === "RECEIVER") {
     return [
       {
         id: "dashboard",
@@ -87,7 +87,7 @@ export function getNavigationItems(
       },
       {
         id: "orders",
-        label: "Track / Receive Orders",
+        label: "Delivery Verification",
         path: "/operations/orders",
         icon: Package
       },
@@ -106,7 +106,112 @@ export function getNavigationItems(
     ];
   }
 
-  // Client role
+  // Store client employee (inventory verification only)
+  if (role === "CLIENT" && employeeRole === "STORE") {
+    return [
+      {
+        id: "dashboard",
+        label: "Store Tasks",
+        path: "/dashboard",
+        icon: LayoutDashboard,
+        exact: true
+      },
+      {
+        id: "orders",
+        label: "Store Verification",
+        path: "/operations/orders",
+        icon: Package
+      },
+      {
+        id: "notifications",
+        label: "Notifications",
+        path: "/notifications",
+        icon: Bell
+      },
+      {
+        id: "profile",
+        label: "Profile",
+        path: "/profile",
+        icon: UserCheck
+      }
+    ];
+  }
+
+  // Account client employee (invoices and payments only)
+  if (role === "CLIENT" && employeeRole === "ACCOUNT") {
+    return [
+      {
+        id: "dashboard",
+        label: "Accounting Tasks",
+        path: "/dashboard",
+        icon: LayoutDashboard,
+        exact: true
+      },
+      {
+        id: "accounting",
+        label: "Invoices & Payments",
+        path: "/accounting",
+        icon: CircleDollarSign
+      },
+      {
+        id: "notifications",
+        label: "Notifications",
+        path: "/notifications",
+        icon: Bell
+      },
+      {
+        id: "profile",
+        label: "Profile",
+        path: "/profile",
+        icon: UserCheck
+      }
+    ];
+  }
+
+  // MD, GM, MANAGER client employees (full client workflow)
+  if (role === "CLIENT" && (employeeRole === "MD" || employeeRole === "GM" || employeeRole === "MANAGER")) {
+    return [
+      {
+        id: "dashboard",
+        label: "Executive Dashboard",
+        path: "/dashboard",
+        icon: LayoutDashboard,
+        exact: true
+      },
+      {
+        id: "orders",
+        label: "Orders & Verification",
+        path: "/operations/orders",
+        icon: Package
+      },
+      {
+        id: "accounting",
+        label: "Invoices & Payments",
+        path: "/accounting",
+        icon: CircleDollarSign
+      },
+      {
+        id: "reports",
+        label: "Reports",
+        path: "/reports",
+        icon: BarChart3
+      },
+      {
+        id: "notifications",
+        label: "Notifications",
+        path: "/notifications",
+        icon: Bell
+      },
+      {
+        id: "profile",
+        label: "Profile",
+        path: "/profile",
+        icon: UserCheck
+      }
+    ];
+  }
+
+  // Generic Client role fallback
   if (role === "CLIENT") {
     return [
       {

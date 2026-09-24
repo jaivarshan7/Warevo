@@ -25,6 +25,50 @@ export type ClientEmployeeRole =
   | "GM"
   | "MD";
 
+export type PermissionKey =
+  | "ORDERS_VIEW"
+  | "ORDERS_PROCESS"
+  | "ORDERS_DISPATCH"
+  | "DELIVERY_VERIFY"
+  | "INVENTORY_VERIFY"
+  | "INVOICES_VIEW"
+  | "INVOICES_MANAGE"
+  | "ACCOUNTS_VIEW"
+  | "PAYMENTS_VIEW"
+  | "PAYMENTS_RECORD"
+  | "PAYMENT_PROOF_UPLOAD"
+  | "REPORTS_VIEW";
+
+export type PermissionCategory =
+  | "Orders"
+  | "Delivery"
+  | "Inventory"
+  | "Invoices"
+  | "Accounts"
+  | "Payments"
+  | "Reports";
+
+export interface PermissionItem {
+  id: string;
+  key: PermissionKey;
+  name: string;
+  description?: string | null;
+  category: PermissionCategory;
+}
+
+export interface AdminRoleItem {
+  id: string;
+  tenantId?: string | null;
+  name: string;
+  description?: string | null;
+  systemRole: boolean;
+  status: UserStatus;
+  createdAt: string;
+  updatedAt: string;
+  userCount?: number;
+  permissions: PermissionItem[];
+}
+
 export type TenantStatus = "PENDING" | "ACTIVE" | "SUSPENDED" | "DEACTIVATED";
 export type UserStatus = "ACTIVE" | "INACTIVE";
 export type ClientStatus = "ACTIVE" | "INACTIVE";
@@ -137,6 +181,8 @@ export interface ClientEmployee {
   status: UserStatus;
   createdAt: string;
   updatedAt?: string;
+  roleId?: string | null;
+  role?: AdminRoleItem | null;
   client?: Client | null;
   user?: User | null;
 }
@@ -310,6 +356,12 @@ export interface Order {
   assignedStaffId?: string | null;
   createdAt: string;
   updatedAt: string;
+  deliveryVerifiedAt?: string | null;
+  deliveryVerifiedById?: string | null;
+  storeVerifiedAt?: string | null;
+  storeVerifiedById?: string | null;
+  deliveryVerifiedBy?: User | null;
+  storeVerifiedBy?: User | null;
   client?: Client | null;
   createdBy?: User | null;
   assignedStaff?: User | null;

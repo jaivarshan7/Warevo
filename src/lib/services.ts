@@ -20,7 +20,10 @@ import {
   ClientEmployeeRole,
   ALLOWED_EMPLOYEE_ROLES,
   PaymentStatus,
-  CompanyGroup
+  CompanyGroup,
+  AdminRoleItem,
+  PermissionItem,
+  PermissionKey
 } from "@/types";
 
 export function isClientRole(role?: Role | null): boolean {
@@ -922,6 +925,23 @@ export async function submitOrderVerification(
     p_comments: comments || null,
     p_attachments: attachments || null,
     p_user_id: userId || null
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function submitOrderStoreVerification(
+  orderId: string,
+  items?: Array<{ orderItemId?: string; verifiedQty: number; accepted: boolean }>,
+  comments?: string,
+  inventoryUpdated: boolean = true
+) {
+  const { data, error } = await supabase.rpc("rpc_submit_store_verification", {
+    p_order_id: orderId,
+    p_items: items ? JSON.parse(JSON.stringify(items)) : null,
+    p_comments: comments || null,
+    p_inventory_updated: inventoryUpdated
   });
 
   if (error) throw error;
@@ -2891,3 +2911,98 @@ Warevo Logistics Enterprise
     body: emailBody.trim()
   };
 }
+
+// ======================== ROLES & PERMISSIONS MANAGEMENT ========================
+
+export async function fetchAdminRoles(tenantId?: string | null): Promise<AdminRoleItem[]> {
+  try {
+    const { data, error } = await supabase.rpc("rpc_admin_list_roles", {
+      p_tenant_id: tenantId || null
+    });
+    if (!error && (data as any)?.roles) {
+      return (data as any).roles;
+    }
+  } catch {
+    // fallback if RPC unavailable
+  }
+
+  // Fallback direct query via RLS
+  let query = supabase
+    .from("Role")
+    .select("*, permissions:RolePermission(*, permission:Permission(*))");
+  if (tenantId) {
+    query = query.or(`tenantId.is.null,tenantId.eq.${tenantId}`);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    tenantId: r.tenantId,
+    name: r.name,
+    description: r.description,
+    systemRole: Boolean(r.systemRole),
+    status: r.status,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    userCount: 0,
+    permissions: (r.permissions || []).map((rp: any) => rp.permission).filter(Boolean)
+  }));
+}
+
+export async function fetchAvailablePermissions(): Promise<PermissionItem[]> {
+  const { data, error } = await supabase
+    .from("Permission")
+    .select("*")
+    .order("category", { ascending: true })
+    .order("name", { ascending: true });
+
+  if (error) throw error;
+  return (data as PermissionItem[]) || [];
+}
+
+export async function createAdminRole(
+  name: string,
+  description?: string,
+  tenantId?: string,
+  permissionKeys?: string[]
+) {
+  const { data, error } = await supabase.rpc("rpc_admin_create_role", {
+    p_name: name,
+    p_description: description || null,
+    p_tenant_id: tenantId || null,
+    p_permission_keys: permissionKeys || []
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateAdminRole(
+  roleId: string,
+  name?: string,
+  description?: string,
+  status?: UserStatus,
+  permissionKeys?: string[]
+) {
+  const { data, error } = await supabase.rpc("rpc_admin_update_role", {
+    p_role_id: roleId,
+    p_name: name || null,
+    p_description: description !== undefined ? description : null,
+    p_status: status || null,
+    p_permission_keys: permissionKeys || null
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminRole(roleId: string) {
+  const { data, error } = await supabase.rpc("rpc_admin_delete_role", {
+    p_role_id: roleId
+  });
+
+  if (error) throw error;
+  return data;
+}
+

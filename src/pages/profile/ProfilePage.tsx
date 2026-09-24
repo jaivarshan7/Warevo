@@ -4,6 +4,8 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { UserCheck, Building, ShieldCheck, Mail, Phone } from "lucide-react";
 
+import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/permissions";
+
 export const ProfilePage: React.FC = () => {
   const { user, tenant, role } = useAuth();
 
@@ -24,8 +26,8 @@ export const ProfilePage: React.FC = () => {
           <div>
             <h2 className="text-lg font-bold text-white">{user?.name}</h2>
             <div className="flex items-center gap-2 mt-1">
-              <span className="px-2 py-0.5 rounded text-xs font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">
-                {role}
+              <span className={`px-2 py-0.5 rounded text-xs font-semibold border ${getRoleBadgeStyle(user, user?.clientEmployee?.employeeRole)}`}>
+                {getRoleDisplay(user, user?.clientEmployee?.employeeRole)}
               </span>
               <span className="text-xs text-slate-400">Status: {user?.status}</span>
             </div>

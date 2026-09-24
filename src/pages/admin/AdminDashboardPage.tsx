@@ -51,6 +51,8 @@ import {
 import { Role, ClientEmployeeRole, UserStatus } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
 
+import { RolesPermissionsTab } from "@/components/admin/RolesPermissionsTab";
+
 export const AdminDashboardPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -63,7 +65,7 @@ export const AdminDashboardPage: React.FC = () => {
   const { user, role, refreshUsers } = useAuth();
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<"warehouses" | "admins" | "warehouse_employees" | "clients" | "groups" | "tenants">("warehouses");
+  const [activeTab, setActiveTab] = useState<"warehouses" | "admins" | "warehouse_employees" | "clients" | "groups" | "tenants" | "roles_permissions">("warehouses");
   const [searchQuery, setSearchQuery] = useState("");
   const [tenantFilter, setTenantFilter] = useState("ALL");
   const [roleFilter, setRoleFilter] = useState("ALL");
@@ -870,7 +872,7 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
         <Card
           onClick={() => setActiveTab("warehouses")}
           className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-slate-700 transition-colors"
@@ -949,6 +951,19 @@ export const AdminDashboardPage: React.FC = () => {
             <p className="text-xl font-bold text-white mt-0.5">{tenants.length}</p>
           </div>
         </Card>
+
+        <Card
+          onClick={() => setActiveTab("roles_permissions")}
+          className="p-3.5 flex items-center gap-3.5 bg-slate-900/60 border-slate-800 cursor-pointer hover:border-emerald-600/50 hover:bg-slate-900/80 transition-all group"
+        >
+          <div className="w-10 h-10 rounded-xl bg-emerald-950/60 border border-emerald-800/60 flex items-center justify-center text-emerald-400 shrink-0 group-hover:scale-105 transition-transform">
+            <Key className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400 group-hover:text-emerald-300 transition-colors truncate">Roles & Permissions</p>
+            <p className="text-xs font-bold text-slate-300 mt-1">RBAC System</p>
+          </div>
+        </Card>
       </div>
 
       {/* Tabs Switcher */}
@@ -1024,9 +1039,22 @@ export const AdminDashboardPage: React.FC = () => {
           <Briefcase className="w-3.5 h-3.5" />
           Organizations ({tenants.length})
         </button>
+
+        <button
+          onClick={() => setActiveTab("roles_permissions")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            activeTab === "roles_permissions"
+              ? "bg-indigo-600 text-white shadow-lg shadow-indigo-950/50"
+              : "bg-slate-800/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+          }`}
+        >
+          <Key className="w-3.5 h-3.5" />
+          Roles & Permissions
+        </button>
       </div>
 
       {/* Search & Filter Toolbar */}
+      {activeTab !== "roles_permissions" && (
       <Card className="p-3 bg-slate-900/60 border-slate-800">
         <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
           <div className="relative w-full md:flex-1">
@@ -1097,6 +1125,7 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
         </div>
       </Card>
+      )}
 
       {/* TAB 1: WAREHOUSES */}
       {activeTab === "warehouses" && (
@@ -1944,6 +1973,11 @@ export const AdminDashboardPage: React.FC = () => {
             ))}
           </div>
         </div>
+      )}
+
+      {/* TAB 7: ROLES & PERMISSIONS */}
+      {activeTab === "roles_permissions" && (
+        <RolesPermissionsTab selectedTenantId={tenantFilter !== "ALL" ? tenantFilter : undefined} />
       )}
 
       {/* MODAL: ADD TENANT / ORGANIZATION */}

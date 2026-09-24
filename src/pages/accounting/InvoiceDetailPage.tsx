@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { fetchInvoiceById, recordPaymentWithProof, getPaymentProofUrl } from "@/lib/services";
+import { canRecordPayment } from "@/lib/permissions";
 import { Invoice } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -143,8 +144,8 @@ export const InvoiceDetailPage: React.FC = () => {
 
   const isVerified = invoice.order?.verificationStatus === "VERIFIED";
   const isPartiallyVerified = invoice.order?.verificationStatus === "PARTIALLY_VERIFIED";
-  // CLIENT and CLIENT_ACCOUNTANT roles can mark invoices as paid by uploading proof
-  const canMarkPaid = invoice.paymentStatus !== "PAID" && (role === "CLIENT" || role === "CLIENT_ACCOUNTANT");
+  // MD, GM, MANAGER, ACCOUNT, and CLIENT_ACCOUNTANT can record payments with proof
+  const canMarkPaid = invoice.paymentStatus !== "PAID" && (canRecordPayment(user) || role === "CLIENT_ACCOUNTANT" || role === "ACCOUNTANT");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 pb-16">

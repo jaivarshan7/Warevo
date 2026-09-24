@@ -396,9 +396,6 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
               <option value="READY_FOR_DISPATCH">READY FOR DISPATCH</option>
               <option value="DISPATCHED">DISPATCHED</option>
               <option value="VERIFIED">VERIFIED</option>
-              <option value="INVOICE_PENDING">INVOICE PENDING</option>
-              <option value="INVOICED">INVOICED</option>
-              <option value="PAID">PAID</option>
               <option value="COMPLETED">COMPLETED</option>
               <option value="CANCELLED">CANCELLED</option>
             </select>
