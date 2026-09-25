@@ -64,15 +64,15 @@ export const SettingsPage: React.FC = () => {
   const [invoiceSuccessMessage, setInvoiceSuccessMessage] = useState<string | null>(null);
   const [invoiceErrorMessage, setInvoiceErrorMessage] = useState<string | null>(null);
 
-  // Notification settings state
+  // Notification settings state (email preferences default OFF)
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
   const [eventConfig, setEventConfig] = useState<Record<string, { inApp: boolean; clientEmail: boolean }>>({
-    NEW_ORDER: { inApp: true, clientEmail: true },
-    READY_FOR_DISPATCH: { inApp: true, clientEmail: true },
-    ORDER_DISPATCHED: { inApp: true, clientEmail: true },
-    CLIENT_COMPLETED_VERIFICATION: { inApp: true, clientEmail: true },
-    INVOICE_GENERATED: { inApp: true, clientEmail: true },
-    PAYMENT_RECEIVED: { inApp: true, clientEmail: true }
+    NEW_ORDER: { inApp: true, clientEmail: false },
+    READY_FOR_DISPATCH: { inApp: true, clientEmail: false },
+    ORDER_DISPATCHED: { inApp: true, clientEmail: false },
+    CLIENT_COMPLETED_VERIFICATION: { inApp: true, clientEmail: false },
+    INVOICE_GENERATED: { inApp: true, clientEmail: false },
+    PAYMENT_RECEIVED: { inApp: true, clientEmail: false }
   });
   const [loadingNotificationSettings, setLoadingNotificationSettings] = useState<boolean>(true);
   const [savingNotifications, setSavingNotifications] = useState<boolean>(false);

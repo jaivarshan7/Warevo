@@ -66,7 +66,7 @@ export function useNotifications() {
 
   const markAsRead = async (id: string) => {
     try {
-      const result = await markNotificationRead(id, tenant?.id || "", user?.client?.id);
+      const result = await markNotificationRead(id, tenant?.id || "", user?.client?.id, user?.id, role);
       // Only update UI if the operation succeeded (result is not null)
       if (result) {
         setNotifications((prev) =>

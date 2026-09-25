@@ -9,6 +9,7 @@ import {
   Notification,
   NotificationSettings,
   NotificationType,
+  EmailLog,
   AuditLog,
   OrderStatus,
   InventoryMovementType,
@@ -596,6 +597,39 @@ export async function transitionOrderStatus(
   });
 
   if (error) throw error;
+
+  // Non-blocking side effects for DISPATCHED and COMPLETED transitions
+  if (nextStatus === "DISPATCHED" || nextStatus === "COMPLETED") {
+    (async () => {
+      try {
+        const { data: ord } = await supabase
+          .from("Order")
+          .select("id, orderNumber, tenantId, clientId")
+          .eq("id", orderId)
+          .single();
+        if (ord) {
+          if (nextStatus === "DISPATCHED") {
+            await triggerOrderDispatchedEmail({
+              tenantId: ord.tenantId,
+              clientId: ord.clientId,
+              orderId: ord.id,
+              orderNumber: ord.orderNumber,
+            });
+          } else if (nextStatus === "COMPLETED") {
+            await triggerOrderCompletedEmail({
+              tenantId: ord.tenantId,
+              clientId: ord.clientId,
+              orderId: ord.id,
+              orderNumber: ord.orderNumber,
+            });
+          }
+        }
+      } catch (sideErr) {
+        console.warn("Order transition notification side effect failed:", sideErr);
+      }
+    })();
+  }
+
   return data;
 }
 
@@ -669,6 +703,16 @@ export async function createEnhancedOrder(payload: {
   if (!data || !data.success) {
     throw new Error("Order creation failed: RPC returned unsuccessful result");
   }
+
+  // Non-blocking side effect: trigger email dispatch if preference enabled
+  triggerOrderCreatedEmail({
+    tenantId: payload.tenantId,
+    clientId: payload.clientId,
+    orderId: data.orderId,
+    orderNumber: data.orderNumber,
+    selectedContactIds: payload.selectedContactIds,
+    totalAmount: (data as any)?.invoiceTotal,
+  }).catch((err) => console.warn("triggerOrderCreatedEmail side effect failed:", err));
 
   // Fetch the created order to return in the same format as before
   const { data: order, error: fetchErr } = await supabase
@@ -1206,6 +1250,29 @@ export async function submitOrderVerification(
   });
 
   if (error) throw error;
+
+  // Non-blocking side effect: delivery verification notifications
+  (async () => {
+    try {
+      const { data: ord } = await supabase
+        .from("Order")
+        .select("id, orderNumber, tenantId, clientId")
+        .eq("id", orderId)
+        .single();
+      if (ord) {
+        await triggerDeliveryVerificationEmail({
+          tenantId: ord.tenantId,
+          clientId: ord.clientId,
+          orderId: ord.id,
+          orderNumber: ord.orderNumber,
+          status,
+        });
+      }
+    } catch (sideErr) {
+      console.warn("submitOrderVerification email side effect failed:", sideErr);
+    }
+  })();
+
   return data;
 }
 
@@ -1223,6 +1290,28 @@ export async function submitOrderStoreVerification(
   });
 
   if (error) throw error;
+
+  // Non-blocking side effect: store inventory verification notifications
+  (async () => {
+    try {
+      const { data: ord } = await supabase
+        .from("Order")
+        .select("id, orderNumber, tenantId, clientId")
+        .eq("id", orderId)
+        .single();
+      if (ord) {
+        await triggerStoreVerificationEmail({
+          tenantId: ord.tenantId,
+          clientId: ord.clientId,
+          orderId: ord.id,
+          orderNumber: ord.orderNumber,
+        });
+      }
+    } catch (sideErr) {
+      console.warn("submitOrderStoreVerification email side effect failed:", sideErr);
+    }
+  })();
+
   return data;
 }
 
@@ -1467,6 +1556,30 @@ export async function recordInvoicePayment(
     }
   }
 
+  // Non-blocking side effect: payment received notifications
+  (async () => {
+    try {
+      const { data: inv } = await supabase
+        .from("Invoice")
+        .select("id, invoiceNumber, tenantId, clientId, orderId")
+        .eq("id", invoiceId)
+        .single();
+      if (inv) {
+        await triggerPaymentReceivedEmail({
+          tenantId: inv.tenantId,
+          clientId: inv.clientId,
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          orderId: inv.orderId,
+          amount,
+          paymentMethod: method,
+        });
+      }
+    } catch (sideErr) {
+      console.warn("recordInvoicePayment notification side effect failed:", sideErr);
+    }
+  })();
+
   return data;
 }
 
@@ -1675,6 +1788,30 @@ export async function markInvoiceAsPaid(
       console.warn("Payment recorded, but attaching proofUrl failed:", attachError);
     }
   }
+
+  // Non-blocking side effect: payment received notifications
+  (async () => {
+    try {
+      const { data: inv } = await supabase
+        .from("Invoice")
+        .select("id, invoiceNumber, tenantId, clientId, orderId")
+        .eq("id", invoiceId)
+        .single();
+      if (inv) {
+        await triggerPaymentReceivedEmail({
+          tenantId: inv.tenantId,
+          clientId: inv.clientId,
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          orderId: inv.orderId,
+          amount: totalAmount,
+          paymentMethod: "BANK_TRANSFER",
+        });
+      }
+    } catch (sideErr) {
+      console.warn("markInvoiceAsPaid notification side effect failed:", sideErr);
+    }
+  })();
 
   return data;
 }
@@ -1923,12 +2060,25 @@ export async function fetchUserNotifications(
 
 export async function markNotificationRead(
   notificationId: string,
-  tenantId: string,
+  tenantId?: string | null,
   clientId?: string | null,
   userId?: string | null,
   role?: Role
 ) {
-  // First verify the notification belongs to the user's tenant and client
+  // First attempt via dedicated secure RPC rpc_mark_notification_read
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc("rpc_mark_notification_read", {
+      p_notification_id: notificationId,
+    });
+
+    if (!rpcError && rpcData?.success) {
+      return { id: notificationId, read: true, readAt: new Date().toISOString() };
+    }
+  } catch (e) {
+    console.warn("rpc_mark_notification_read call failed, falling back to direct update:", e);
+  }
+
+  // Fallback: Verify tenant and client ownership, then update
   const { data: notif, error: fetchError } = await supabase
     .from("Notification")
     .select("tenantId, userId, orderId, order:Order(id, clientId)")
@@ -1936,16 +2086,13 @@ export async function markNotificationRead(
     .single();
 
   if (fetchError || !notif) {
-    // Notification not found - return null without revealing existence
     return null;
   }
 
-  // Verify tenant ownership
-  if (notif.tenantId !== tenantId) {
+  if (tenantId && notif.tenantId !== tenantId) {
     return null;
   }
 
-  // For CLIENT users, verify client/user ownership
   if (isClientRole(role)) {
     const belongsToClient = notif.order && (notif.order as any).clientId === clientId;
     const belongsToUser = notif.userId && notif.userId === userId;
@@ -1954,7 +2101,6 @@ export async function markNotificationRead(
     }
   }
 
-  // Now mark as read if ownership verified
   const { data, error } = await supabase
     .from("Notification")
     .update({ read: true, readAt: new Date().toISOString() })
@@ -2885,25 +3031,25 @@ export async function getOrCreateTenantSettings(tenantId: string) {
 
 // ======================== NOTIFICATION SETTINGS ========================
 
-// Default notification event configuration
-const DEFAULT_NOTIFICATION_SETTINGS: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> = {
-  NEW_ORDER: { inApp: true, clientEmail: true },
-  ORDER_ISSUED: { inApp: true, clientEmail: true },
+// Default notification event configuration: all email notifications default to false (OFF)
+export const DEFAULT_NOTIFICATION_SETTINGS: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> = {
+  NEW_ORDER: { inApp: true, clientEmail: false },
+  ORDER_ISSUED: { inApp: true, clientEmail: false },
   PROCESSING_STARTED: { inApp: true, clientEmail: false },
-  READY_FOR_DISPATCH: { inApp: true, clientEmail: true },
-  ORDER_DISPATCHED: { inApp: true, clientEmail: true },
+  READY_FOR_DISPATCH: { inApp: true, clientEmail: false },
+  ORDER_DISPATCHED: { inApp: true, clientEmail: false },
   CLIENT_RECEIVED_ORDER: { inApp: true, clientEmail: false },
   CLIENT_STARTED_VERIFICATION: { inApp: true, clientEmail: false },
-  CLIENT_COMPLETED_VERIFICATION: { inApp: true, clientEmail: true },
-  CLIENT_REJECTED_ORDER: { inApp: true, clientEmail: true },
-  DAMAGE_REPORTED: { inApp: true, clientEmail: true },
-  MISSING_ITEMS_REPORTED: { inApp: true, clientEmail: true },
-  VERIFICATION_COMPLETED: { inApp: true, clientEmail: true },
-  INVOICE_GENERATED: { inApp: true, clientEmail: true },
-  INVOICE_SENT: { inApp: true, clientEmail: true },
-  PAYMENT_RECEIVED: { inApp: true, clientEmail: true },
-  PAYMENT_OVERDUE: { inApp: true, clientEmail: true },
-  ORDER_COMPLETED: { inApp: true, clientEmail: true }
+  CLIENT_COMPLETED_VERIFICATION: { inApp: true, clientEmail: false },
+  CLIENT_REJECTED_ORDER: { inApp: true, clientEmail: false },
+  DAMAGE_REPORTED: { inApp: true, clientEmail: false },
+  MISSING_ITEMS_REPORTED: { inApp: true, clientEmail: false },
+  VERIFICATION_COMPLETED: { inApp: true, clientEmail: false },
+  INVOICE_GENERATED: { inApp: true, clientEmail: false },
+  INVOICE_SENT: { inApp: true, clientEmail: false },
+  PAYMENT_RECEIVED: { inApp: true, clientEmail: false },
+  PAYMENT_OVERDUE: { inApp: true, clientEmail: false },
+  ORDER_COMPLETED: { inApp: true, clientEmail: false }
 };
 
 export async function fetchNotificationSettings(tenantId?: string | null) {
@@ -2944,16 +3090,36 @@ export async function fetchNotificationSettings(tenantId?: string | null) {
 }
 
 export async function updateNotificationSettings(
-  id: string,
+  tenantId: string,
   payload: Partial<{ enabled?: boolean; eventConfig?: Record<NotificationType, { inApp: boolean; clientEmail: boolean }> }>
 ) {
+  // 1. Invoke dedicated secure RPC rpc_update_notification_settings
+  try {
+    const existing = await fetchNotificationSettings(tenantId);
+    const enabled = payload.enabled !== undefined ? payload.enabled : (existing?.enabled ?? true);
+    const eventConfig = payload.eventConfig || existing?.eventConfig || DEFAULT_NOTIFICATION_SETTINGS;
+
+    const { data: rpcData, error: rpcError } = await supabase.rpc("rpc_update_notification_settings", {
+      p_tenant_id: tenantId,
+      p_enabled: enabled,
+      p_event_config: eventConfig,
+    });
+
+    if (!rpcError && rpcData?.success) {
+      return rpcData.settings;
+    }
+  } catch (rpcErr) {
+    console.warn("rpc_update_notification_settings fallback:", rpcErr);
+  }
+
+  // 2. Direct table update fallback
   try {
     const { data, error } = await supabase
       .from("NotificationSettings")
       .update(payload)
-      .eq("id", id)
+      .eq("tenantId", tenantId)
       .select()
-      .single();
+      .maybeSingle();
     if (!error && data) return data;
   } catch {
     // Fallback to WarehouseSetting
@@ -2964,8 +3130,7 @@ export async function updateNotificationSettings(
       updatedAt: new Date().toISOString()
     };
     if (payload.enabled !== undefined || payload.eventConfig !== undefined) {
-      // Merge with existing
-      const existing = await fetchNotificationSettings(id);
+      const existing = await fetchNotificationSettings(tenantId);
       updatePayload.notificationPreferences = {
         enabled: payload.enabled !== undefined ? payload.enabled : (existing?.enabled ?? true),
         eventConfig: payload.eventConfig || existing?.eventConfig || DEFAULT_NOTIFICATION_SETTINGS
@@ -2975,7 +3140,7 @@ export async function updateNotificationSettings(
     const { data, error } = await supabase
       .from("WarehouseSetting")
       .update(updatePayload)
-      .or(`id.eq.${id},tenantId.eq.${id}`)
+      .eq("tenantId", tenantId)
       .select()
       .maybeSingle();
 
@@ -3053,31 +3218,79 @@ export async function createNotificationSettings(payload: {
   return null;
 }
 
-// Get or create notification settings with safe defaults
+// Get or create notification settings with safe defaults (email default OFF)
 export async function getOrCreateNotificationSettings(tenantId: string) {
   const settings = await fetchNotificationSettings(tenantId);
   if (settings) return settings;
   return await createNotificationSettings({ tenantId });
 }
 
+export interface SendNotificationEmailParams {
+  tenantId: string;
+  eventType: NotificationType;
+  recipientUserId?: string | null;
+  recipientEmail?: string | null;
+  recipientName?: string | null;
+  notificationId?: string | null;
+  orderId?: string | null;
+  invoiceId?: string | null;
+  title: string;
+  message: string;
+  actionUrl?: string | null;
+  idempotencyKey?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Invokes the secure Resend Edge Function to dispatch email notifications.
+ * Verifies tenant email preferences, recipient status, and logs delivery attempts.
+ */
+export async function sendNotificationEmail(params: SendNotificationEmailParams): Promise<{
+  success: boolean;
+  skipped?: boolean;
+  duplicate?: boolean;
+  emailId?: string;
+  reason?: string;
+  error?: string;
+}> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    const supabaseUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL || "";
+    const edgeFunctionUrl = `${supabaseUrl}/functions/v1/send-email`;
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (accessToken) {
+      headers["Authorization"] = `Bearer ${accessToken}`;
+    }
+
+    const response = await fetch(edgeFunctionUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(params),
+    });
+
+    const result = await response.json();
+    return result;
+  } catch (err: any) {
+    console.error("sendNotificationEmail error:", err);
+    return { success: false, error: err?.message || "Failed to invoke send-email edge function" };
+  }
+}
+
 /**
  * Sends a client email notification
- * This function respects the notification settings and tenant isolation.
- * In a production environment, this would integrate with an email provider.
- * If notification.userId is set, email is sent to that specific user;
- * otherwise, email is sent to the client contact person.
- *
- * @param notification - The notification record containing event details
- * @param tenantId - The tenant ID for security validation
- * @param clientId - The client ID to receive the email (used as fallback)
- * @returns true if email was queued/sent, false if skipped due to settings
+ * Respects notification settings (default OFF) and tenant isolation.
+ * Dispatches via the secure Resend Edge Function and records EmailLog audit.
  */
 export async function sendClientEmail(
   notification: Notification,
   tenantId: string,
   clientId: string
 ): Promise<boolean> {
-  // Get notification settings for this tenant
   const settings = await getOrCreateNotificationSettings(tenantId);
 
   // Check if notifications are enabled globally
@@ -3086,7 +3299,7 @@ export async function sendClientEmail(
     return false;
   }
 
-  // Check if client email is enabled for this event type
+  // Check if client email is enabled for this event type (default OFF)
   const eventConfig = settings.eventConfig?.[notification.type as NotificationType];
   if (!eventConfig?.clientEmail) {
     console.debug(`Client email disabled for event ${notification.type}`);
@@ -3105,51 +3318,531 @@ export async function sendClientEmail(
     return false;
   }
 
-  // Determine who to send the email to:
-  // If notification.userId is set, send to that specific user's email
-  // Otherwise, send to the client contact person (existing behavior)
+  // Determine recipient
   let emailRecipient: string | null = null;
+  let recipientUserId = notification.userId || null;
+  let recipientName = client.companyName;
 
   if (notification.userId) {
-    // Fetch the specific user's email by userId
     const { data: user } = await supabase
       .from("User")
-      .select("email")
+      .select("id, name, email, status, tenantId")
       .eq("id", notification.userId)
       .single();
 
-    if (user?.email) {
+    if (user && user.tenantId === tenantId && user.status === "ACTIVE") {
       emailRecipient = user.email;
+      recipientName = user.name || recipientName;
     } else {
-      // Fall back to client contact if user has no email
-      emailRecipient = client.email ?? client.contactPerson;
+      // Inactive user or tenant mismatch -> do not send email
+      console.warn(`User ${notification.userId} inactive or tenant mismatch; skipping email.`);
+      return false;
     }
   } else {
-    // No userId selected — send to client contact (existing behavior)
     emailRecipient = client.email ?? client.contactPerson;
   }
 
-  // Build email payload
-  const emailPayload = buildClientEmailPayload(notification, client as unknown as Client);
-
-  // Simulate email sending (replace with actual email provider integration)
-  // In production, you would use a service like SendGrid, Mailgun, etc.
-  try {
-    console.log(`[Email Simulation] Sending to ${emailRecipient}:`, {
-      subject: emailPayload.subject,
-      to: emailRecipient,
-      event: notification.type,
-      tenantId,
-      clientId,
-      sentToUserId: notification.userId || null
-    });
-
-    // Return true to indicate email would be sent
-    return true;
-  } catch (error) {
-    console.error("Email sending error:", error);
+  if (!emailRecipient) {
+    console.debug("No valid recipient email address; skipping email.");
     return false;
   }
+
+  const result = await sendNotificationEmail({
+    tenantId,
+    eventType: notification.type,
+    recipientUserId,
+    recipientEmail: emailRecipient,
+    recipientName,
+    notificationId: notification.id,
+    orderId: notification.orderId || null,
+    title: notification.title,
+    message: notification.message,
+    actionUrl: notification.actionUrl || null,
+    idempotencyKey: `email_${notification.id}_${emailRecipient}`,
+  });
+
+  return result.success && !result.skipped;
+}
+
+/**
+ * Securely creates an in-app notification via rpc_create_notification.
+ * Respects tenant boundaries, verifies active recipient status, and prevents duplicates.
+ */
+export async function createNotificationSecure(payload: {
+  tenantId: string;
+  orderId?: string | null;
+  userId?: string | null;
+  type: NotificationType;
+  title: string;
+  message: string;
+  actionUrl?: string | null;
+  priority?: "normal" | "urgent";
+}): Promise<{ id: string; skipped?: boolean } | null> {
+  try {
+    const { data, error } = await supabase.rpc("rpc_create_notification", {
+      p_tenant_id: payload.tenantId,
+      p_order_id: payload.orderId || null,
+      p_user_id: payload.userId || null,
+      p_type: payload.type,
+      p_title: payload.title,
+      p_message: payload.message,
+      p_action_url: payload.actionUrl || null,
+      p_priority: payload.priority || "normal",
+    });
+
+    if (!error && data?.success) {
+      return { id: data.notificationId, skipped: data.skipped };
+    }
+  } catch (err) {
+    console.warn("rpc_create_notification error, skipping notification row:", err);
+  }
+  return null;
+}
+
+/**
+ * Resolves active client employees with specific roles for an order / company.
+ * Authoritatively verifies status === 'ACTIVE', non-null email, and tenant isolation.
+ */
+export async function resolveActiveClientRecipients(
+  tenantId: string,
+  clientId: string,
+  roles: ClientEmployeeRole[]
+): Promise<Array<{ id: string; email: string; name: string }>> {
+  try {
+    const { data: emps, error } = await supabase
+      .from("ClientEmployee")
+      .select("userId, employeeRole, status, tenantId, user:User(id, name, email, status, tenantId)")
+      .eq("clientId", clientId)
+      .eq("tenantId", tenantId)
+      .eq("status", "ACTIVE")
+      .in("employeeRole", roles);
+
+    if (error || !emps) return [];
+
+    const recipients: Array<{ id: string; email: string; name: string }> = [];
+    const seen = new Set<string>();
+
+    for (const emp of emps) {
+      const u: any = Array.isArray(emp.user) ? emp.user[0] : emp.user;
+      if (
+        u &&
+        u.id &&
+        u.status === "ACTIVE" &&
+        u.email &&
+        u.tenantId === tenantId &&
+        !seen.has(u.email)
+      ) {
+        seen.add(u.email);
+        recipients.push({
+          id: u.id,
+          email: u.email,
+          name: u.name || "Client Team Member",
+        });
+      }
+    }
+
+    return recipients;
+  } catch (err) {
+    console.warn("resolveActiveClientRecipients failed:", err);
+    return [];
+  }
+}
+
+/**
+ * Resolves active warehouse operations/finance staff by warehouse roles.
+ * Authoritatively verifies status === 'ACTIVE', non-null email, and tenant isolation.
+ */
+export async function resolveActiveWarehouseRecipients(
+  tenantId: string,
+  roles: Role[]
+): Promise<Array<{ id: string; email: string; name: string }>> {
+  try {
+    const { data: users, error } = await supabase
+      .from("User")
+      .select("id, name, email, status, tenantId, role")
+      .eq("tenantId", tenantId)
+      .eq("status", "ACTIVE")
+      .in("role", roles);
+
+    if (error || !users) return [];
+
+    const recipients: Array<{ id: string; email: string; name: string }> = [];
+    const seen = new Set<string>();
+
+    for (const u of users) {
+      if (u.id && u.email && !seen.has(u.email)) {
+        seen.add(u.email);
+        recipients.push({
+          id: u.id,
+          email: u.email,
+          name: u.name || "Warehouse Staff",
+        });
+      }
+    }
+
+    return recipients;
+  } catch (err) {
+    console.warn("resolveActiveWarehouseRecipients failed:", err);
+    return [];
+  }
+}
+
+/**
+ * Triggers NEW_ORDER notifications and transactional emails (if preference enabled).
+ * Non-blocking side effect that never rolls back the order transaction.
+ */
+export async function triggerOrderCreatedEmail(params: {
+  tenantId: string;
+  clientId: string;
+  orderId: string;
+  orderNumber: string;
+  selectedContactIds?: string[];
+  totalAmount?: number;
+}): Promise<void> {
+  try {
+    const { tenantId, clientId, orderId, orderNumber, selectedContactIds, totalAmount } = params;
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+
+    const emailPrefEnabled = settings.eventConfig?.NEW_ORDER?.clientEmail === true;
+    if (!emailPrefEnabled) return;
+
+    let recipients: Array<{ id: string; email: string; name: string }> = [];
+
+    if (selectedContactIds && selectedContactIds.length > 0) {
+      const { data: contactUsers } = await supabase
+        .from("User")
+        .select("id, name, email, status, tenantId")
+        .in("id", selectedContactIds)
+        .eq("tenantId", tenantId)
+        .eq("status", "ACTIVE");
+
+      if (contactUsers) {
+        recipients = contactUsers
+          .filter((u) => u.email)
+          .map((u) => ({ id: u.id, email: u.email, name: u.name || "Order Contact" }));
+      }
+    }
+
+    if (recipients.length === 0) {
+      recipients = await resolveActiveClientRecipients(tenantId, clientId, [
+        "MANAGER",
+        "RECEIVER",
+        "STORE",
+        "ACCOUNT",
+        "GM",
+        "MD",
+      ]);
+    }
+
+    for (const recipient of recipients) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "NEW_ORDER",
+        recipientUserId: recipient.id,
+        recipientEmail: recipient.email,
+        recipientName: recipient.name,
+        orderId,
+        title: `New Order Created: ${orderNumber}`,
+        message: `Order ${orderNumber} has been successfully created and queued for processing.`,
+        actionUrl: `/orders/${orderId}`,
+        idempotencyKey: `notif_new_order_${orderId}_${recipient.id}`,
+        metadata: {
+          orderNumber,
+          totalAmount,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerOrderCreatedEmail background error:", err);
+  }
+}
+
+/**
+ * Triggers ORDER_DISPATCHED notification and emails.
+ */
+export async function triggerOrderDispatchedEmail(params: {
+  tenantId: string;
+  clientId: string;
+  orderId: string;
+  orderNumber: string;
+  carrier?: string;
+}): Promise<void> {
+  try {
+    const { tenantId, clientId, orderId, orderNumber, carrier } = params;
+
+    // 1. In-app notification
+    await createNotificationSecure({
+      tenantId,
+      orderId,
+      type: "ORDER_DISPATCHED",
+      title: `Order Dispatched: ${orderNumber}`,
+      message: `Order ${orderNumber} has been dispatched from warehouse and is on its way to your destination.`,
+      actionUrl: `/orders/${orderId}`,
+    });
+
+    // 2. Email dispatch if preference enabled
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+    if (settings.eventConfig?.ORDER_DISPATCHED?.clientEmail !== true) return;
+
+    const recipients = await resolveActiveClientRecipients(tenantId, clientId, ["RECEIVER", "STORE", "MANAGER"]);
+
+    for (const recipient of recipients) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "ORDER_DISPATCHED",
+        recipientUserId: recipient.id,
+        recipientEmail: recipient.email,
+        recipientName: recipient.name,
+        orderId,
+        title: `Order Dispatched: ${orderNumber}`,
+        message: `Order ${orderNumber} has been dispatched. Please prepare for receipt and delivery verification.`,
+        actionUrl: `/orders/${orderId}`,
+        idempotencyKey: `notif_dispatched_${orderId}_${recipient.id}`,
+        metadata: {
+          orderNumber,
+          carrier,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerOrderDispatchedEmail background error:", err);
+  }
+}
+
+/**
+ * Triggers CLIENT_COMPLETED_VERIFICATION notification and emails to warehouse operations.
+ */
+export async function triggerDeliveryVerificationEmail(params: {
+  tenantId: string;
+  clientId?: string;
+  orderId: string;
+  orderNumber: string;
+  status: VerificationStatus;
+  verifierName?: string;
+}): Promise<void> {
+  try {
+    const { tenantId, orderId, orderNumber, status, verifierName } = params;
+
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+    if (settings.eventConfig?.CLIENT_COMPLETED_VERIFICATION?.clientEmail !== true) return;
+
+    const warehouseStaff = await resolveActiveWarehouseRecipients(tenantId, [
+      "WAREHOUSE_OWNER",
+      "WAREHOUSE_MODERATOR",
+      "WAREHOUSE_STAFF",
+    ]);
+
+    for (const staff of warehouseStaff) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "CLIENT_COMPLETED_VERIFICATION",
+        recipientUserId: staff.id,
+        recipientEmail: staff.email,
+        recipientName: staff.name,
+        orderId,
+        title: `Delivery Verification Completed: ${orderNumber} (${status})`,
+        message: `Receiver has completed delivery verification for order ${orderNumber} with result: ${status}.`,
+        actionUrl: `/orders/${orderId}`,
+        idempotencyKey: `notif_verif_completed_${orderId}_${staff.id}`,
+        metadata: {
+          orderNumber,
+          verificationStatus: status,
+          verifierName,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerDeliveryVerificationEmail background error:", err);
+  }
+}
+
+/**
+ * Triggers VERIFICATION_COMPLETED store inventory verification notifications and emails.
+ */
+export async function triggerStoreVerificationEmail(params: {
+  tenantId: string;
+  clientId?: string;
+  orderId: string;
+  orderNumber: string;
+}): Promise<void> {
+  try {
+    const { tenantId, clientId, orderId, orderNumber } = params;
+
+    // In-app notification
+    await createNotificationSecure({
+      tenantId,
+      orderId,
+      type: "VERIFICATION_COMPLETED",
+      title: `Store Inventory Verified: ${orderNumber}`,
+      message: `Store verification completed and inventory updated for order ${orderNumber}.`,
+      actionUrl: `/orders/${orderId}`,
+    });
+
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+    if (settings.eventConfig?.VERIFICATION_COMPLETED?.clientEmail !== true) return;
+
+    let recipients: Array<{ id: string; email: string; name: string }> = [];
+    if (clientId) {
+      recipients = await resolveActiveClientRecipients(tenantId, clientId, ["STORE", "MANAGER", "ACCOUNT"]);
+    }
+    const staff = await resolveActiveWarehouseRecipients(tenantId, ["WAREHOUSE_OWNER", "WAREHOUSE_STAFF"]);
+    recipients = [...recipients, ...staff];
+
+    for (const r of recipients) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "VERIFICATION_COMPLETED",
+        recipientUserId: r.id,
+        recipientEmail: r.email,
+        recipientName: r.name,
+        orderId,
+        title: `Store Inventory Verified: ${orderNumber}`,
+        message: `Inventory stock has been reconciled for order ${orderNumber}.`,
+        actionUrl: `/orders/${orderId}`,
+        idempotencyKey: `notif_store_verif_${orderId}_${r.id}`,
+        metadata: {
+          orderNumber,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerStoreVerificationEmail background error:", err);
+  }
+}
+
+/**
+ * Triggers PAYMENT_RECEIVED notifications and emails.
+ */
+export async function triggerPaymentReceivedEmail(params: {
+  tenantId: string;
+  clientId?: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  orderId?: string | null;
+  amount: number;
+  paymentMethod?: string;
+}): Promise<void> {
+  try {
+    const { tenantId, clientId, invoiceId, invoiceNumber, orderId, amount, paymentMethod } = params;
+
+    // In-app notification
+    await createNotificationSecure({
+      tenantId,
+      orderId: orderId || null,
+      type: "PAYMENT_RECEIVED",
+      title: `Payment Received: #${invoiceNumber}`,
+      message: `Payment of $${amount.toFixed(2)} received for invoice #${invoiceNumber}.`,
+      actionUrl: `/invoices/${invoiceId}`,
+    });
+
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+    if (settings.eventConfig?.PAYMENT_RECEIVED?.clientEmail !== true) return;
+
+    let recipients: Array<{ id: string; email: string; name: string }> = [];
+    if (clientId) {
+      recipients = await resolveActiveClientRecipients(tenantId, clientId, ["ACCOUNT", "MANAGER", "GM", "MD"]);
+    }
+    const financeStaff = await resolveActiveWarehouseRecipients(tenantId, ["ACCOUNTANT", "ACCOUNTS_TEAM", "WAREHOUSE_OWNER"]);
+    recipients = [...recipients, ...financeStaff];
+
+    for (const r of recipients) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "PAYMENT_RECEIVED",
+        recipientUserId: r.id,
+        recipientEmail: r.email,
+        recipientName: r.name,
+        orderId: orderId || null,
+        invoiceId,
+        title: `Payment Received: Invoice #${invoiceNumber}`,
+        message: `Payment of $${amount.toFixed(2)} has been recorded via ${paymentMethod || "standard payment"}.`,
+        actionUrl: `/invoices/${invoiceId}`,
+        idempotencyKey: `notif_payment_${invoiceId}_${amount}_${r.id}`,
+        metadata: {
+          invoiceNumber,
+          paymentAmount: amount,
+          orderId,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerPaymentReceivedEmail background error:", err);
+  }
+}
+
+/**
+ * Triggers ORDER_COMPLETED notifications and emails.
+ */
+export async function triggerOrderCompletedEmail(params: {
+  tenantId: string;
+  clientId: string;
+  orderId: string;
+  orderNumber: string;
+}): Promise<void> {
+  try {
+    const { tenantId, clientId, orderId, orderNumber } = params;
+
+    // In-app notification
+    await createNotificationSecure({
+      tenantId,
+      orderId,
+      type: "ORDER_COMPLETED",
+      title: `Order Completed: ${orderNumber}`,
+      message: `Order ${orderNumber} has been successfully completed and settled.`,
+      actionUrl: `/orders/${orderId}`,
+    });
+
+    const settings = await fetchNotificationSettings(tenantId);
+    if (!settings || settings.enabled === false) return;
+    if (settings.eventConfig?.ORDER_COMPLETED?.clientEmail !== true) return;
+
+    const recipients = await resolveActiveClientRecipients(tenantId, clientId, ["MANAGER", "RECEIVER", "GM", "MD"]);
+
+    for (const r of recipients) {
+      await sendNotificationEmail({
+        tenantId,
+        eventType: "ORDER_COMPLETED",
+        recipientUserId: r.id,
+        recipientEmail: r.email,
+        recipientName: r.name,
+        orderId,
+        title: `Order Completed: ${orderNumber}`,
+        message: `Order ${orderNumber} has reached final completion. Thank you for your partnership.`,
+        actionUrl: `/orders/${orderId}`,
+        idempotencyKey: `notif_completed_${orderId}_${r.id}`,
+        metadata: {
+          orderNumber,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn("triggerOrderCompletedEmail background error:", err);
+  }
+}
+
+/**
+ * Fetches Email delivery audit logs for tenant operations and accountants.
+ */
+export async function fetchEmailLogs(tenantId?: string | null): Promise<EmailLog[]> {
+  let query = supabase
+    .from("EmailLog")
+    .select("*")
+    .order("createdAt", { ascending: false })
+    .limit(100);
+
+  if (tenantId) query = query.eq("tenantId", tenantId);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("fetchEmailLogs error:", error);
+    return [];
+  }
+  return (data as EmailLog[]) || [];
 }
 
 /**

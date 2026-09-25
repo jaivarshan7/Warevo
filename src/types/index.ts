@@ -498,3 +498,23 @@ export interface AuditLog {
   createdAt: string;
   user?: User | null;
 }
+
+export type EmailLogStatus = "PENDING" | "SENT" | "SKIPPED" | "FAILED";
+
+export interface EmailLog {
+  id: string;
+  tenantId: string;
+  notificationId?: string | null;
+  orderId?: string | null;
+  recipientEmail: string;
+  recipientUserId?: string | null;
+  eventType: NotificationType;
+  subject: string;
+  status: EmailLogStatus;
+  resendId?: string | null;
+  idempotencyKey?: string | null;
+  reason?: string | null;
+  error?: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
