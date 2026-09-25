@@ -82,6 +82,13 @@ export const InvoiceDetailPage: React.FC = () => {
         return;
       }
 
+      if (!invoice.order?.deliveryVerifiedAt) {
+        setActionError("Payment is available after delivery verification.");
+        setIsMarkingPaid(false);
+        setUploading(false);
+        return;
+      }
+
       // Use the new function that handles upload and payment record creation
       await recordPaymentWithProof(
         invoice.id,
@@ -191,8 +198,25 @@ export const InvoiceDetailPage: React.FC = () => {
         </div>
       )}
 
+      {/* Payment Gate Notice before delivery verification */}
+      {canMarkPaid && !invoice.order?.deliveryVerifiedAt && (
+        <Card className="p-4 border-amber-900/60 bg-amber-950/20 print:hidden">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div>
+              <h2 className="text-sm font-bold text-amber-200">
+                Payment Not Available
+              </h2>
+              <p className="text-xs text-amber-300/80 mt-0.5">
+                Payment is available after delivery verification.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Payment Settlement Card */}
-      {canMarkPaid && (
+      {canMarkPaid && Boolean(invoice.order?.deliveryVerifiedAt) && (
         <Card className="p-4 border-indigo-900/50 bg-slate-900/80 print:hidden">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>

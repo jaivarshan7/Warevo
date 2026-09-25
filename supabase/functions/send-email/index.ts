@@ -129,13 +129,36 @@ serve(async (req: Request) => {
 
     // 3. Recipient Resolution & Inactive / Cross-Tenant Check
     if (recipientUserId) {
-      const { data: recipientUser, error: recError } = await supabaseAdmin
+      let recipientUser: any = null;
+      const { data: uData, error: recError } = await supabaseAdmin
         .from("User")
         .select("id, name, email, tenantId, status")
         .eq("id", recipientUserId)
-        .single();
+        .maybeSingle();
 
-      if (recError || !recipientUser) {
+      if (uData) {
+        recipientUser = uData;
+      } else {
+        // Fallback: check ClientEmployee table by id
+        const { data: empData } = await supabaseAdmin
+          .from("ClientEmployee")
+          .select("id, contactPerson, email, tenantId, status, userId, user:User(id, name, email, tenantId, status)")
+          .eq("id", recipientUserId)
+          .maybeSingle();
+
+        if (empData) {
+          const linkedUser: any = Array.isArray(empData.user) ? empData.user[0] : empData.user;
+          recipientUser = {
+            id: linkedUser?.id || null,
+            name: empData.contactPerson || linkedUser?.name,
+            email: empData.email || linkedUser?.email,
+            tenantId: empData.tenantId,
+            status: empData.status === "ACTIVE" && (!linkedUser || linkedUser.status === "ACTIVE") ? "ACTIVE" : "INACTIVE",
+          };
+        }
+      }
+
+      if (!recipientUser) {
         return new Response(
           JSON.stringify({ success: false, error: "Recipient user not found", code: "RECIPIENT_NOT_FOUND" }),
           { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -161,7 +184,7 @@ serve(async (req: Request) => {
           tenantId,
           eventType,
           recipientEmail: recipientUser.email || "none@unknown.local",
-          recipientUserId,
+          recipientUserId: recipientUser.id || null,
           notificationId,
           orderId,
           subject: `[Warevo] ${title}`,
@@ -187,7 +210,7 @@ serve(async (req: Request) => {
           tenantId,
           eventType,
           recipientEmail: "none@unknown.local",
-          recipientUserId,
+          recipientUserId: recipientUser.id || null,
           notificationId,
           orderId,
           subject: `[Warevo] ${title}`,
@@ -217,7 +240,7 @@ serve(async (req: Request) => {
         tenantId,
         eventType,
         recipientEmail: "none@unknown.local",
-        recipientUserId,
+        recipientUserId: recipientUserId || null,
         notificationId,
         orderId,
         subject: `[Warevo] ${title}`,
@@ -238,7 +261,7 @@ serve(async (req: Request) => {
     }
 
     if (!recipientUserId && targetEmail) {
-      // Authoritative tenant validation: targetEmail must belong to an active User or registered Client within this tenant!
+      // Authoritative tenant validation: targetEmail must belong to an active User, registered Client, or ClientEmployee within this tenant!
       const { data: matchedUser } = await supabaseAdmin
         .from("User")
         .select("id, tenantId, status")
@@ -253,7 +276,14 @@ serve(async (req: Request) => {
         .eq("tenantId", tenantId)
         .maybeSingle();
 
-      if (!matchedUser && !matchedClient) {
+      const { data: matchedEmployee } = await supabaseAdmin
+        .from("ClientEmployee")
+        .select("id, tenantId, status, userId")
+        .eq("email", targetEmail)
+        .eq("tenantId", tenantId)
+        .maybeSingle();
+
+      if (!matchedUser && !matchedClient && !matchedEmployee) {
         return new Response(
           JSON.stringify({
             success: false,
@@ -264,13 +294,13 @@ serve(async (req: Request) => {
         );
       }
 
-      if (matchedUser && matchedUser.status !== "ACTIVE") {
+      if ((matchedUser && matchedUser.status !== "ACTIVE") || (matchedEmployee && matchedEmployee.status !== "ACTIVE")) {
         await logEmail({
           supabaseAdmin,
           tenantId,
           eventType,
           recipientEmail: targetEmail,
-          recipientUserId: matchedUser.id,
+          recipientUserId: matchedUser?.id || matchedEmployee?.userId || null,
           notificationId,
           orderId,
           subject: `[Warevo] ${title}`,

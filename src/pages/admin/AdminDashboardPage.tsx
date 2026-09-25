@@ -393,7 +393,7 @@ export const AdminDashboardPage: React.FC = () => {
         password: platformAdminForm.password,
         mobile: platformAdminForm.mobile.trim() || undefined,
         role: "PLATFORM_ADMIN",
-        tenantId: platformAdminForm.tenantId || undefined,
+        tenantId: undefined,
       });
 
       if (!result.success) {
@@ -402,7 +402,7 @@ export const AdminDashboardPage: React.FC = () => {
       }
 
       setShowAddPlatformAdmin(false);
-      setPlatformAdminForm({ name: "", email: "", password: "", mobile: "", tenantId: user?.tenantId || (tenants.length === 1 ? tenants[0]?.id : "") || "" });
+      setPlatformAdminForm({ name: "", email: "", password: "", mobile: "", tenantId: "" });
       setShowPlatformAdminPassword(false);
       setActionMessage({ type: "success", text: "Platform Admin created successfully with Supabase Auth credentials!" });
       await loadData();

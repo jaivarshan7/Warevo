@@ -636,6 +636,7 @@ export async function transitionOrderStatus(
 export async function createOrder(payload: {
   tenantId: string;
   clientId: string;
+  selectedContactIds?: string[];
   createdById: string;
   assignedStaffId?: string;
   expectedDelivery?: string;
@@ -1536,6 +1537,23 @@ export async function recordInvoicePayment(
   userId?: string | null,
   userRole?: Role
 ) {
+  // Pre-check: invoice must be FINAL and associated order must have delivery verification
+  const { data: inv } = await supabase
+    .from("Invoice")
+    .select("id, status, tenantId, clientId, orderId, order:Order(id, status, deliveryVerifiedAt)")
+    .eq("id", invoiceId)
+    .maybeSingle();
+
+  if (inv) {
+    if (inv.status !== "FINAL") {
+      throw new Error("Payment cannot be recorded: invoice is not in FINAL status.");
+    }
+    const orderData: any = Array.isArray(inv.order) ? inv.order[0] : inv.order;
+    if (!orderData || !orderData.deliveryVerifiedAt) {
+      throw new Error("Payment is available after delivery verification.");
+    }
+  }
+
   const { data, error } = await supabase.rpc("rpc_record_payment_secure", {
     p_invoice_id: invoiceId,
     p_amount: amount,
@@ -3501,31 +3519,52 @@ export async function triggerOrderCreatedEmail(params: {
 }): Promise<void> {
   try {
     const { tenantId, clientId, orderId, orderNumber, selectedContactIds, totalAmount } = params;
-    const settings = await fetchNotificationSettings(tenantId);
-    if (!settings || settings.enabled === false) return;
 
-    const emailPrefEnabled = settings.eventConfig?.NEW_ORDER?.clientEmail === true;
-    if (!emailPrefEnabled) return;
-
-    let recipients: Array<{ id: string; email: string; name: string }> = [];
+    let recipients: Array<{ id: string | null; email: string | null; name: string; contactKey: string }> = [];
 
     if (selectedContactIds && selectedContactIds.length > 0) {
-      const { data: contactUsers } = await supabase
-        .from("User")
-        .select("id, name, email, status, tenantId")
+      // 1. Authoritatively resolve explicitly designated ClientEmployee contacts
+      const { data: empsById } = await supabase
+        .from("ClientEmployee")
+        .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
         .in("id", selectedContactIds)
         .eq("tenantId", tenantId)
-        .eq("status", "ACTIVE");
+        .eq("clientId", clientId);
 
-      if (contactUsers) {
-        recipients = contactUsers
-          .filter((u) => u.email)
-          .map((u) => ({ id: u.id, email: u.email, name: u.name || "Order Contact" }));
+      const { data: empsByUserId } = await supabase
+        .from("ClientEmployee")
+        .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
+        .in("userId", selectedContactIds)
+        .eq("tenantId", tenantId)
+        .eq("clientId", clientId);
+
+      const combinedEmps = new Map<string, any>();
+      (empsById || []).forEach((e) => combinedEmps.set(e.id, e));
+      (empsByUserId || []).forEach((e) => combinedEmps.set(e.id, e));
+
+      for (const contactId of selectedContactIds) {
+        const emp =
+          combinedEmps.get(contactId) ||
+          Array.from(combinedEmps.values()).find((e) => e.userId === contactId);
+
+        if (emp) {
+          const u: any = Array.isArray(emp.user) ? emp.user[0] : emp.user;
+          const email = (emp.email || u?.email || "").trim() || null;
+          const name = emp.contactPerson || u?.name || "Order Contact";
+          const userId = emp.userId || (u?.id ?? null);
+          const isActive = emp.status === "ACTIVE" && (!u || u.status === "ACTIVE");
+
+          recipients.push({
+            id: userId,
+            email: isActive ? email : (email || "inactive@client.local"),
+            name,
+            contactKey: emp.id,
+          });
+        }
       }
-    }
-
-    if (recipients.length === 0) {
-      recipients = await resolveActiveClientRecipients(tenantId, clientId, [
+    } else {
+      // 2. Default fallback when no specific contacts are selected
+      const fallbackRecipients = await resolveActiveClientRecipients(tenantId, clientId, [
         "MANAGER",
         "RECEIVER",
         "STORE",
@@ -3533,6 +3572,12 @@ export async function triggerOrderCreatedEmail(params: {
         "GM",
         "MD",
       ]);
+      recipients = fallbackRecipients.map((r) => ({
+        id: r.id,
+        email: r.email,
+        name: r.name,
+        contactKey: r.id,
+      }));
     }
 
     for (const recipient of recipients) {
@@ -3546,7 +3591,7 @@ export async function triggerOrderCreatedEmail(params: {
         title: `New Order Created: ${orderNumber}`,
         message: `Order ${orderNumber} has been successfully created and queued for processing.`,
         actionUrl: `/orders/${orderId}`,
-        idempotencyKey: `notif_new_order_${orderId}_${recipient.id}`,
+        idempotencyKey: `notif_new_order_${orderId}_${recipient.contactKey}`,
         metadata: {
           orderNumber,
           totalAmount,

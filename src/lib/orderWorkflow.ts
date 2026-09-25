@@ -105,7 +105,7 @@ export function deriveClientWorkflowStages(
 
   const effectivePaymentStatus = invoicePaymentStatus || "UNPAID";
   const isPaid = effectivePaymentStatus === "PAID";
-  const isPaymentPending = isStoreVerified && !isPaid;
+  const isPaymentPending = isDeliveryVerified && !isPaid;
 
   const stages: WorkflowStageItem[] = [
     {

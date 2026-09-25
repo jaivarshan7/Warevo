@@ -217,11 +217,12 @@ serve(async (req: Request) => {
     }
 
     // 6. Validate target role and tenant permissions based on caller's actual role
-    let targetTenantId: string;
+    let targetTenantId: string | null = null;
 
     if (callerWmsUser.role === "PLATFORM_ADMIN") {
-      // Platform admin can create: warehouse employees, WAREHOUSE_OWNER, CLIENT
+      // Platform admin can create: PLATFORM_ADMIN, warehouse employees, WAREHOUSE_OWNER, CLIENT
       const adminAllowedRoles = [
+        "PLATFORM_ADMIN",
         ...WAREHOUSE_EMPLOYEE_ROLES,
         "WAREHOUSE_OWNER",
         "CLIENT",
@@ -237,35 +238,40 @@ serve(async (req: Request) => {
         );
       }
 
-      if (!requestedTenantId) {
-        return new Response(
-          JSON.stringify({ success: false, error: "Company / Organization selection is required", code: "MISSING_TENANT" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      if (role === "PLATFORM_ADMIN") {
+        // PLATFORM_ADMIN is platform-level: tenantId must be null
+        targetTenantId = null;
+      } else {
+        if (!requestedTenantId) {
+          return new Response(
+            JSON.stringify({ success: false, error: "Company / Organization selection is required", code: "MISSING_TENANT" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        // Verify target tenant exists and is ACTIVE
+        const { data: tenant, error: tenantError } = await supabaseAdmin
+          .from("Tenant")
+          .select("id, name, status")
+          .eq("id", requestedTenantId)
+          .single();
+
+        if (tenantError || !tenant) {
+          return new Response(
+            JSON.stringify({ success: false, error: "Invalid organization specified", code: "INVALID_TENANT" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        if (tenant.status !== "ACTIVE") {
+          return new Response(
+            JSON.stringify({ success: false, error: "Specified organization is not active", code: "TENANT_INACTIVE" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        targetTenantId = requestedTenantId;
       }
-
-      // Verify target tenant exists and is ACTIVE
-      const { data: tenant, error: tenantError } = await supabaseAdmin
-        .from("Tenant")
-        .select("id, name, status")
-        .eq("id", requestedTenantId)
-        .single();
-
-      if (tenantError || !tenant) {
-        return new Response(
-          JSON.stringify({ success: false, error: "Invalid organization specified", code: "INVALID_TENANT" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (tenant.status !== "ACTIVE") {
-        return new Response(
-          JSON.stringify({ success: false, error: "Specified organization is not active", code: "TENANT_INACTIVE" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      targetTenantId = requestedTenantId;
     } else {
       // WAREHOUSE_OWNER: strictly locked to own tenantId
       if (!callerWmsUser.tenantId) {

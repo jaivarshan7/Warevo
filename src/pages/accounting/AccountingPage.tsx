@@ -25,7 +25,8 @@ import {
   Plus,
   ExternalLink,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle
 } from "lucide-react";
 
 export const AccountingPage: React.FC = () => {
@@ -192,7 +193,10 @@ export const AccountingPage: React.FC = () => {
         {["WAREHOUSE_OWNER", "ACCOUNTANT", "ACCOUNTS_TEAM", "PLATFORM_ADMIN"].includes(role) && (
           <Button
             onClick={() => {
-              const unpaid = invoices.find((i) => i.paymentStatus !== "PAID");
+              const payableUnpaid = invoices.find(
+                (i) => i.paymentStatus !== "PAID" && Boolean(i.order?.deliveryVerifiedAt)
+              );
+              const unpaid = payableUnpaid || invoices.find((i) => i.paymentStatus !== "PAID");
               if (unpaid) {
                 setSelectedInvoice(unpaid);
                 setPaymentAmount(Number(unpaid.total));
@@ -363,16 +367,26 @@ export const AccountingPage: React.FC = () => {
                       </td>
                       <td className="py-3.5 px-4 text-right">
                         {inv.paymentStatus !== "PAID" && (
-                          <button
-                            onClick={() => {
-                              setSelectedInvoice(inv);
-                              setPaymentAmount(Number(inv.total));
-                              setIsPaymentOpen(true);
-                            }}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 transition-colors"
-                          >
-                            Pay
-                          </button>
+                          Boolean(inv.order?.deliveryVerifiedAt) ? (
+                            <button
+                              onClick={() => {
+                                setSelectedInvoice(inv);
+                                setPaymentAmount(Number(inv.total));
+                                setIsPaymentOpen(true);
+                              }}
+                              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 transition-colors cursor-pointer"
+                            >
+                              Pay
+                            </button>
+                          ) : (
+                            <button
+                              disabled
+                              title="Payment is available after delivery verification."
+                              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-800/40 text-slate-500 border border-slate-700/40 cursor-not-allowed"
+                            >
+                              Pay
+                            </button>
+                          )
                         )}
                       </td>
                     </tr>
@@ -482,6 +496,13 @@ export const AccountingPage: React.FC = () => {
               </div>
             )}
 
+            {selectedInvoice && !Boolean(selectedInvoice.order?.deliveryVerifiedAt) && (
+              <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-800 text-xs text-amber-300 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>Payment is available after delivery verification.</span>
+              </div>
+            )}
+
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
                 Target Invoice
@@ -500,6 +521,7 @@ export const AccountingPage: React.FC = () => {
                   <option key={inv.id} value={inv.id}>
                     {inv.invoiceNumber} — {inv.client?.companyName} (₹{inv.total}) [
                     {inv.paymentStatus}]
+                    {!inv.order?.deliveryVerifiedAt ? " — (Pending Delivery Verification)" : ""}
                   </option>
                 ))}
               </select>
@@ -612,7 +634,11 @@ export const AccountingPage: React.FC = () => {
               <Button type="button" variant="outline" onClick={() => setIsPaymentOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" isLoading={isSubmittingPayment} disabled={isSubmittingPayment}>
+              <Button
+                type="submit"
+                isLoading={isSubmittingPayment}
+                disabled={isSubmittingPayment || !Boolean(selectedInvoice?.order?.deliveryVerifiedAt)}
+              >
                 Confirm Payment
               </Button>
             </div>
