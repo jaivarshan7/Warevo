@@ -705,33 +705,39 @@ export async function createEnhancedOrder(payload: {
     throw new Error("Order creation failed: RPC returned unsuccessful result");
   }
 
+  const createdOrderId = data.order?.id || data.orderId;
+  const createdOrderNumber = data.order?.orderNumber || data.orderNumber;
+  const createdInvoiceTotal =
+    data.invoice?.total ?? (data as any)?.invoiceTotal ?? data.order?.totalAmount;
+
   // Non-blocking side effect: trigger email dispatch if preference enabled
   triggerOrderCreatedEmail({
     tenantId: payload.tenantId,
     clientId: payload.clientId,
-    orderId: data.orderId,
-    orderNumber: data.orderNumber,
+    orderId: createdOrderId,
+    orderNumber: createdOrderNumber,
     selectedContactIds: payload.selectedContactIds,
-    totalAmount: (data as any)?.invoiceTotal,
+    totalAmount: createdInvoiceTotal,
   }).catch((err) => console.warn("triggerOrderCreatedEmail side effect failed:", err));
 
   // Fetch the created order to return in the same format as before
   const { data: order, error: fetchErr } = await supabase
     .from("Order")
     .select("*")
-    .eq("id", data.orderId)
+    .eq("id", createdOrderId)
     .single();
 
-  if (fetchErr) {
-    console.error("Failed to fetch created order:", fetchErr);
+  if (fetchErr || !order) {
+    console.warn("Could not fetch newly created order:", fetchErr);
     // Order was created successfully, but we can't fetch it
-    // Return a minimal object with the data from RPC
+    // Return a minimal object with the authoritative data from RPC
     return {
-      id: data.orderId,
-      orderNumber: data.orderNumber,
+      id: createdOrderId,
+      orderNumber: createdOrderNumber,
       tenantId: payload.tenantId,
       clientId: payload.clientId,
-      status: initialStatus
+      status: initialStatus,
+      totalAmount: createdInvoiceTotal
     };
   }
 
@@ -924,58 +930,88 @@ export async function createProductWithInitialStock(payload: {
     });
   }
 
-  // 4. Create Inventory record
-  const inventoryId = `inv_${Math.random().toString(36).substring(2, 11)}`;
+  // 4. Create Inventory record via secure RPC
   const initialQty = Math.max(0, payload.initialQuantity || 0);
-  const { data: inventory, error: invErr } = await supabase
-    .from("Inventory")
-    .insert({
-      id: inventoryId,
-      tenantId: payload.tenantId,
-      warehouseId: payload.warehouseId,
-      locationId,
-      productId,
-      totalQuantity: initialQty,
-      availableQuantity: initialQty,
-      reservedQuantity: 0,
-      damagedQuantity: 0
-    })
-    .select()
-    .single();
+  let inventoryRecord: any = null;
 
-  if (invErr) throw invErr;
-
-  // 5. Initial stock movement
-  if (initialQty > 0) {
-    await supabase.from("InventoryMovement").insert({
-      id: `im_${Math.random().toString(36).substring(2, 10)}`,
-      tenantId: payload.tenantId,
-      inventoryId,
-      productId,
-      type: "RECEIPT",
-      quantity: initialQty,
-      previousQuantity: 0,
-      newQuantity: initialQty,
-      notes: "Initial stock intake on product creation",
-      createdById: payload.userId || null
+  try {
+    const { data: initResult, error: initErr } = await supabase.rpc("rpc_init_inventory_item", {
+      p_product_id: productId,
+      p_warehouse_id: payload.warehouseId,
+      p_location_id: locationId,
+      p_initial_quantity: initialQty,
+      p_notes: "Initial stock intake on product creation"
     });
+
+    if (initErr) throw initErr;
+
+    const { data: fetchedInv } = await supabase
+      .from("Inventory")
+      .select("*")
+      .eq("id", initResult.inventoryId)
+      .single();
+
+    inventoryRecord = fetchedInv || initResult;
+  } catch (rpcErr) {
+    console.warn("rpc_init_inventory_item failed, falling back to secure insert:", rpcErr);
+    const inventoryId = `inv_${Math.random().toString(36).substring(2, 11)}`;
+    const nowIso = new Date().toISOString();
+    const { data: inventory, error: invErr } = await supabase
+      .from("Inventory")
+      .insert({
+        id: inventoryId,
+        tenantId: payload.tenantId,
+        warehouseId: payload.warehouseId,
+        locationId,
+        productId,
+        totalQuantity: initialQty,
+        availableQuantity: initialQty,
+        reservedQuantity: 0,
+        damagedQuantity: 0,
+        quantity: initialQty,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      })
+      .select()
+      .single();
+
+    if (invErr) throw invErr;
+    inventoryRecord = inventory;
+
+    // 5. Initial stock movement
+    if (initialQty > 0) {
+      await supabase.from("InventoryMovement").insert({
+        id: `im_${Math.random().toString(36).substring(2, 10)}`,
+        tenantId: payload.tenantId,
+        inventoryId,
+        productId,
+        type: "RECEIPT",
+        quantity: initialQty,
+        previousQuantity: 0,
+        newQuantity: initialQty,
+        notes: "Initial stock intake on product creation",
+        createdById: payload.userId || null,
+        createdAt: nowIso
+      });
+    }
+
+    // 6. Audit log
+    if (payload.userId) {
+      await supabase.from("AuditLog").insert({
+        id: `al_${Math.random().toString(36).substring(2, 10)}`,
+        tenantId: payload.tenantId,
+        userId: payload.userId,
+        userRole: payload.userRole || "WAREHOUSE_STAFF",
+        action: "Created new catalog product & stock intake",
+        entity: "Product",
+        entityId: productId,
+        newValue: { sku: payload.sku, name: payload.name, initialQuantity: initialQty },
+        createdAt: nowIso
+      });
+    }
   }
 
-  // 6. Audit log
-  if (payload.userId) {
-    await supabase.from("AuditLog").insert({
-      id: `al_${Math.random().toString(36).substring(2, 10)}`,
-      tenantId: payload.tenantId,
-      userId: payload.userId,
-      userRole: payload.userRole || "WAREHOUSE_STAFF",
-      action: "Created new catalog product & stock intake",
-      entity: "Product",
-      entityId: productId,
-      newValue: { sku: payload.sku, name: payload.name, initialQuantity: initialQty }
-    });
-  }
-
-  return { product, inventory };
+  return { product, inventory: inventoryRecord };
 }
 
 // ======================== CLIENTS & EMPLOYEES ========================
