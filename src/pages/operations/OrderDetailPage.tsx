@@ -6,17 +6,18 @@ import {
   transitionOrderStatus,
   submitOrderVerification,
   submitOrderStoreVerification,
-  isClientRole
+  isClientRole,
+  fetchOrderTimeline
 } from "@/lib/services";
-import { Order, OrderStatus, VerificationStatus } from "@/types";
+import { Order, OrderStatus, VerificationStatus, OrderTimelineEvent } from "@/types";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
-import { validOrderTransitions, deriveClientWorkflowStages } from "@/lib/orderWorkflow";
+import { validOrderTransitions, deriveClientWorkflowStages, orderStatusBadgeStyles } from "@/lib/orderWorkflow";
 import { canVerifyDelivery, canVerifyInventory } from "@/lib/permissions";
-import { getRoleDisplay } from "@/lib/roleDisplay";
+import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/roleDisplay";
 import {
   ArrowLeft,
   Calendar,
@@ -26,7 +27,8 @@ import {
   AlertTriangle,
   Clock,
   ShieldCheck,
-  PackageCheck
+  PackageCheck,
+  DollarSign
 } from "lucide-react";
 
 export const OrderDetailPage: React.FC = () => {
@@ -35,6 +37,11 @@ export const OrderDetailPage: React.FC = () => {
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Timeline state
+  const [timelineEvents, setTimelineEvents] = useState<OrderTimelineEvent[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(true);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
 
   // Delivery Verification Modal - Individual Item Checkboxes
   const [itemCheckboxes, setItemCheckboxes] = useState<Record<string, boolean>>({});
@@ -59,19 +66,34 @@ export const OrderDetailPage: React.FC = () => {
     if (!id) return;
     try {
       setLoading(true);
+      setTimelineLoading(true);
+      setTimelineError(null);
       // SECURITY: Pass tenantId, clientId, and role to verify client ownership
-      const data = await fetchOrderById(
-        id,
-        tenant?.id || user?.tenantId,
-        user?.clientId || user?.client?.id,
-        role,
-        user?.id
-      );
+      const [data, timeline] = await Promise.all([
+        fetchOrderById(
+          id,
+          tenant?.id || user?.tenantId,
+          user?.clientId || user?.client?.id,
+          role,
+          user?.id
+        ),
+        fetchOrderTimeline(
+          id,
+          tenant?.id || user?.tenantId,
+          user?.clientId || user?.client?.id,
+          role,
+          user?.id
+        )
+      ]);
       setOrder(data);
+      setTimelineEvents(timeline);
     } catch (err: any) {
+      console.error("Error loading order or timeline:", err);
       setError(err?.message || "Failed to load order");
+      setTimelineError(err?.message || "Unable to load order history.");
     } finally {
       setLoading(false);
+      setTimelineLoading(false);
     }
   };
 
@@ -277,12 +299,64 @@ export const OrderDetailPage: React.FC = () => {
       <Card className="p-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl sm:text-3xl font-mono font-bold text-white tracking-tight">
                 {order.orderNumber}
               </h1>
-              <StatusBadge status={order.status} type="order" />
-              <StatusBadge status={order.verificationStatus} type="verification" />
+
+              {/* Order Status Badge */}
+              <span
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider border ${
+                  order.status === "VERIFIED"
+                    ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                    : orderStatusBadgeStyles[order.status] || "bg-slate-800 text-slate-300 border-slate-700"
+                }`}
+              >
+                <span className="text-[10px] text-slate-400 font-normal">Order:</span>
+                {order.status === "VERIFIED" ? "Verified" : order.status.replace(/_/g, " ")}
+              </span>
+
+              {/* Delivery Verification Badge */}
+              {order.deliveryVerifiedAt ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border bg-emerald-950 text-emerald-300 border-emerald-800">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  Delivery: Verified
+                </span>
+              ) : order.status === "DISPATCHED" ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border bg-amber-950 text-amber-300 border-amber-800">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  Delivery: Pending
+                </span>
+              ) : null}
+
+              {/* Inventory Verification Badge */}
+              {order.storeVerifiedAt || (order.status === "VERIFIED" && order.verificationStatus === "VERIFIED") ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border bg-emerald-950 text-emerald-300 border-emerald-800">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  Inventory: Verified
+                </span>
+              ) : order.deliveryVerifiedAt ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border bg-blue-950 text-blue-300 border-blue-800">
+                  <Clock className="w-3.5 h-3.5 text-blue-400" />
+                  Inventory: Pending
+                </span>
+              ) : null}
+
+              {/* Payment Status Badge */}
+              {orderInvoicePaymentStatus && (
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
+                    orderInvoicePaymentStatus === "PAID"
+                      ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                      : orderInvoicePaymentStatus === "PAYMENT_PENDING"
+                      ? "bg-amber-950 text-amber-300 border-amber-800"
+                      : "bg-slate-800 text-slate-300 border-slate-700"
+                  }`}
+                >
+                  <span className="text-[10px] text-slate-400 font-normal">Payment:</span>
+                  {orderInvoicePaymentStatus === "PAYMENT_PENDING" ? "Pending" : orderInvoicePaymentStatus.replace(/_/g, " ")}
+                </span>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 mt-2">
               <span className="flex items-center gap-1.5">
@@ -476,38 +550,97 @@ export const OrderDetailPage: React.FC = () => {
 
         {/* Order Status History Timeline (1 col) */}
         <div>
-          <Card>
-            <h2 className="text-base font-semibold text-white mb-4">Status History Timeline</h2>
-            <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-800">
-              {(order.statusHistory || []).map((history, idx) => (
-                <div key={history.id || idx} className="relative">
-                  <div className="absolute -left-6 top-1 w-3 h-3 rounded-full bg-indigo-500 ring-4 ring-slate-900" />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-white">
-                        {history.newStatus}
-                      </span>
-                      {history.previousStatus && (
-                        <span className="text-[10px] text-slate-500">
-                          (from {history.previousStatus})
-                        </span>
-                      )}
-                    </div>
-                    {history.notes && (
-                      <p className="text-xs text-slate-400 mt-1 italic">"{history.notes}"</p>
-                    )}
-                    <span className="text-[10px] text-slate-500 block mt-1">
-                      {new Date(history.createdAt).toLocaleString([], {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit"
-                      })}
-                    </span>
-                  </div>
-                </div>
-              ))}
+          <Card className="p-4 sm:p-5">
+            <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-white">Status History Timeline</h2>
+              </div>
+              <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                {timelineEvents.length} {timelineEvents.length === 1 ? "event" : "events"}
+              </span>
             </div>
+
+            {timelineLoading ? (
+              <div className="py-8 flex justify-center">
+                <LoadingSpinner message="Retrieving order history..." />
+              </div>
+            ) : timelineError ? (
+              <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-800 text-xs text-rose-300 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{timelineError}</span>
+              </div>
+            ) : timelineEvents.length === 0 ? (
+              <div className="text-center py-8 px-4 rounded-xl bg-slate-900/40 border border-dashed border-slate-800 text-slate-400 text-xs">
+                <Clock className="w-6 h-6 mx-auto mb-2 text-slate-500 opacity-60" />
+                <p className="font-medium text-slate-300">No activity recorded for this order yet.</p>
+              </div>
+            ) : (
+              <div className="relative pl-6 space-y-4 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-800">
+                {timelineEvents.map((event) => {
+                  let dotColor = "bg-indigo-500";
+                  if (event.type === "DELIVERY_VERIFIED" || event.type === "INVENTORY_VERIFIED" || event.type === "PAID") {
+                    dotColor = "bg-emerald-500";
+                  } else if (event.type === "PAYMENT_PENDING" || event.type === "PROCESSING") {
+                    dotColor = "bg-amber-500";
+                  } else if (event.type === "DISPATCHED") {
+                    dotColor = "bg-indigo-500";
+                  } else if (event.type === "PAYMENT_RECORDED") {
+                    dotColor = "bg-blue-500";
+                  } else if (event.type === "CANCELLED") {
+                    dotColor = "bg-rose-500";
+                  }
+
+                  return (
+                    <div key={event.id} className="relative group">
+                      <div className={`absolute -left-6 top-1.5 w-3 h-3 rounded-full ${dotColor} ring-4 ring-slate-900 transition-transform group-hover:scale-110`} />
+
+                      <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800/80 hover:border-slate-700/80 transition-all space-y-1.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-xs font-bold text-white uppercase tracking-wide">
+                            {event.title}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {new Date(event.timestamp).toLocaleDateString("en-IN", {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric"
+                            })} · {new Date(event.timestamp).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            })}
+                          </span>
+                        </div>
+
+                        {/* Person's Name and Role Badge */}
+                        <div className="flex items-center gap-2 text-xs flex-wrap">
+                          <span className="text-slate-400 text-[11px]">By:</span>
+                          <span className="font-semibold text-slate-200 text-xs">
+                            {event.actorName}
+                          </span>
+                          {event.actorRole && event.actorRole !== "System" ? (
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${getRoleBadgeStyle(event.actorRole)}`}>
+                              {event.actorRole}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-slate-800 text-slate-400 border-slate-700">
+                              System
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Event notes if any */}
+                        {event.notes && (
+                          <p className="text-[11px] text-slate-400 italic bg-slate-950/40 p-2 rounded-lg border border-slate-800/60 mt-1 break-words">
+                            "{event.notes}"
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </Card>
         </div>
       </div>

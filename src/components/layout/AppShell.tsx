@@ -22,6 +22,11 @@ export const AppShell: React.FC = () => {
     return <Navigate to="/login" replace />;
   }
 
+  // Only genuine INACTIVE status directs to ?error=inactive
+  if (user.status === "INACTIVE" || (user.clientEmployee && user.clientEmployee.status === "INACTIVE")) {
+    return <Navigate to="/login?error=inactive" replace />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased">
       {/* Top Header */}

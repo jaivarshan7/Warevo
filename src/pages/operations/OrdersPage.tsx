@@ -413,73 +413,210 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
             description="Try changing your search keywords or status filter, or create a new order."
           />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-800 bg-slate-900/60 text-slate-400 text-xs uppercase font-semibold">
-                  <th className="py-3 px-4">Order #</th>
-                  <th className="py-3 px-4">Date</th>
-                  <th className="py-3 px-4">Client</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4">Verification</th>
-                  <th className="py-3 px-4">Amount</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {filteredOrders.map((o) => {
-                  const allowedNext = validOrderTransitions[o.status] || [];
-                  return (
-                    <tr key={o.id} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="py-3.5 px-4 font-mono font-bold text-white">
-                        <Link
-                          to={`/operations/orders/${o.id}`}
-                          className="text-indigo-400 hover:text-indigo-300 hover:underline"
-                        >
-                          {o.orderNumber}
-                        </Link>
-                      </td>
-                      <td className="py-3.5 px-4 text-xs text-slate-400">
-                        {new Date(o.createdAt).toLocaleDateString()}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-200 font-medium">
-                        {o.client?.companyName || "Direct Client"}
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <StatusBadge status={o.status} type="order" />
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <StatusBadge status={o.verificationStatus} type="verification" />
-                      </td>
-                      <td className="py-3.5 px-4 font-mono text-slate-200">
-                        ₹{Number(o.totalAmount).toLocaleString("en-IN")}
-                      </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          {allowedNext.length > 0 && role !== "CLIENT" && (
-                            <button
-                              onClick={() => {
-                                setTransitioningOrder(o);
-                                setTargetStatus(allowedNext[0]);
-                              }}
-                              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 transition-colors"
-                            >
-                              Transition
-                            </button>
-                          )}
+          <div>
+            {/* Desktop Table View */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-800 bg-slate-900/60 text-slate-400 text-xs uppercase font-semibold">
+                    <th className="py-3 px-4">Order #</th>
+                    <th className="py-3 px-4">Date</th>
+                    <th className="py-3 px-4">Client</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Verification</th>
+                    <th className="py-3 px-4">Amount</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {filteredOrders.map((o) => {
+                    const allowedNext = validOrderTransitions[o.status] || [];
+                    const isDeliveryVerified = Boolean(o.deliveryVerifiedAt);
+                    const isInventoryVerified = Boolean(o.storeVerifiedAt) || (o.status === "VERIFIED" && o.verificationStatus === "VERIFIED");
+
+                    return (
+                      <tr key={o.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="py-3.5 px-4 font-mono font-bold text-white">
                           <Link
                             to={`/operations/orders/${o.id}`}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            className="text-indigo-400 hover:text-indigo-300 hover:underline"
                           >
-                            View
+                            {o.orderNumber}
                           </Link>
+                        </td>
+                        <td className="py-3.5 px-4 text-xs text-slate-400">
+                          {new Date(o.createdAt).toLocaleDateString()}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-200 font-medium">
+                          {o.client?.companyName || "Direct Client"}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <StatusBadge status={o.status} type="order" />
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex flex-col gap-1 items-start">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${
+                                isDeliveryVerified
+                                  ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                                  : o.verificationStatus === "REJECTED"
+                                  ? "bg-rose-950 text-rose-300 border-rose-800"
+                                  : "bg-slate-800/80 text-slate-400 border-slate-700/60"
+                              }`}
+                            >
+                              {isDeliveryVerified ? "✓ Delivery" : "Delivery: Pending"}
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${
+                                isInventoryVerified
+                                  ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                                  : "bg-slate-800/80 text-slate-400 border-slate-700/60"
+                              }`}
+                            >
+                              {isInventoryVerified ? "✓ Inventory" : "Inventory: Pending"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 font-mono text-slate-200">
+                          ₹{Number(o.totalAmount).toLocaleString("en-IN")}
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            {allowedNext.length > 0 && role !== "CLIENT" && (
+                              <button
+                                onClick={() => {
+                                  setTransitioningOrder(o);
+                                  setTargetStatus(allowedNext[0]);
+                                }}
+                                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 transition-colors"
+                              >
+                                Transition
+                              </button>
+                            )}
+                            <Link
+                              to={`/operations/orders/${o.id}`}
+                              className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            >
+                              View
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Card List View */}
+            <div className="block md:hidden divide-y divide-slate-800/60">
+              {filteredOrders.map((o) => {
+                const allowedNext = validOrderTransitions[o.status] || [];
+                const paymentStatus = (o as any).invoices?.[0]?.paymentStatus;
+                const isDeliveryVerified = Boolean(o.deliveryVerifiedAt);
+                const isInventoryVerified = Boolean(o.storeVerifiedAt) || (o.status === "VERIFIED" && o.verificationStatus === "VERIFIED");
+
+                return (
+                  <div key={o.id} className="p-4 space-y-3 hover:bg-slate-800/20 transition-colors">
+                    <div className="flex items-center justify-between gap-2">
+                      <Link
+                        to={`/operations/orders/${o.id}`}
+                        className="font-mono font-bold text-sm text-indigo-400 hover:underline"
+                      >
+                        {o.orderNumber}
+                      </Link>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {new Date(o.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-300 font-medium truncate">
+                        {o.client?.companyName || "Direct Client"}
+                      </span>
+                      <span className="font-mono font-bold text-white">
+                        ₹{Number(o.totalAmount).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+
+                    {/* Status, Verification, Payment Chips */}
+                    <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
+                          Status
+                        </span>
+                        <StatusBadge status={o.status} type="order" />
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
+                          Verification
+                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                              isDeliveryVerified
+                                ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                                : "bg-slate-800/80 text-slate-400 border-slate-700/60"
+                            }`}
+                          >
+                            {isDeliveryVerified ? "✓ Delivery" : "Delivery: Pending"}
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                              isInventoryVerified
+                                ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                                : "bg-slate-800/80 text-slate-400 border-slate-700/60"
+                            }`}
+                          >
+                            {isInventoryVerified ? "✓ Inventory" : "Inventory: Pending"}
+                          </span>
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </div>
+                    </div>
+
+                    {paymentStatus && (
+                      <div className="pt-1 flex items-center justify-between text-xs border-t border-slate-800/60">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                          Payment
+                        </span>
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider border ${
+                            paymentStatus === "PAID"
+                              ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                              : paymentStatus === "PAYMENT_PENDING"
+                              ? "bg-amber-950 text-amber-300 border-amber-800"
+                              : "bg-slate-800 text-slate-300 border-slate-700"
+                          }`}
+                        >
+                          {paymentStatus === "PAYMENT_PENDING" ? "Pending" : paymentStatus.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800/60">
+                      {allowedNext.length > 0 && role !== "CLIENT" && (
+                        <button
+                          onClick={() => {
+                            setTransitioningOrder(o);
+                            setTargetStatus(allowedNext[0]);
+                          }}
+                          className="px-3 py-1 text-xs font-semibold rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 transition-colors"
+                        >
+                          Transition
+                        </button>
+                      )}
+                      <Link
+                        to={`/operations/orders/${o.id}`}
+                        className="px-3 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                      >
+                        View
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </Card>

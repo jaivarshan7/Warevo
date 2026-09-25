@@ -5,7 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 
 export function useNotifications() {
-  const { user, tenant } = useAuth();
+  const { user, tenant, role } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -16,7 +16,12 @@ export function useNotifications() {
       return;
     }
     try {
-      const list = await fetchUserNotifications(tenant?.id, user?.id, user?.client?.id);
+      const list = await fetchUserNotifications(
+        tenant?.id,
+        user?.id,
+        user?.clientId || user?.client?.id,
+        role
+      );
       setNotifications(list);
       setUnreadCount(list.filter((n) => !n.read).length);
     } catch (err) {
@@ -24,7 +29,7 @@ export function useNotifications() {
     } finally {
       setIsLoading(false);
     }
-  }, [user, tenant?.id]);
+  }, [user, tenant?.id, role]);
 
   useEffect(() => {
     loadNotifications();

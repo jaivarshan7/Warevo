@@ -1,44 +1,83 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "@/contexts/AuthContext";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { useAuth, AuthErrorType } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ArrowLeft, AlertTriangle, ShieldAlert } from "lucide-react";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { config } from "@/lib/config";
 
 export const LoginPage: React.FC = () => {
   const { user, isLoading: authLoading, allUsers, switchUser, signInWithEmailAndPassword, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<AuthErrorType | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
 
-  // If already authenticated, go straight to dashboard
+  // If already authenticated and active, go straight to dashboard
   React.useEffect(() => {
-    if (!authLoading && user) {
+    if (!authLoading && user && user.status === "ACTIVE" && user.clientEmployee?.status !== "INACTIVE") {
       navigate("/dashboard", { replace: true });
     }
   }, [authLoading, user, navigate]);
+
+  // Check URL parameters or navigation state for auth errors (e.g. from OAuth callback or route guards)
+  React.useEffect(() => {
+    const errorParam = searchParams.get("error");
+    const stateErrorType = location.state?.errorType as AuthErrorType | undefined;
+
+    if (errorParam === "inactive" || stateErrorType === "ACCOUNT_INACTIVE") {
+      setErrorType("ACCOUNT_INACTIVE");
+      setError(null);
+    } else if (errorParam === "not_registered" || stateErrorType === "NOT_REGISTERED") {
+      setErrorType("NOT_REGISTERED");
+      setError(null);
+    }
+  }, [searchParams, location.state]);
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
+    setErrorType(null);
+
     const res = await signInWithEmailAndPassword(email, password);
     setIsLoading(false);
+
     if (res.error) {
-      setError(res.error.message);
+      if (res.errorType === "ACCOUNT_INACTIVE") {
+        setErrorType("ACCOUNT_INACTIVE");
+        setError(null);
+      } else if (res.errorType === "NOT_REGISTERED") {
+        setErrorType("NOT_REGISTERED");
+        setError(null);
+      } else {
+        setErrorType("INVALID_CREDENTIALS");
+        setError("Invalid email or password.");
+      }
     } else {
       navigate("/dashboard");
     }
   };
 
+  const handleResetToLogin = () => {
+    setErrorType(null);
+    setError(null);
+    setPassword("");
+    navigate("/login", { replace: true, state: {} });
+  };
+
   const handleGoogleSignIn = async () => {
     setError(null);
+    setErrorType(null);
     setGoogleRedirecting(true);
+    localStorage.removeItem("warehouse_os_logged_out");
     // signInWithOAuth triggers a browser redirect to Google — the browser
     // navigates away from this page. We only get an error back if the redirect
     // itself fails to initiate (e.g. misconfigured provider).
@@ -52,8 +91,12 @@ export const LoginPage: React.FC = () => {
   };
 
   const handleQuickLogin = async (userId: string) => {
-    await switchUser(userId);
-    navigate("/dashboard");
+    try {
+      await switchUser(userId);
+      navigate("/dashboard");
+    } catch (err: any) {
+      setError(err?.message || "Failed to switch user");
+    }
   };
 
 
@@ -91,98 +134,150 @@ export const LoginPage: React.FC = () => {
 
         {/* Login Card */}
         <Card className="p-6">
-          <form onSubmit={handleEmailLogin} className="space-y-4">
-            {error && (
-              <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
-                {error}
+          {errorType === "ACCOUNT_INACTIVE" ? (
+            <div className="space-y-5 text-center py-2">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-400 shadow-lg shadow-amber-950/40">
+                <AlertTriangle className="w-7 h-7" />
               </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Email Address
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                required
-              />
+              <div className="space-y-1.5">
+                <h2 className="text-xl font-bold text-white tracking-tight">Account Inactive</h2>
+                <p className="text-sm font-medium text-slate-300">
+                  Your account is currently inactive.
+                </p>
+                <p className="text-xs text-slate-400">
+                  Please contact your administrator.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleResetToLogin}
+                className="w-full flex items-center justify-center gap-2 border-slate-700 hover:bg-slate-800 text-slate-200 mt-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Back to Login
+              </Button>
             </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                required
-              />
+          ) : errorType === "NOT_REGISTERED" ? (
+            <div className="space-y-5 text-center py-2">
+              <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mx-auto text-rose-400 shadow-lg shadow-rose-950/40">
+                <ShieldAlert className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h2 className="text-xl font-bold text-white tracking-tight">Account Not Registered</h2>
+                <p className="text-sm font-medium text-slate-300">
+                  Your account is not registered in the WMS.
+                </p>
+                <p className="text-xs text-slate-400">
+                  Please contact your administrator.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleResetToLogin}
+                className="w-full flex items-center justify-center gap-2 border-slate-700 hover:bg-slate-800 text-slate-200 mt-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Back to Login
+              </Button>
             </div>
+          ) : (
+            <>
+              <form onSubmit={handleEmailLogin} className="space-y-4">
+                {error && (
+                  <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200">
+                    {error}
+                  </div>
+                )}
 
-            <Button type="submit" className="w-full" isLoading={isLoading}>
-              Sign In with Email
-            </Button>
-          </form>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
 
-          {/* Google Sign-In */}
-          <div className="mt-4 pt-4 border-t border-slate-800/60">
-            <div className="text-center mb-3">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                Or Continue with
-              </span>
-            </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
 
-            <Button
-              type="button"
-              onClick={handleGoogleSignIn}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700/60 hover:bg-slate-700 hover:text-indigo-400 font-medium text-sm transition-colors"
-              disabled={isLoading || googleRedirecting}
-              isLoading={googleRedirecting}
-            >
-              {!googleRedirecting && <GoogleIcon className="w-4 h-4" />}
-              {googleRedirecting ? "Redirecting to Google..." : "Continue with Google"}
-            </Button>
-          </div>
+                <Button type="submit" className="w-full" isLoading={isLoading}>
+                  Sign In with Email
+                </Button>
+              </form>
 
-          {/* Quick Demo Switcher - only in development */}
-          {config.showDemoFeatures && (
-            <div className="mt-6 pt-6 border-t border-slate-800">
-              <div className="text-center mb-3">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  Or Instant Demo Sign-In
-                </span>
+              {/* Google Sign-In */}
+              <div className="mt-4 pt-4 border-t border-slate-800/60">
+                <div className="text-center mb-3">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Or Continue with
+                  </span>
+                </div>
+
+                <Button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700/60 hover:bg-slate-700 hover:text-indigo-400 font-medium text-sm transition-colors"
+                  disabled={isLoading || googleRedirecting}
+                  isLoading={googleRedirecting}
+                >
+                  {!googleRedirecting && <GoogleIcon className="w-4 h-4" />}
+                  {googleRedirecting ? "Redirecting to Google..." : "Continue with Google"}
+                </Button>
               </div>
 
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                {sortedDemoUsers.map((u) => (
-                  <button
-                    key={u.id}
-                    onClick={() => handleQuickLogin(u.id)}
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 text-left transition-colors group"
-                  >
-                    <div className="truncate pr-2">
-                      <p className="text-xs font-semibold text-white group-hover:text-indigo-300 transition-colors">
-                        {u.name}
-                      </p>
-                      <p className="text-[10px] text-slate-400">
-                        <span className={u.role === "PLATFORM_ADMIN" ? "text-rose-400 font-semibold" : ""}>
-                          {u.role.replace(/_/g, " ")}
-                        </span>
-                        {" "}• {u.tenant?.name || "Apex Warehousing"}
-                      </p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all shrink-0" />
-                  </button>
-                ))}
-              </div>
-            </div>
+              {/* Quick Demo Switcher - only in development */}
+              {config.showDemoFeatures && (
+                <div className="mt-6 pt-6 border-t border-slate-800">
+                  <div className="text-center mb-3">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Or Instant Demo Sign-In
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {sortedDemoUsers.map((u) => (
+                      <button
+                        key={u.id}
+                        onClick={() => handleQuickLogin(u.id)}
+                        className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 text-left transition-colors group"
+                      >
+                        <div className="truncate pr-2">
+                          <p className="text-xs font-semibold text-white group-hover:text-indigo-300 transition-colors">
+                            {u.name}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            <span className={u.role === "PLATFORM_ADMIN" ? "text-rose-400 font-semibold" : ""}>
+                              {u.role.replace(/_/g, " ")}
+                            </span>
+                            {" "}• {u.tenant?.name || "Apex Warehousing"}
+                          </p>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 transition-all shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </Card>
       </div>

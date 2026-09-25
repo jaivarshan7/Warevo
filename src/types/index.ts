@@ -368,6 +368,19 @@ export interface Order {
   items?: OrderItem[];
   statusHistory?: OrderStatusHistory[];
   verification?: VerificationResponse | null;
+  invoices?: Invoice[] | null;
+}
+
+export interface OrderTimelineEvent {
+  id: string;
+  type: string;
+  title: string;
+  timestamp: string;
+  actorName: string;
+  actorRole: string;
+  actorEmployeeRole?: string | null;
+  notes?: string | null;
+  source?: string;
 }
 
 export interface InvoiceItem {

@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useState, useRef } from "r
 import { User, Tenant, Role } from "@/types";
 import { supabase } from "@/lib/supabase";
 
+export type AuthErrorType = "INVALID_CREDENTIALS" | "ACCOUNT_INACTIVE" | "NOT_REGISTERED" | "GENERAL";
+
 interface AuthContextType {
   user: User | any;
   tenant: Tenant | null;
@@ -11,10 +13,14 @@ interface AuthContextType {
   allTenants: Tenant[];
   switchUser: (userId: string) => Promise<void>;
   switchTenant: (tenantId: string) => Promise<void>;
-  signInWithEmailAndPassword: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signInWithEmailAndPassword: (
+    email: string,
+    password: string
+  ) => Promise<{ error: Error | null; errorType?: AuthErrorType }>;
   signInWithGoogle: () => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshUsers: () => Promise<void>;
+  setAuthenticatedUser: (user: User, tenant?: Tenant | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -77,30 +83,39 @@ export async function refreshUsersFromSupabase() {
 
 /**
  * Resolve a WMS User from an authenticated Supabase Auth user ID.
- * Returns the user (with tenant) if found and ACTIVE, or null otherwise.
- * Does NOT throw — callers should handle null.
+ * Returns the user (with tenant & client employee) if found, or null otherwise.
+ * Does NOT throw — callers handle null and check status.
  */
-async function resolveWmsUserBySupabaseUserId(
+export async function resolveWmsUserBySupabaseUserId(
   supabaseUserId: string,
-  allUsers: User[]
+  allUsers: User[] = [],
+  forceDbLookup: boolean = false
 ): Promise<User | null> {
   if (!supabaseUserId) return null;
 
-  // First check in-memory list (avoids extra DB round-trip)
-  const inMemory = allUsers.find(
-    (u) => u.supabaseUserId === supabaseUserId
-  );
-  if (inMemory) return normalizeUser(inMemory);
+  // First check in-memory list if not forcing fresh DB lookup
+  if (!forceDbLookup && allUsers.length > 0) {
+    const inMemory = allUsers.find(
+      (u) => u.supabaseUserId === supabaseUserId
+    );
+    if (inMemory) return normalizeUser(inMemory);
+  }
 
-  // Fall back to DB lookup - include supabaseUserId for RLS compatibility check
+  // Fall back to authoritative DB lookup
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("User")
       .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
       .eq("supabaseUserId", supabaseUserId)
       .limit(1);
+
+    if (error) {
+      console.warn("[AuthContext] DB lookup error for supabaseUserId:", error);
+      return null;
+    }
     return data?.[0] ? normalizeUser(data[0]) : null;
-  } catch {
+  } catch (err) {
+    console.error("[AuthContext] DB lookup exception:", err);
     return null;
   }
 }
@@ -117,11 +132,33 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   // Cache the loaded users/tenants for use inside the auth state change listener
   const allUsersRef = useRef<User[]>([]);
   const allTenantsRef = useRef<Tenant[]>([]);
+  const userRef = useRef<User | null>(null);
+
+  const setAuthenticatedUser = (authUser: User, authTenant?: Tenant | null) => {
+    const normalized = normalizeUser(authUser);
+    console.debug("[AuthContext] setting authenticated user:", normalized.email);
+    userRef.current = normalized;
+    setUser(normalized);
+    localStorage.removeItem("warehouse_os_logged_out");
+    localStorage.setItem("warehouse_os_user_id", normalized.id);
+    if (normalized.supabaseUserId) {
+      localStorage.setItem("warehouse_os_supabase_uid", normalized.supabaseUserId);
+    }
+    const resolvedTenant =
+      authTenant ||
+      allTenantsRef.current.find((t) => t.id === normalized.tenantId) ||
+      allTenants.find((t) => t.id === normalized.tenantId) ||
+      (normalized.tenant as Tenant) ||
+      null;
+    setTenant(resolvedTenant);
+    setIsLoading(false);
+  };
 
   useEffect(() => {
     let isMounted = true;
 
     async function initAuth() {
+      const pathname = typeof window !== "undefined" ? window.location.pathname : "";
       try {
         setIsLoading(true);
 
@@ -149,64 +186,104 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         }
 
         // ─── 3. Check for an existing Supabase Auth session (OAuth return) ─
-        //    detectSessionInUrl:true in supabase-js already exchanges the
-        //    OAuth tokens in the URL; getSession() returns the live session.
         const { data: sessionData } = await supabase.auth.getSession();
         const supabaseSession = sessionData?.session;
 
         if (!isMounted) return;
 
-        const isLoggedOut = localStorage.getItem("warehouse_os_logged_out") === "true";
-        const savedWmsUserId = localStorage.getItem("warehouse_os_user_id");
+        // If on /auth/callback, defer resolution to AuthCallbackPage so it can handle linkage and navigation.
+        // Keep isLoading true so route guards do not bounce to /login before AuthCallbackPage sets the user.
+        if (pathname.startsWith("/auth/callback")) {
+          console.debug("[AuthContext] current pathname:", pathname);
+          console.debug("[AuthContext] On /auth/callback; letting AuthCallbackPage process callback");
+          return;
+        }
 
-        if (isLoggedOut || !supabaseSession?.user) {
-          // No live Supabase Auth session or explicit logout — clear any stale WMS user state
+        if (!supabaseSession?.user) {
+          // No live Supabase Auth session — clear any stale WMS user state
+          console.debug("[AuthContext] clearing user (no live Supabase session)");
           localStorage.removeItem("warehouse_os_user_id");
           localStorage.removeItem("warehouse_os_supabase_uid");
+          userRef.current = null;
           setUser(null);
           setTenant(null);
-        } else if (supabaseSession.user && userList.length > 0) {
+        } else {
           // ─── Active Supabase Auth session ──────────────────────────────────
-          const authUserId = supabaseSession.user.id;
-          const wmsUser = userList.find(
-            (u) => u.supabaseUserId === authUserId
-          );
+          // An authentic Supabase Auth session exists. Never let a stale warehouse_os_logged_out override it.
+          localStorage.removeItem("warehouse_os_logged_out");
 
-          if (wmsUser && wmsUser.status === "ACTIVE") {
-            // Persist WMS user id for active session
-            localStorage.removeItem("warehouse_os_logged_out");
-            localStorage.setItem("warehouse_os_user_id", wmsUser.id);
-            localStorage.setItem(
-              "warehouse_os_supabase_uid",
-              authUserId
-            );
-            setUser(normalizeUser(wmsUser));
-            const userTenant = tenantList.find(
-              (t) => t.id === wmsUser.tenantId
-            );
-            setTenant(userTenant || (wmsUser.tenant as Tenant) || null);
+          const authUserId = supabaseSession.user.id;
+          let wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, userList, true);
+
+          // If not linked yet, attempt rpc_link_auth_user_by_email before giving up
+          if (!wmsUser && supabaseSession.user.email) {
+            try {
+              const { data: linkRes } = await supabase.rpc("rpc_link_auth_user_by_email", {
+                p_auth_user_id: authUserId,
+                p_email: supabaseSession.user.email
+              });
+              if (linkRes?.success) {
+                wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, [], true);
+              }
+            } catch (linkErr) {
+              console.warn("[AuthContext] initAuth: link error:", linkErr);
+            }
+          }
+
+          console.debug("[AuthContext] resolved WMS user:", wmsUser ? wmsUser.email : null);
+
+          if (wmsUser) {
+            const isUserInactive = wmsUser.status === "INACTIVE";
+            const isClientEmployeeInactive = Boolean(wmsUser.clientEmployee && wmsUser.clientEmployee.status === "INACTIVE");
+
+            if (isUserInactive || isClientEmployeeInactive) {
+              console.warn("[AuthContext] Session exists for inactive user. Signing out.");
+              await supabase.auth.signOut();
+              console.debug("[AuthContext] clearing user (inactive user in initAuth)");
+              localStorage.removeItem("warehouse_os_user_id");
+              localStorage.removeItem("warehouse_os_supabase_uid");
+              localStorage.setItem("warehouse_os_logged_out", "true");
+              userRef.current = null;
+              setUser(null);
+              setTenant(null);
+            } else if (wmsUser.status === "ACTIVE") {
+              // Active user!
+              console.debug("[AuthContext] setting authenticated user:", wmsUser.email);
+              localStorage.removeItem("warehouse_os_logged_out");
+              localStorage.setItem("warehouse_os_user_id", wmsUser.id);
+              localStorage.setItem("warehouse_os_supabase_uid", authUserId);
+              const normalized = normalizeUser(wmsUser);
+              userRef.current = normalized;
+              setUser(normalized);
+              const userTenant = tenantList.find(
+                (t) => t.id === wmsUser.tenantId
+              );
+              setTenant(userTenant || (wmsUser.tenant as Tenant) || null);
+            }
           } else {
-            // Supabase session exists but no matching active WMS user found in list
+            // User not found in WMS: clear session keys, do NOT treat as inactive
+            console.debug("[AuthContext] clearing user (unregistered WMS user in initAuth)");
             localStorage.removeItem("warehouse_os_user_id");
             localStorage.removeItem("warehouse_os_supabase_uid");
+            userRef.current = null;
             setUser(null);
             setTenant(null);
           }
-        } else {
-          localStorage.removeItem("warehouse_os_user_id");
-          localStorage.removeItem("warehouse_os_supabase_uid");
-          setUser(null);
-          setTenant(null);
         }
       } catch (err) {
         console.error("Failed to initialize auth:", err);
         if (isMounted) {
+          console.debug("[AuthContext] clearing user (init exception)");
+          userRef.current = null;
           setUser(null);
           setTenant(null);
         }
       } finally {
         if (isMounted) {
-          setIsLoading(false);
+          // If on /auth/callback, keep isLoading true so AuthCallbackPage completes setAuthenticatedUser
+          if (!pathname.startsWith("/auth/callback")) {
+            setIsLoading(false);
+          }
           initialized.current = true;
         }
       }
@@ -215,71 +292,101 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     initAuth();
 
     // ─── 4. Supabase Auth state change listener ──────────────────────────
-    //    Handles OAuth callback events: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED
-    //    This fires when Supabase processes the OAuth URL tokens.
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!isMounted) return;
 
-      console.debug("[AuthContext] onAuthStateChange:", event, session?.user?.email);
+      const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+      console.debug("[AuthContext] onAuthStateChange event:", event);
+      console.debug("[AuthContext] session user:", session?.user?.id, session?.user?.email);
+      console.debug("[AuthContext] current pathname:", pathname);
 
-      if (event === "SIGNED_IN" && session?.user) {
+      if (pathname.startsWith("/auth/callback")) {
+        console.debug("[AuthContext] onAuthStateChange on /auth/callback; letting AuthCallbackPage process");
+        return;
+      }
+
+      // Prevent competing initialization from overwriting an already authenticated user:
+      if (userRef.current && session?.user && userRef.current.supabaseUserId === session.user.id) {
+        console.debug("[AuthContext] setting authenticated user (already matched):", userRef.current.email);
+        setIsLoading(false);
+        return;
+      }
+
+      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.user) {
         const authUserId = session.user.id;
         if (!authUserId) return;
 
-        const isLoggedOut =
-          localStorage.getItem("warehouse_os_logged_out") === "true";
-        if (isLoggedOut) return;
+        localStorage.removeItem("warehouse_os_logged_out");
 
-        // Resolve WMS user from the authenticated supabaseUserId
-        const users = allUsersRef.current;
-        let wmsUser = users.find((u) => u.supabaseUserId === authUserId);
+        // Authoritatively resolve WMS user from the authenticated supabaseUserId
+        let wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, allUsersRef.current, true);
 
-        // If not found in memory (e.g. freshly linked OAuth account), query DB
-        if (!wmsUser) {
+        // Attempt link if not yet linked
+        if (!wmsUser && session.user.email) {
           try {
-            const { data: freshUsers } = await supabase
-              .from("User")
-              .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
-              .eq("supabaseUserId", authUserId)
-              .limit(1);
-            if (freshUsers && freshUsers.length > 0) {
-              wmsUser = normalizeUser(freshUsers[0]);
-              const updatedUsers = [...users, wmsUser];
-              setAllUsers(updatedUsers);
-              allUsersRef.current = updatedUsers;
+            const { data: linkRes } = await supabase.rpc("rpc_link_auth_user_by_email", {
+              p_auth_user_id: authUserId,
+              p_email: session.user.email
+            });
+            if (linkRes?.success) {
+              wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, [], true);
             }
-          } catch (fetchErr) {
-            console.warn("[AuthContext] Fresh user lookup on SIGNED_IN failed:", fetchErr);
+          } catch (linkErr) {
+            console.warn("[AuthContext] onAuthStateChange: link error:", linkErr);
           }
         }
 
         if (!isMounted) return;
+        console.debug("[AuthContext] resolved WMS user:", wmsUser ? wmsUser.email : null);
 
-        if (wmsUser && wmsUser.status === "ACTIVE") {
-          // Persist and activate
-          localStorage.removeItem("warehouse_os_logged_out");
-          localStorage.setItem("warehouse_os_user_id", wmsUser.id);
-          localStorage.setItem("warehouse_os_supabase_uid", session.user.id);
+        if (wmsUser) {
+          const isUserInactive = wmsUser.status === "INACTIVE";
+          const isClientEmployeeInactive = Boolean(wmsUser.clientEmployee && wmsUser.clientEmployee.status === "INACTIVE");
 
-          setUser(normalizeUser(wmsUser));
-          const userTenant =
-            allTenantsRef.current.find((t) => t.id === wmsUser.tenantId) ||
-            (wmsUser.tenant as Tenant) ||
-            null;
-          setTenant(userTenant);
+          if (isUserInactive || isClientEmployeeInactive) {
+            console.warn("[AuthContext] Inactive user in onAuthStateChange. Signing out.");
+            await supabase.auth.signOut();
+            console.debug("[AuthContext] clearing user (inactive in onAuthStateChange)");
+            localStorage.removeItem("warehouse_os_user_id");
+            localStorage.removeItem("warehouse_os_supabase_uid");
+            localStorage.setItem("warehouse_os_logged_out", "true");
+            userRef.current = null;
+            setUser(null);
+            setTenant(null);
+            setIsLoading(false);
+          } else if (wmsUser.status === "ACTIVE") {
+            // Persist and activate
+            console.debug("[AuthContext] setting authenticated user:", wmsUser.email);
+            localStorage.removeItem("warehouse_os_logged_out");
+            localStorage.setItem("warehouse_os_user_id", wmsUser.id);
+            localStorage.setItem("warehouse_os_supabase_uid", session.user.id);
+
+            const normalized = normalizeUser(wmsUser);
+            userRef.current = normalized;
+            setUser(normalized);
+            const userTenant =
+              allTenantsRef.current.find((t) => t.id === wmsUser.tenantId) ||
+              (wmsUser.tenant as Tenant) ||
+              null;
+            setTenant(userTenant);
+            setIsLoading(false);
+          }
+        } else {
           setIsLoading(false);
         }
-        // If no wmsUser, AuthCallbackPage handles the error / linkage
       } else if (event === "SIGNED_OUT") {
         // Supabase session ended — ensure WMS state is cleared too
+        console.debug("[AuthContext] clearing user (SIGNED_OUT event)");
         localStorage.removeItem("warehouse_os_user_id");
         localStorage.removeItem("warehouse_os_supabase_uid");
         localStorage.setItem("warehouse_os_logged_out", "true");
         if (isMounted) {
+          userRef.current = null;
           setUser(null);
           setTenant(null);
+          setIsLoading(false);
         }
       }
     });
@@ -290,7 +397,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     };
   }, []);
 
-  // ─── switchUser: used by demo quick-login and email login ───────────────
+  // ─── switchUser: used by demo quick-login ───────────────
   const switchUser = async (userId: string) => {
     setIsLoading(true);
     try {
@@ -299,6 +406,9 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         allUsersRef.current.find((u) => u.id === userId) ||
         allUsers.find((u) => u.id === userId);
       if (selected) {
+        if (selected.status === "INACTIVE" || selected.clientEmployee?.status === "INACTIVE") {
+          throw new Error("Your account is inactive. Please contact your administrator.");
+        }
         const normalizedSelected = normalizeUser(selected);
         setUser(normalizedSelected);
         localStorage.setItem("warehouse_os_user_id", normalizedSelected.id);
@@ -324,10 +434,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
   };
 
-  const signInWithEmailAndPassword = async (email: string, password: string) => {
+  const signInWithEmailAndPassword = async (
+    email: string,
+    password: string
+  ): Promise<{ error: Error | null; errorType?: AuthErrorType }> => {
     setIsLoading(true);
     try {
-      // Use Supabase Auth for email/password authentication
+      // 1. Authenticate with Supabase Auth
+      // CRITICAL: Do NOT perform pre-authentication check (preserves security against email enumeration)
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password
@@ -335,7 +449,8 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
       if (authError || !authData?.user) {
         return {
-          error: new Error("Invalid email or password.")
+          error: new Error("Invalid email or password."),
+          errorType: "INVALID_CREDENTIALS"
         };
       }
 
@@ -345,57 +460,58 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       // Clear any previous logout state
       localStorage.removeItem("warehouse_os_logged_out");
 
-      // Find the WMS User by matching supabaseUserId
-      let users = allUsersRef.current.length > 0 ? allUsersRef.current : allUsers;
-      let wmsUser = users.find((u) => u.supabaseUserId === authUserId);
+      // 2. Authoritative lookup of WMS User by supabaseUserId
+      let wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, allUsersRef.current, true);
 
-      // If not found in cached list, do a fresh DB lookup
-      // This handles the case where a new employee was just created and is logging in for the first time
-      if (!wmsUser) {
-        console.info("[AuthContext] WMS user not found in cache, fetching from DB for supabaseUserId:", authUserId);
+      // If not yet linked by supabaseUserId, attempt secure linkage by authenticated email
+      if (!wmsUser && authUser.email) {
         try {
-          const { data: freshUserData } = await supabase
-            .from("User")
-            .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
-            .eq("supabaseUserId", authUserId)
-            .limit(1);
-          
-          if (freshUserData && freshUserData.length > 0) {
-            wmsUser = normalizeUser(freshUserData[0]);
-            console.info("[AuthContext] Found WMS user via fresh DB lookup:", wmsUser.id);
-            
-            // Update the cached users list to include this newly-found user
-            const updatedUsers = [...users, wmsUser];
-            setAllUsers(updatedUsers);
-            allUsersRef.current = updatedUsers;
+          const { data: linkData } = await supabase.rpc("rpc_link_auth_user_by_email", {
+            p_auth_user_id: authUserId,
+            p_email: authUser.email
+          });
+          if (linkData?.success) {
+            wmsUser = await resolveWmsUserBySupabaseUserId(authUserId, [], true);
           }
-        } catch (fetchError) {
-          console.error("[AuthContext] Failed to fetch WMS user from DB:", fetchError);
+        } catch (linkErr) {
+          console.warn("[AuthContext] Linkage attempt error:", linkErr);
         }
       }
 
+      // 3. User does not exist in WMS (Requirement 4)
       if (!wmsUser) {
-        // Authentication succeeded but no WMS user profile exists
-        // This is expected for new Supabase Auth users who haven't been provisioned in WMS yet
         console.warn("[AuthContext] Auth succeeded but no WMS User found for supabaseUserId:", authUserId);
         await supabase.auth.signOut();
+        localStorage.removeItem("warehouse_os_user_id");
+        localStorage.removeItem("warehouse_os_supabase_uid");
+        localStorage.setItem("warehouse_os_logged_out", "true");
+        setUser(null);
+        setTenant(null);
         return {
-          error: new Error("Authentication succeeded, but no WMS user profile is assigned to this account. Please contact your administrator.")
+          error: new Error("Your account is not registered in the WMS. Please contact your administrator."),
+          errorType: "NOT_REGISTERED"
         };
       }
 
-      if (wmsUser.status !== "ACTIVE") {
+      // 4. Inactive WMS User (Requirement 3)
+      if (wmsUser.status === "INACTIVE" || wmsUser.clientEmployee?.status === "INACTIVE") {
+        console.warn("[AuthContext] WMS User is INACTIVE for supabaseUserId:", authUserId);
         await supabase.auth.signOut();
+        localStorage.removeItem("warehouse_os_user_id");
+        localStorage.removeItem("warehouse_os_supabase_uid");
+        localStorage.setItem("warehouse_os_logged_out", "true");
+        setUser(null);
+        setTenant(null);
         return {
-          error: new Error("Your WMS account is inactive. Please contact your administrator.")
+          error: new Error("Your account is inactive. Please contact your administrator."),
+          errorType: "ACCOUNT_INACTIVE"
         };
       }
 
-      // Persist WMS user id and supabase auth id
+      // 5. Active WMS user - persist session and activate
       localStorage.setItem("warehouse_os_user_id", wmsUser.id);
       localStorage.setItem("warehouse_os_supabase_uid", authUserId);
 
-      // Set the authenticated user
       const normalizedWmsUser = normalizeUser(wmsUser);
       setUser(normalizedWmsUser);
 
@@ -408,17 +524,19 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
       return { error: null };
     } catch (err) {
-      return { error: err as Error };
+      return { error: err as Error, errorType: "GENERAL" };
     } finally {
       setIsLoading(false);
     }
   };
 
   const signOut = async () => {
+    console.debug("[AuthContext] clearing user (explicit signOut)");
     // Clear WMS session state
     localStorage.removeItem("warehouse_os_user_id");
     localStorage.removeItem("warehouse_os_supabase_uid");
     localStorage.setItem("warehouse_os_logged_out", "true");
+    userRef.current = null;
     setUser(null);
     setTenant(null);
 
@@ -445,6 +563,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
   const signInWithGoogle = async () => {
     try {
+      localStorage.removeItem("warehouse_os_logged_out");
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -485,6 +604,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         signInWithGoogle,
         signOut,
         refreshUsers,
+        setAuthenticatedUser,
       }}
     >
       {children}

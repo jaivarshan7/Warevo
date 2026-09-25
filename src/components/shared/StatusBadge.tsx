@@ -5,9 +5,16 @@ import { orderStatusBadgeStyles, verificationBadgeStyles } from "@/lib/orderWork
 interface StatusBadgeProps {
   status: OrderStatus | VerificationStatus | InvoiceStatus | PaymentStatus | string;
   type?: "order" | "verification" | "invoice" | "payment";
+  label?: string;
+  className?: string;
 }
 
-export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = "order" }) => {
+export const StatusBadge: React.FC<StatusBadgeProps> = ({
+  status,
+  type = "order",
+  label,
+  className = ""
+}) => {
   let style = "bg-slate-800 text-slate-300 border-slate-700";
 
   if (type === "order" && orderStatusBadgeStyles[status as OrderStatus]) {
@@ -37,6 +44,9 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = "order"
       case "PARTIALLY_PAID":
         style = "bg-amber-950 text-amber-300 border-amber-800";
         break;
+      case "PAYMENT_PENDING":
+        style = "bg-amber-950 text-amber-300 border-amber-800";
+        break;
       case "UNPAID":
         style = "bg-slate-800 text-slate-300 border-slate-700";
         break;
@@ -47,12 +57,16 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = "order"
   }
 
   const formatText = (text: string) => {
+    if (label) return label;
+    if (type === "order" && text === "VERIFIED") {
+      return "INVENTORY VERIFIED";
+    }
     return text.replace(/_/g, " ");
   };
 
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider border ${style}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider border ${style} ${className}`}
     >
       {formatText(status)}
     </span>

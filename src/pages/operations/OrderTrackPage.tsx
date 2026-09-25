@@ -291,11 +291,11 @@ export const OrderTrackPage: React.FC = () => {
                 const verificationBadge =
                   order.verificationStatus === "PENDING" ? (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
-                      Verify Pending
+                      Delivery Pending
                     </span>
                   ) : order.verificationStatus === "VERIFIED" ? (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
-                      Verified
+                      Delivery Verified
                     </span>
                   ) : (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-800 text-slate-400 border border-slate-700">
@@ -350,11 +350,11 @@ export const OrderTrackPage: React.FC = () => {
                       </h2>
                       {activeOrder.verificationStatus === "VERIFIED" ? (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
-                          Verified
+                          Delivery Verified
                         </span>
                       ) : (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800">
-                          Pending Verification
+                          Pending Delivery Verification
                         </span>
                       )}
                     </div>

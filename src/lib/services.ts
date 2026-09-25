@@ -23,8 +23,10 @@ import {
   CompanyGroup,
   AdminRoleItem,
   PermissionItem,
-  PermissionKey
+  PermissionKey,
+  OrderTimelineEvent
 } from "@/types";
+import { getRoleDisplay } from "./roleDisplay";
 
 export function isClientRole(role?: Role | null): boolean {
   return role === "CLIENT" || role === "CLIENT_ACCOUNTANT";
@@ -195,7 +197,7 @@ export async function fetchOrders(
 ): Promise<Order[]> {
   let query = supabase
     .from("Order")
-    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*))")
+    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), invoices:Invoice(id, paymentStatus)")
     .order("createdAt", { ascending: false });
   
   if (role !== "PLATFORM_ADMIN" && tenantId) {
@@ -242,7 +244,8 @@ export async function fetchOrderById(
       client:Client(*, employees:ClientEmployee(*)),
       createdBy:User!createdById(*),
       assignedStaff:User!assignedStaffId(*),
-      items:OrderItem(*, product:Product(*))
+      items:OrderItem(*, product:Product(*)),
+      invoices:Invoice(*, payments:Payment(*))
     `)
     .eq("id", orderId);
 
@@ -286,7 +289,7 @@ export async function fetchOrderById(
   const [historyResult, verificationResult] = await Promise.all([
     supabase
       .from("OrderStatusHistory")
-      .select("*, changedBy:User!changedById(*)")
+      .select("*")
       .eq("orderId", orderId)
       .order("createdAt", { ascending: true }),
     supabase
@@ -301,6 +304,281 @@ export async function fetchOrderById(
     statusHistory: (historyResult.data || []) as Order["statusHistory"],
     verification: (verificationResult.data || null) as Order["verification"]
   };
+}
+
+/**
+ * Fetch unified chronological activity timeline strictly for a specific order.
+ * Resolves actual actor names (User.name), roles (with granular client employee roles),
+ * delivery verification, inventory verification, and payment stages.
+ */
+export async function fetchOrderTimeline(
+  orderId: string,
+  tenantId?: string | null,
+  clientId?: string | null,
+  userRole?: Role,
+  userId?: string | null
+): Promise<OrderTimelineEvent[]> {
+  if (!orderId) return [];
+
+  // 1. Fetch Order with client employees, invoices, and payments strictly for this orderId
+  let orderQuery = supabase
+    .from("Order")
+    .select(`
+      id,
+      tenantId,
+      clientId,
+      orderNumber,
+      status,
+      verificationStatus,
+      createdById,
+      assignedStaffId,
+      deliveryVerifiedAt,
+      deliveryVerifiedById,
+      storeVerifiedAt,
+      storeVerifiedById,
+      createdAt,
+      updatedAt,
+      client:Client(id, companyName, employees:ClientEmployee(id, userId, employeeRole, contactPerson, mobile, email)),
+      invoices:Invoice(id, invoiceNumber, status, paymentStatus, total, updatedAt, createdAt, payments:Payment(*))
+    `)
+    .eq("id", orderId);
+
+  if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId) {
+    orderQuery = orderQuery.eq("tenantId", tenantId);
+  }
+
+  if (isClientRole(userRole) && clientId) {
+    const companyClientIds = await resolveCompanyClientIds(userId, clientId);
+    if (companyClientIds.length > 0) {
+      orderQuery = orderQuery.in("clientId", companyClientIds);
+    } else {
+      orderQuery = orderQuery.eq("clientId", clientId);
+    }
+  }
+
+  const { data: order, error: orderErr } = await orderQuery.maybeSingle();
+  if (orderErr) {
+    console.error("Error fetching order for timeline:", orderErr);
+    throw new Error("Unable to load order history.");
+  }
+  if (!order) return [];
+
+  // Defense-in-depth ownership checks
+  if (isClientRole(userRole) && clientId) {
+    const isOwner = await verifyCompanyOwnership(order.clientId, userId, clientId);
+    if (!isOwner) return [];
+  }
+  if (userRole && userRole !== "PLATFORM_ADMIN" && tenantId && order.tenantId !== tenantId) {
+    return [];
+  }
+
+  // 2. Fetch OrderStatusHistory and VerificationResponse for this specific order
+  const [historyRes, verifRes] = await Promise.all([
+    supabase
+      .from("OrderStatusHistory")
+      .select("*")
+      .eq("orderId", orderId)
+      .order("createdAt", { ascending: true }),
+    supabase
+      .from("VerificationResponse")
+      .select("*")
+      .eq("orderId", orderId)
+      .maybeSingle()
+  ]);
+
+  if (historyRes.error) {
+    console.error("Error fetching order status history:", historyRes.error);
+    throw new Error("Unable to load order history.");
+  }
+
+  const history = historyRes.data || [];
+  const verif = verifRes.data || null;
+
+  // 3. Collect unique actor IDs
+  const rawActorIds = [
+    order.createdById,
+    order.assignedStaffId,
+    order.deliveryVerifiedById,
+    order.storeVerifiedById,
+    verif?.userId,
+    ...history.map((h: any) => h.changedById)
+  ].filter(Boolean) as string[];
+
+  const actorIds = Array.from(new Set(rawActorIds));
+
+  // 4. Resolve users and client employees
+  const [usersRes, empRes] = await Promise.all([
+    actorIds.length > 0
+      ? supabase.from("User").select("id, name, email, role, tenantId").in("id", actorIds)
+      : Promise.resolve({ data: [] }),
+    actorIds.length > 0
+      ? supabase.from("ClientEmployee").select("id, userId, employeeRole, contactPerson, mobile, email").in("userId", actorIds)
+      : Promise.resolve({ data: [] })
+  ]);
+
+  const userMap = new Map((usersRes.data || []).map((u: any) => [u.id, u]));
+  const empMap = new Map((empRes.data || []).map((e: any) => [e.userId, e]));
+
+  // Also include client employees from order.client
+  const clientObj: any = Array.isArray(order.client) ? order.client[0] : order.client;
+  if (clientObj?.employees) {
+    for (const ce of clientObj.employees) {
+      if (ce.userId && !empMap.has(ce.userId)) {
+        empMap.set(ce.userId, ce);
+      }
+    }
+  }
+
+  // Helper to resolve actor person's name and roleDisplay
+  function resolveActor(actorId?: string | null, isSystem: boolean = false) {
+    if (isSystem || !actorId) {
+      return { name: "System", roleDisplay: "System", employeeRole: null };
+    }
+    const user = userMap.get(actorId);
+    const emp = empMap.get(actorId);
+
+    const name = user?.name || emp?.contactPerson || "Warehouse Staff";
+    const baseRole = user?.role || (emp ? "CLIENT" : "WAREHOUSE_STAFF");
+    const employeeRole = emp?.employeeRole || null;
+    const roleDisplay = getRoleDisplay({ role: baseRole, clientEmployee: { employeeRole } });
+    return { name, roleDisplay, employeeRole };
+  }
+
+  const events: OrderTimelineEvent[] = [];
+  let addedInventoryVerified = false;
+
+  // 5. Add OrderStatusHistory entries
+  for (const h of history) {
+    let title = h.newStatus.replace(/_/g, " ");
+    let eventType: string = h.newStatus;
+
+    if (h.newStatus === "ISSUED" && !h.previousStatus) {
+      title = "Order Created";
+      eventType = "ISSUED";
+    } else if (h.newStatus === "PROCESSING") {
+      title = "Processing";
+      eventType = "PROCESSING";
+    } else if (h.newStatus === "READY_FOR_DISPATCH") {
+      title = "Ready for Dispatch";
+      eventType = "READY_FOR_DISPATCH";
+    } else if (h.newStatus === "DISPATCHED") {
+      title = "Dispatched";
+      eventType = "DISPATCHED";
+    } else if (h.newStatus === "VERIFIED") {
+      title = "Inventory Verified";
+      eventType = "INVENTORY_VERIFIED";
+      addedInventoryVerified = true;
+    } else if (h.newStatus === "CANCELLED") {
+      title = "Order Cancelled";
+      eventType = "CANCELLED";
+    }
+
+    const actor = resolveActor(h.changedById);
+
+    events.push({
+      id: h.id,
+      type: eventType,
+      title,
+      timestamp: h.createdAt,
+      actorName: actor.name,
+      actorRole: actor.roleDisplay,
+      actorEmployeeRole: actor.employeeRole,
+      notes: h.notes || null,
+      source: "STATUS_HISTORY"
+    });
+  }
+
+  // 6. Delivery Verification Event
+  const deliveryTime = order.deliveryVerifiedAt || verif?.createdAt;
+  const deliveryActorId = order.deliveryVerifiedById || verif?.userId;
+
+  if (deliveryTime) {
+    const actor = resolveActor(deliveryActorId);
+    events.push({
+      id: `delivery_verif_${order.id}`,
+      type: "DELIVERY_VERIFIED",
+      title: "Delivery Verified",
+      timestamp: deliveryTime,
+      actorName: actor.name,
+      actorRole: actor.roleDisplay,
+      actorEmployeeRole: actor.employeeRole,
+      notes: verif?.comments || "Delivered items inspected and verified by client receiver.",
+      source: "DELIVERY_VERIFICATION"
+    });
+  }
+
+  // 7. Store / Inventory Verification (if not already recorded in OrderStatusHistory)
+  if (order.storeVerifiedAt && !addedInventoryVerified) {
+    const actor = resolveActor(order.storeVerifiedById);
+    events.push({
+      id: `store_verif_${order.id}`,
+      type: "INVENTORY_VERIFIED",
+      title: "Inventory Verified",
+      timestamp: order.storeVerifiedAt,
+      actorName: actor.name,
+      actorRole: actor.roleDisplay,
+      actorEmployeeRole: actor.employeeRole,
+      notes: "Store inventory verified and received into stock.",
+      source: "STORE_VERIFICATION"
+    });
+  }
+
+  // 8. Payment Events (from invoices & payments)
+  const invoices = (order as any).invoices || [];
+  for (const inv of invoices) {
+    // Payment Pending event
+    if (inv.paymentStatus === "PAYMENT_PENDING" || inv.paymentStatus === "PAID" || inv.paymentStatus === "PARTIALLY_PAID") {
+      const pendingTime = order.storeVerifiedAt || inv.updatedAt || inv.createdAt;
+      events.push({
+        id: `payment_pending_${inv.id}`,
+        type: "PAYMENT_PENDING",
+        title: "Payment Pending",
+        timestamp: pendingTime,
+        actorName: "System",
+        actorRole: "System",
+        notes: `Invoice #${inv.invoiceNumber} set to Payment Pending upon store verification.`,
+        source: "PAYMENT_STATUS"
+      });
+    }
+
+    // Payment Recorded events
+    for (const p of inv.payments || []) {
+      // Find ACCOUNT employee of the client if available
+      const accountEmp = clientObj?.employees?.find((e: any) => e.employeeRole === "ACCOUNT");
+      const pActor = resolveActor(accountEmp?.userId || clientObj?.employees?.[0]?.userId);
+      events.push({
+        id: `payment_${p.id}`,
+        type: "PAYMENT_RECORDED",
+        title: "Payment Recorded",
+        timestamp: p.paidAt || p.createdAt,
+        actorName: pActor.name !== "System" ? pActor.name : "Client Accountant",
+        actorRole: pActor.roleDisplay !== "System" ? pActor.roleDisplay : "CLIENT / ACCOUNT",
+        notes: `Payment of ₹${Number(p.amount).toLocaleString("en-IN")} recorded via ${p.method.replace(/_/g, " ")}.`,
+        source: "PAYMENT"
+      });
+    }
+
+    // Paid event
+    if (inv.paymentStatus === "PAID") {
+      const lastPayment = (inv.payments || [])[inv.payments.length - 1];
+      const paidTime = lastPayment?.paidAt || inv.updatedAt;
+      events.push({
+        id: `paid_${inv.id}`,
+        type: "PAID",
+        title: "Paid",
+        timestamp: paidTime,
+        actorName: "System",
+        actorRole: "System",
+        notes: `Invoice #${inv.invoiceNumber} fully settled.`,
+        source: "PAYMENT_STATUS"
+      });
+    }
+  }
+
+  // 9. Sort chronologically ascending
+  events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  return events;
 }
 export async function transitionOrderStatus(
   orderId: string,
@@ -1612,17 +1890,35 @@ export async function fetchUserNotifications(
   if (error) throw error;
   const allNotifs = (data as any[]) || [];
 
-  if (isClientRole(role)) {
+  let filtered = allNotifs;
+
+  if (userId) {
+    filtered = filtered.filter((n) => {
+      // If notification is targeted to a specific user, deliver only to that user
+      if (n.userId) return n.userId === userId;
+      // If notification has no userId, it's a broadcast
+      if (isClientRole(role)) {
+        return clientId ? n.order?.clientId === clientId : false;
+      }
+      return true;
+    });
+  } else if (isClientRole(role)) {
     if (!clientId) return [];
-    // For CLIENT users: only include notifications addressed to this user or belonging to client's order
-    return allNotifs.filter((n) => {
-      if (n.userId && userId && n.userId === userId) return true;
-      if (n.order && n.order.clientId === clientId) return true;
-      return false;
-    }) as Notification[];
+    filtered = filtered.filter((n) => n.order?.clientId === clientId);
   }
 
-  return allNotifs as Notification[];
+  // Deduplicate identical type/title + orderId notifications
+  const seen = new Set<string>();
+  const deduplicated: Notification[] = [];
+  for (const n of filtered) {
+    const key = `${n.type || n.title}_${n.orderId || n.id}_${n.userId || ""}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduplicated.push(n);
+    }
+  }
+
+  return deduplicated;
 }
 
 export async function markNotificationRead(

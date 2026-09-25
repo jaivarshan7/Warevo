@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
+import { useAuth, normalizeUser } from "@/contexts/AuthContext";
 
 /**
  * AuthCallbackPage — handles the OAuth redirect from Supabase/Google.
@@ -9,74 +10,79 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
  * Flow:
  *   Google → Supabase → /auth/callback (this page)
  *     → getSession() to confirm Supabase auth session
- *     → query WMS User by authenticated email
- *     → ACTIVE user found  → save userId to localStorage → /dashboard
- *     → No user found       → show "no WMS account" error → sign out
- *     → INACTIVE user found → show "account inactive" error → sign out
- *
- * AuthContext's onAuthStateChange listener picks up the session
- * and sets the WMS user independently; this page handles the
- * redirect and user-facing error messages.
+ *     → query WMS User by supabaseUserId
+ *     → if unlinked, attempt rpc_link_auth_user_by_email
+ *     → ACTIVE user found  → setAuthenticatedUser → /dashboard
+ *     → No user found       → NOT_REGISTERED → sign out → /login?error=not_registered
+ *     → INACTIVE user found → ACCOUNT_INACTIVE → sign out → /login?error=inactive
+ *     → Query/link error    → real error state on page (NOT Account Inactive)
  */
 export const AuthCallbackPage: React.FC = () => {
   const navigate = useNavigate();
+  const { user, setAuthenticatedUser } = useAuth();
   const [status, setStatus] = useState<"loading" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [errorDetail, setErrorDetail] = useState<string>("");
+  const [pendingTargetUserId, setPendingTargetUserId] = useState<string | null>(null);
+
+  // Monitor AuthContext state update confirmation before navigating to /dashboard
+  useEffect(() => {
+    if (pendingTargetUserId && user && user.id === pendingTargetUserId) {
+      console.debug("[GoogleOAuth] navigating dashboard");
+      navigate("/dashboard", { replace: true });
+    }
+  }, [pendingTargetUserId, user, navigate]);
 
   useEffect(() => {
     let cancelled = false;
 
+    console.debug("[GoogleOAuth] callback mounted");
+    localStorage.removeItem("warehouse_os_logged_out");
+
     async function resolveGoogleUser() {
       try {
-        // 1. Wait for Supabase to process the OAuth callback tokens from the URL.
-        //    detectSessionInUrl:true means supabase-js already parsed the tokens;
-        //    getSession() returns the current session.
+        // 1. Obtain authenticated Supabase user
         const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
 
         if (cancelled) return;
 
-        if (sessionError) {
-          console.error("[AuthCallback] Session error:", sessionError);
-          setErrorMessage("Authentication failed. Please try again.");
-          setErrorDetail(sessionError.message);
+        const sessionExists = Boolean(sessionData?.session?.user);
+        console.debug("[GoogleOAuth] session exists:", sessionExists);
+
+        // State A: Supabase authentication failed
+        if (sessionError || !sessionData?.session?.user) {
+          console.error("[GoogleOAuth] Supabase session error:", sessionError);
+          if (!sessionData?.session?.user && !sessionError) {
+            navigate("/login", { replace: true });
+            return;
+          }
+          setErrorMessage("Authentication failed. Please try signing in again.");
+          setErrorDetail(sessionError?.message || "No valid session found.");
           setStatus("error");
           return;
         }
 
-        const authUser = sessionData?.session?.user;
-
-        if (!authUser) {
-          // No Supabase session — likely the user navigated here directly
-          console.warn("[AuthCallback] No Supabase session found after OAuth redirect.");
-          navigate("/login", { replace: true });
-          return;
-        }
-
-        // 2. Resolve the authenticated user ID (source of truth from Supabase Auth)
+        const authUser = sessionData.session.user;
         const authUserId = authUser.id;
+        const authEmail = authUser.email;
 
-        if (!authUserId) {
-          await supabase.auth.signOut();
-          setErrorMessage("Could not determine your authenticated user ID.");
-          setErrorDetail("Authentication failed to provide a valid user ID.");
-          setStatus("error");
-          return;
-        }
+        console.debug("[GoogleOAuth] auth user id:", authUserId);
+        console.debug("[GoogleOAuth] auth email:", authEmail);
 
-        // 3. Look up the WMS User by supabaseUserId
+        // 2. Authoritative lookup by supabaseUserId
         const { data: wmsUsers, error: usersError } = await supabase
           .from("User")
-          .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
+          .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
           .eq("supabaseUserId", authUserId)
           .limit(1);
 
         if (cancelled) return;
 
+        // State B: WMS User lookup returned an actual database/query error
         if (usersError) {
-          console.error("[AuthCallback] User lookup error:", usersError);
+          console.error("[GoogleOAuth] WMS lookup error:", usersError);
           await supabase.auth.signOut();
-          setErrorMessage("Failed to look up your WMS account. Please try again.");
+          setErrorMessage("Unable to verify your warehouse management account.");
           setErrorDetail(usersError.message);
           setStatus("error");
           return;
@@ -84,26 +90,61 @@ export const AuthCallbackPage: React.FC = () => {
 
         let rawUser = wmsUsers?.[0] as any;
 
-        // 4. If no WMS User found by supabaseUserId, attempt secure linkage by email
-        if (!rawUser && authUser.email) {
+        // 3. If no WMS User is linked by supabaseUserId, attempt secure linkage by email
+        if (!rawUser && authEmail) {
+          console.debug("[GoogleOAuth] Attempting account linkage for email:", authEmail);
           const { data: linkData, error: linkError } = await supabase.rpc(
             "rpc_link_auth_user_by_email",
             {
               p_auth_user_id: authUserId,
-              p_email: authUser.email,
+              p_email: authEmail,
             }
           );
 
           if (cancelled) return;
 
           if (linkError || !linkData?.success) {
-            console.warn("[AuthCallback] Account linkage failed:", linkError?.message || linkData);
+            console.warn("[GoogleOAuth] Account linkage failed:", linkError?.message || linkData);
+            const errMsg = linkError?.message || "";
+
+            // Check if failure is due to inactive status
+            if (errMsg.toLowerCase().includes("inactive")) {
+              console.debug("[GoogleOAuth] WMS user status: INACTIVE (from RPC)");
+              await supabase.auth.signOut();
+              localStorage.removeItem("warehouse_os_user_id");
+              localStorage.removeItem("warehouse_os_supabase_uid");
+              localStorage.setItem("warehouse_os_logged_out", "true");
+              navigate("/login?error=inactive", {
+                replace: true,
+                state: {
+                  errorType: "ACCOUNT_INACTIVE",
+                  errorMessage: "Your account is inactive. Please contact your administrator."
+                }
+              });
+              return;
+            }
+
+            // Check if failure is due to user not existing
+            if (errMsg.toLowerCase().includes("no wms user found")) {
+              console.debug("[GoogleOAuth] WMS user found: false");
+              await supabase.auth.signOut();
+              localStorage.removeItem("warehouse_os_user_id");
+              localStorage.removeItem("warehouse_os_supabase_uid");
+              localStorage.setItem("warehouse_os_logged_out", "true");
+              navigate("/login?error=not_registered", {
+                replace: true,
+                state: {
+                  errorType: "NOT_REGISTERED",
+                  errorMessage: "Your account is not registered in the WMS. Please contact your administrator."
+                }
+              });
+              return;
+            }
+
+            // Other error -> State B: database / bootstrap error (NOT Account Inactive)
             await supabase.auth.signOut();
-            setErrorMessage("No WMS account is associated with this authenticated account.");
-            setErrorDetail(
-              `The authenticated account (${authUser.email}) is not registered or active in this WMS. ` +
-              "Please contact your administrator."
-            );
+            setErrorMessage("Account linkage failed. Please contact your administrator.");
+            setErrorDetail(errMsg || "An unexpected error occurred during account linkage.");
             setStatus("error");
             return;
           }
@@ -111,83 +152,90 @@ export const AuthCallbackPage: React.FC = () => {
           // Re-query WMS User now that supabaseUserId is linked
           const { data: linkedUsers, error: linkedQueryError } = await supabase
             .from("User")
-            .select("id, name, email, role, status, tenantId, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
+            .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
             .eq("supabaseUserId", authUserId)
             .limit(1);
 
           if (cancelled) return;
 
-          if (linkedQueryError || !linkedUsers || linkedUsers.length === 0) {
-            console.error("[AuthCallback] Re-query after linkage failed:", linkedQueryError);
+          if (linkedQueryError) {
+            console.error("[GoogleOAuth] Re-query after linkage error:", linkedQueryError);
             await supabase.auth.signOut();
-            setErrorMessage("Failed to load WMS user profile after account linkage.");
+            setErrorMessage("Failed to load user profile after linkage.");
+            setErrorDetail(linkedQueryError.message);
             setStatus("error");
             return;
           }
 
-          rawUser = linkedUsers[0];
+          rawUser = linkedUsers?.[0];
         }
 
-        let wmsUser = rawUser;
-        if (rawUser) {
-          const clientEmployee = Array.isArray(rawUser.clientEmployee)
-            ? rawUser.clientEmployee[0] || null
-            : rawUser.clientEmployee || null;
-          const client = clientEmployee?.client
-            ? (Array.isArray(clientEmployee.client) ? clientEmployee.client[0] : clientEmployee.client)
-            : null;
-          wmsUser = {
-            ...rawUser,
-            clientEmployee: clientEmployee || null,
-            client: client || null,
-            clientId: client?.id || clientEmployee?.clientId || null,
-          };
-        }
+        // Normalize rawUser
+        const wmsUser = rawUser ? normalizeUser(rawUser) : null;
+        console.debug("[GoogleOAuth] WMS user found:", Boolean(wmsUser));
 
-        // 5a. No matching WMS user
+        // State C: WMS User does not exist
         if (!wmsUser) {
-          console.warn("[AuthCallback] No WMS user found for supabaseUserId:", authUserId);
           await supabase.auth.signOut();
-          setErrorMessage("No WMS account is associated with this authenticated account.");
-          setErrorDetail(
-            `The authenticated account (${authUser.email}) is not registered in this WMS. ` +
-            "Please contact your administrator."
-          );
-          setStatus("error");
+          localStorage.removeItem("warehouse_os_user_id");
+          localStorage.removeItem("warehouse_os_supabase_uid");
+          localStorage.setItem("warehouse_os_logged_out", "true");
+          navigate("/login?error=not_registered", {
+            replace: true,
+            state: {
+              errorType: "NOT_REGISTERED",
+              errorMessage: "Your account is not registered in the WMS. Please contact your administrator."
+            }
+          });
           return;
         }
 
-        // 5b. Inactive WMS user
-        if (wmsUser.status !== "ACTIVE") {
-          console.warn("[AuthCallback] WMS user is inactive:", wmsUser.id);
+        console.debug("[GoogleOAuth] WMS user status:", wmsUser.status);
+
+        // State D: WMS User exists and User.status === INACTIVE
+        if (wmsUser.status === "INACTIVE") {
           await supabase.auth.signOut();
-          setErrorMessage("Your WMS account is inactive.");
-          setErrorDetail(
-            "Your account has been deactivated. Please contact your administrator."
-          );
-          setStatus("error");
+          localStorage.removeItem("warehouse_os_user_id");
+          localStorage.removeItem("warehouse_os_supabase_uid");
+          localStorage.setItem("warehouse_os_logged_out", "true");
+          navigate("/login?error=inactive", {
+            replace: true,
+            state: {
+              errorType: "ACCOUNT_INACTIVE",
+              errorMessage: "Your account is inactive. Please contact your administrator."
+            }
+          });
           return;
         }
 
-        // 6. Valid, active WMS user — persist session keys
-        localStorage.removeItem("warehouse_os_logged_out");
-        localStorage.setItem("warehouse_os_user_id", wmsUser.id);
-        localStorage.setItem("warehouse_os_supabase_uid", authUser.id);
-
-        console.info(
-          `[AuthCallback] Login success: ${wmsUser.name} (${wmsUser.role})`
-        );
-
-        // Navigate to dashboard — AppShell / AuthContext will finalize user state
-        if (!cancelled) {
-          navigate("/dashboard", { replace: true });
+        // State E: WMS User exists and User.status === ACTIVE
+        // If there is a ClientEmployee:
+        if (wmsUser.clientEmployee && wmsUser.clientEmployee.status === "INACTIVE") {
+          console.debug("[GoogleOAuth] ClientEmployee status: INACTIVE");
+          await supabase.auth.signOut();
+          localStorage.removeItem("warehouse_os_user_id");
+          localStorage.removeItem("warehouse_os_supabase_uid");
+          localStorage.setItem("warehouse_os_logged_out", "true");
+          navigate("/login?error=inactive", {
+            replace: true,
+            state: {
+              errorType: "ACCOUNT_INACTIVE",
+              errorMessage: "Your account is inactive. Please contact your administrator."
+            }
+          });
+          return;
         }
-      } catch (err) {
+
+        // Active user (warehouse user without ClientEmployee OR client user with active ClientEmployee)
+        console.debug("[GoogleOAuth] calling setAuthenticatedUser");
+        setAuthenticatedUser(wmsUser, wmsUser.tenant);
+        setPendingTargetUserId(wmsUser.id);
+      } catch (err: any) {
         if (cancelled) return;
-        console.error("[AuthCallback] Unexpected error:", err);
+        console.error("[GoogleOAuth] Unexpected error during resolution:", err);
         await supabase.auth.signOut();
-        setErrorMessage("An unexpected error occurred during sign-in.");
-        setErrorDetail(String(err));
+        setErrorMessage("An unexpected authentication error occurred.");
+        setErrorDetail(err?.message || String(err));
         setStatus("error");
       }
     }
@@ -197,7 +245,7 @@ export const AuthCallbackPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [navigate]);
+  }, [navigate, setAuthenticatedUser]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
