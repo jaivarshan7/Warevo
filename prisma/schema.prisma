@@ -1,4 +1,4 @@
-generator client {
+﻿generator client {
   provider = "prisma-client-js"
 }
 
@@ -788,7 +788,7 @@ model RoleDefinition {
   permissions RolePermission[]
   employees   ClientEmployee[]
 
-  @@map("Role")
+  @@map("RoleDefinition")
   @@index([tenantId])
 }
 
@@ -814,4 +814,5 @@ model RolePermission {
   @@index([roleId])
   @@index([permissionId])
 }
+
 
