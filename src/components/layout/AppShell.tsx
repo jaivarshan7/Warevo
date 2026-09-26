@@ -1,5 +1,4 @@
-import React from "react";
-import { Outlet, Navigate } from "react-router-dom";
+import { Outlet, Navigate, useLocation } from "react-router-dom";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
 import { MobileNav } from "./MobileNav";
@@ -9,6 +8,7 @@ import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 
 export const AppShell: React.FC = () => {
   const { user, isLoading } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -19,7 +19,7 @@ export const AppShell: React.FC = () => {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // Only genuine INACTIVE status directs to ?error=inactive

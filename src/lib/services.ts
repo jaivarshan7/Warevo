@@ -705,35 +705,55 @@ export async function createEnhancedOrder(payload: {
     throw new Error("Order creation failed: RPC returned unsuccessful result");
   }
 
-  const createdOrderId = data.order?.id || data.orderId;
-  const createdOrderNumber = data.order?.orderNumber || data.orderNumber;
+  const rpcOrder = (data as any)?.order;
+  const rpcInvoice = (data as any)?.invoice;
+
+  const createdOrderId =
+    rpcOrder?.id ||
+    (data as any)?.orderId ||
+    (data as any)?.order_id ||
+    "";
+
+  const createdOrderNumber =
+    rpcOrder?.orderNumber ||
+    rpcOrder?.order_number ||
+    (data as any)?.orderNumber ||
+    (data as any)?.order_number ||
+    "";
+
   const createdInvoiceTotal =
-    data.invoice?.total ?? (data as any)?.invoiceTotal ?? data.order?.totalAmount;
+    rpcInvoice?.total ??
+    (data as any)?.invoiceTotal ??
+    (data as any)?.totalAmount ??
+    rpcOrder?.totalAmount;
 
-  // Non-blocking side effect: trigger email dispatch if preference enabled
-  triggerOrderCreatedEmail({
-    tenantId: payload.tenantId,
-    clientId: payload.clientId,
-    orderId: createdOrderId,
-    orderNumber: createdOrderNumber,
-    selectedContactIds: payload.selectedContactIds,
-    totalAmount: createdInvoiceTotal,
-  }).catch((err) => console.warn("triggerOrderCreatedEmail side effect failed:", err));
-
-  // Fetch the created order to return in the same format as before
+  // Fetch the created order to return in the same format as before and ensure authoritative orderNumber
   const { data: order, error: fetchErr } = await supabase
     .from("Order")
     .select("*")
     .eq("id", createdOrderId)
     .single();
 
+  const finalOrderId = order?.id || createdOrderId;
+  const finalOrderNumber = order?.orderNumber || createdOrderNumber;
+
+  // Non-blocking side effect: trigger email dispatch if preference enabled
+  triggerOrderCreatedEmail({
+    tenantId: payload.tenantId,
+    clientId: payload.clientId,
+    orderId: finalOrderId,
+    orderNumber: finalOrderNumber,
+    selectedContactIds: payload.selectedContactIds,
+    totalAmount: createdInvoiceTotal,
+  }).catch((err) => console.warn("triggerOrderCreatedEmail side effect failed:", err));
+
   if (fetchErr || !order) {
     console.warn("Could not fetch newly created order:", fetchErr);
     // Order was created successfully, but we can't fetch it
     // Return a minimal object with the authoritative data from RPC
     return {
-      id: createdOrderId,
-      orderNumber: createdOrderNumber,
+      id: finalOrderId,
+      orderNumber: finalOrderNumber,
       tenantId: payload.tenantId,
       clientId: payload.clientId,
       status: initialStatus,
@@ -3556,50 +3576,75 @@ export async function triggerOrderCreatedEmail(params: {
   try {
     const { tenantId, clientId, orderId, orderNumber, selectedContactIds, totalAmount } = params;
 
+    // Safety: ensure orderNumber and orderId are never undefined or "undefined"
+    let safeOrderId = (orderId && orderId !== "undefined") ? orderId : "";
+    let safeOrderNumber = (orderNumber && orderNumber !== "undefined") ? orderNumber : "";
+
+    // If either is missing, query Order table directly as fallback
+    if (!safeOrderId || !safeOrderNumber) {
+      if (safeOrderId) {
+        const { data: ord } = await supabase.from("Order").select("id, orderNumber").eq("id", safeOrderId).maybeSingle();
+        if (ord?.orderNumber) safeOrderNumber = ord.orderNumber;
+      } else if (safeOrderNumber) {
+        const { data: ord } = await supabase.from("Order").select("id, orderNumber").eq("orderNumber", safeOrderNumber).maybeSingle();
+        if (ord?.id) safeOrderId = ord.id;
+      }
+    }
+
     let recipients: Array<{ id: string | null; email: string | null; name: string; contactKey: string }> = [];
 
-    if (selectedContactIds && selectedContactIds.length > 0) {
-      // 1. Authoritatively resolve explicitly designated ClientEmployee contacts
-      const { data: empsById } = await supabase
-        .from("ClientEmployee")
-        .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
-        .in("id", selectedContactIds)
-        .eq("tenantId", tenantId)
-        .eq("clientId", clientId);
+    if (selectedContactIds !== undefined && selectedContactIds !== null) {
+      if (selectedContactIds.length > 0) {
+        // 1. Authoritatively resolve ONLY explicitly designated ClientEmployee contacts
+        const { data: empsById } = await supabase
+          .from("ClientEmployee")
+          .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
+          .in("id", selectedContactIds)
+          .eq("tenantId", tenantId)
+          .eq("clientId", clientId);
 
-      const { data: empsByUserId } = await supabase
-        .from("ClientEmployee")
-        .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
-        .in("userId", selectedContactIds)
-        .eq("tenantId", tenantId)
-        .eq("clientId", clientId);
+        const { data: empsByUserId } = await supabase
+          .from("ClientEmployee")
+          .select("id, clientId, tenantId, userId, contactPerson, email, status, user:User(id, name, email, status, tenantId)")
+          .in("userId", selectedContactIds)
+          .eq("tenantId", tenantId)
+          .eq("clientId", clientId);
 
-      const combinedEmps = new Map<string, any>();
-      (empsById || []).forEach((e) => combinedEmps.set(e.id, e));
-      (empsByUserId || []).forEach((e) => combinedEmps.set(e.id, e));
+        const combinedEmps = new Map<string, any>();
+        (empsById || []).forEach((e) => combinedEmps.set(e.id, e));
+        (empsByUserId || []).forEach((e) => combinedEmps.set(e.id, e));
 
-      for (const contactId of selectedContactIds) {
-        const emp =
-          combinedEmps.get(contactId) ||
-          Array.from(combinedEmps.values()).find((e) => e.userId === contactId);
+        const seenEmails = new Set<string>();
 
-        if (emp) {
-          const u: any = Array.isArray(emp.user) ? emp.user[0] : emp.user;
-          const email = (emp.email || u?.email || "").trim() || null;
-          const name = emp.contactPerson || u?.name || "Order Contact";
-          const userId = emp.userId || (u?.id ?? null);
-          const isActive = emp.status === "ACTIVE" && (!u || u.status === "ACTIVE");
+        for (const contactId of selectedContactIds) {
+          const emp =
+            combinedEmps.get(contactId) ||
+            Array.from(combinedEmps.values()).find((e) => e.userId === contactId);
 
-          recipients.push({
-            id: userId,
-            email: isActive ? email : (email || "inactive@client.local"),
-            name,
-            contactKey: emp.id,
-          });
+          if (emp) {
+            const u: any = Array.isArray(emp.user) ? emp.user[0] : emp.user;
+            const email = (u?.email || emp.email || "").trim() || null;
+            const name = emp.contactPerson || u?.name || "Order Contact";
+            const userId = emp.userId || (u?.id ?? null);
+            const isActive = emp.status === "ACTIVE" && (!u || u.status === "ACTIVE");
+
+            if (isActive && email && !seenEmails.has(email.toLowerCase())) {
+              seenEmails.add(email.toLowerCase());
+              recipients.push({
+                id: userId,
+                email: email,
+                name,
+                contactKey: emp.id,
+              });
+            }
+          }
         }
+      } else {
+        // User explicitly selected empty recipient list -> No employees notified
+        recipients = [];
       }
     } else {
-      // 2. Default fallback when no specific contacts are selected
+      // 2. Default fallback ONLY when no selectedContactIds param was provided (e.g. system background jobs)
       const fallbackRecipients = await resolveActiveClientRecipients(tenantId, clientId, [
         "MANAGER",
         "RECEIVER",
@@ -3623,13 +3668,14 @@ export async function triggerOrderCreatedEmail(params: {
         recipientUserId: recipient.id,
         recipientEmail: recipient.email,
         recipientName: recipient.name,
-        orderId,
-        title: `New Order Created: ${orderNumber}`,
-        message: `Order ${orderNumber} has been successfully created and queued for processing.`,
-        actionUrl: `/orders/${orderId}`,
-        idempotencyKey: `notif_new_order_${orderId}_${recipient.contactKey}`,
+        orderId: safeOrderId,
+        title: `New Order Created: ${safeOrderNumber}`,
+        message: `Order ${safeOrderNumber} has been successfully created and queued for processing.`,
+        actionUrl: `/orders/${safeOrderId}`,
+        idempotencyKey: `notif_new_order_${safeOrderId}_${recipient.contactKey}`,
         metadata: {
-          orderNumber,
+          orderId: safeOrderId,
+          orderNumber: safeOrderNumber,
           totalAmount,
         },
       });

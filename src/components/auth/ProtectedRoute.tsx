@@ -42,7 +42,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   // Not authenticated
   if (!user) {
     console.debug("[ProtectedRoute] redirect decision: redirecting to /login (no user)");
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // Only genuine INACTIVE status directs to ?error=inactive

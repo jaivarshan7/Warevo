@@ -93,7 +93,7 @@ export const OrdersPage: React.FC = () => {
       if (cList.length > 0) {
         const firstCo = cList[0];
         setSelectedCompanyId(firstCo.id);
-        setSelectedContactIds((firstCo.employees || []).map((e) => e.id));
+        setSelectedContactIds([]);
       }
 
       if (pList.length > 0) {
@@ -124,8 +124,7 @@ export const OrdersPage: React.FC = () => {
 
   const handleCompanyChange = (companyId: string) => {
     setSelectedCompanyId(companyId);
-    const co = clients.find((c) => c.id === companyId);
-    setSelectedContactIds((co?.employees || []).map((e) => e.id));
+    setSelectedContactIds([]);
   };
 
   const toggleContactSelection = (contactId: string) => {
@@ -790,10 +789,18 @@ ${samplePureAuraInvoice.items.map((it) => `${it.sku} | ${it.name} | Qty: ${it.qu
                   </span>
                   <button
                     type="button"
-                    onClick={() => setSelectedContactIds(companyEmployees.map((e) => e.id))}
+                    onClick={() => {
+                      if (selectedContactIds.length === companyEmployees.length && companyEmployees.length > 0) {
+                        setSelectedContactIds([]);
+                      } else {
+                        setSelectedContactIds(companyEmployees.map((e) => e.id));
+                      }
+                    }}
                     className="text-indigo-400 hover:underline text-[10px]"
                   >
-                    Select All
+                    {selectedContactIds.length === companyEmployees.length && companyEmployees.length > 0
+                      ? "Deselect All"
+                      : "Select All"}
                   </button>
                 </div>
 

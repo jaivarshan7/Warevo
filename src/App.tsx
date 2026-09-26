@@ -61,6 +61,8 @@ export const App: React.FC = () => {
                 </ProtectedRoute>
               }
             />
+            <Route path="orders" element={<Navigate to="/operations/orders" replace />} />
+            <Route path="orders/:id" element={<OrderDetailPage />} />
             <Route path="operations/orders/:id" element={<OrderDetailPage />} />
             <Route path="operations/inventory" element={<InventoryPage />} />
             <Route path="operations/clients" element={<ClientsPage />} />
@@ -72,6 +74,7 @@ export const App: React.FC = () => {
             {/* Accounting */}
             <Route path="accounting" element={<AccountingPage />} />
             <Route path="accounting/invoices/:id" element={<InvoiceDetailPage />} />
+            <Route path="invoices/:id" element={<InvoiceDetailPage />} />
 
             {/* Change Log */}
             <Route path="change-log" element={<ChangeLogPage />} />

@@ -20,12 +20,17 @@ export const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
 
-  // If already authenticated and active, go straight to dashboard
+  const from =
+    (location.state?.from?.pathname
+      ? `${location.state.from.pathname}${location.state.from.search || ""}`
+      : searchParams.get("redirect")) || "/dashboard";
+
+  // If already authenticated and active, go straight to destination
   React.useEffect(() => {
     if (!authLoading && user && user.status === "ACTIVE" && user.clientEmployee?.status !== "INACTIVE") {
-      navigate("/dashboard", { replace: true });
+      navigate(from, { replace: true });
     }
-  }, [authLoading, user, navigate]);
+  }, [authLoading, user, navigate, from]);
 
   // Check URL parameters or navigation state for auth errors (e.g. from OAuth callback or route guards)
   React.useEffect(() => {
@@ -62,7 +67,7 @@ export const LoginPage: React.FC = () => {
         setError("Invalid email or password.");
       }
     } else {
-      navigate("/dashboard");
+      navigate(from, { replace: true });
     }
   };
 
@@ -93,7 +98,7 @@ export const LoginPage: React.FC = () => {
   const handleQuickLogin = async (userId: string) => {
     try {
       await switchUser(userId);
-      navigate("/dashboard");
+      navigate(from, { replace: true });
     } catch (err: any) {
       setError(err?.message || "Failed to switch user");
     }

@@ -49,7 +49,7 @@ serve(async (req: Request) => {
     const supabaseUrl = (Deno.env.get("SUPABASE_URL") || "").trim();
     const supabaseServiceRoleKey = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "").trim();
     const resendApiKey = (Deno.env.get("RESEND_API_KEY") || Deno.env.get("resend") || "").trim();
-    const fromEmail = (Deno.env.get("RESEND_FROM_EMAIL") || "onboarding@resend.dev").trim();
+    const fromEmail = (Deno.env.get("RESEND_FROM_EMAIL") || "Warevo <notifications@warevo.online>").trim();
 
     if (!supabaseUrl || !supabaseServiceRoleKey) {
       console.error("Missing Supabase environment variables");
@@ -230,8 +230,8 @@ serve(async (req: Request) => {
         );
       }
 
-      targetEmail = recipientUser.email;
-      targetName = recipientUser.name || targetName;
+      targetEmail = body.recipientEmail?.trim() || recipientUser.email;
+      targetName = body.recipientName?.trim() || recipientUser.name || targetName;
     }
 
     if (!targetEmail) {
@@ -436,24 +436,50 @@ serve(async (req: Request) => {
       );
     }
 
-    const subject = `[Warevo] ${title}`;
+    // Normalize orderId and clean titles/messages
+    const safeOrderId = (orderId && orderId !== "undefined")
+      ? orderId
+      : ((metadata.orderId || metadata.order_id) as string | undefined) || null;
+
+    const orderNum = (
+      (metadata.orderNumber || metadata.order_number || (body as any).orderNumber) as string | undefined
+    );
+    const safeOrderNum = (orderNum && orderNum !== "undefined") ? orderNum : undefined;
+
+    let cleanTitle = title || "Notification";
+    let cleanMessage = message || "";
+    if (safeOrderNum) {
+      cleanTitle = cleanTitle.replace(/undefined/g, safeOrderNum);
+      cleanMessage = cleanMessage.replace(/undefined/g, safeOrderNum);
+    } else {
+      cleanTitle = cleanTitle.replace(/: undefined/g, "").replace(/undefined/g, "").trim();
+      cleanMessage = cleanMessage.replace(/Order undefined/g, "Your order").replace(/undefined/g, "").trim();
+    }
+
+    const subject = `[Warevo] ${cleanTitle}`;
     const htmlContent = buildEmailHtml({
       recipientName: targetName || "Valued Partner",
-      title,
-      message,
+      title: cleanTitle,
+      message: cleanMessage,
       eventType,
-      orderId,
+      orderId: safeOrderId,
       actionUrl,
-      metadata,
+      metadata: {
+        ...metadata,
+        ...(safeOrderNum ? { orderNumber: safeOrderNum } : {}),
+      },
     });
     const textContent = buildEmailText({
       recipientName: targetName || "Valued Partner",
-      title,
-      message,
+      title: cleanTitle,
+      message: cleanMessage,
       eventType,
-      orderId,
+      orderId: safeOrderId,
       actionUrl,
-      metadata,
+      metadata: {
+        ...metadata,
+        ...(safeOrderNum ? { orderNumber: safeOrderNum } : {}),
+      },
     });
 
     const resendRes = await fetch("https://api.resend.com/emails", {
@@ -484,7 +510,7 @@ serve(async (req: Request) => {
         recipientEmail: targetEmail,
         recipientUserId,
         notificationId,
-        orderId,
+        orderId: safeOrderId,
         subject,
         status: "FAILED",
         error: errorMessage,
@@ -506,7 +532,7 @@ serve(async (req: Request) => {
       recipientEmail: targetEmail,
       recipientUserId,
       notificationId,
-      orderId,
+      orderId: safeOrderId,
       subject,
       status: "SENT",
       resendId,
@@ -605,14 +631,20 @@ function buildEmailHtml(params: {
   metadata?: Record<string, unknown>;
 }) {
   const { recipientName, title, message, eventType, orderId, actionUrl, metadata = {} } = params;
-  const appUrl = Deno.env.get("NEXT_PUBLIC_APP_URL") || Deno.env.get("APP_URL") || "https://warevo.in";
+  const appUrl = (
+    Deno.env.get("APP_URL") ||
+    Deno.env.get("NEXT_PUBLIC_APP_URL") ||
+    Deno.env.get("VITE_APP_URL") ||
+    "https://warevo-three.vercel.app"
+  ).trim().replace(/\/+$/, "");
   const fullActionUrl = actionUrl
     ? (actionUrl.startsWith("http") ? actionUrl : `${appUrl}${actionUrl.startsWith("/") ? "" : "/"}${actionUrl}`)
     : appUrl;
 
-  const orderNum = metadata.orderNumber as string | undefined;
-  const invNum = metadata.invoiceNumber as string | undefined;
-  const payAmt = metadata.paymentAmount !== undefined ? String(metadata.paymentAmount) : undefined;
+  const rawOrderNum = (metadata.orderNumber || metadata.order_number) as string | undefined;
+  const orderNum = (rawOrderNum && rawOrderNum !== "undefined") ? rawOrderNum : undefined;
+  const invNum = (metadata.invoiceNumber || metadata.invoice_number) as string | undefined;
+  const payAmt = metadata.paymentAmount !== undefined ? String(metadata.paymentAmount) : (metadata.totalAmount !== undefined ? String(metadata.totalAmount) : undefined);
   const verifStatus = metadata.verificationStatus as string | undefined;
   const itemsCount = metadata.itemsCount !== undefined ? String(metadata.itemsCount) : undefined;
   const carrier = metadata.carrier as string | undefined;
@@ -620,7 +652,7 @@ function buildEmailHtml(params: {
   const metaRows: string[] = [];
   if (orderNum) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Order Number:</span><strong style="color: #f8fafc;">${orderNum}</strong></div>`);
   if (invNum) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Invoice Number:</span><strong style="color: #f8fafc;">${invNum}</strong></div>`);
-  if (payAmt) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Amount:</span><strong style="color: #10b981;">$${payAmt}</strong></div>`);
+  if (payAmt) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Amount:</span><strong style="color: #10b981;">₹${payAmt}</strong></div>`);
   if (verifStatus) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Verification:</span><strong style="color: #38bdf8;">${verifStatus}</strong></div>`);
   if (itemsCount) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Item Lines:</span><strong style="color: #f8fafc;">${itemsCount}</strong></div>`);
   if (carrier) metaRows.push(`<div style="padding: 6px 0; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between;"><span style="color: #94a3b8;">Carrier:</span><strong style="color: #f8fafc;">${carrier}</strong></div>`);
@@ -649,7 +681,7 @@ function buildEmailHtml(params: {
 <body>
   <div class="card">
     <div class="header">
-      <div class="brand">Warevo Warehouse OS</div>
+      <div class="brand">Warevo</div>
       <span class="badge">${eventType.replace(/_/g, " ")}</span>
     </div>
     <div class="content">
@@ -682,13 +714,21 @@ function buildEmailText(params: {
   metadata?: Record<string, unknown>;
 }) {
   const { recipientName, title, message, eventType, orderId, actionUrl, metadata = {} } = params;
-  const appUrl = Deno.env.get("NEXT_PUBLIC_APP_URL") || Deno.env.get("APP_URL") || "https://warevo.in";
+  const appUrl = (
+    Deno.env.get("APP_URL") ||
+    Deno.env.get("NEXT_PUBLIC_APP_URL") ||
+    Deno.env.get("VITE_APP_URL") ||
+    "https://warevo-three.vercel.app"
+  ).trim().replace(/\/+$/, "");
   const fullActionUrl = actionUrl
     ? (actionUrl.startsWith("http") ? actionUrl : `${appUrl}${actionUrl.startsWith("/") ? "" : "/"}${actionUrl}`)
     : appUrl;
 
+  const rawOrderNum = (metadata.orderNumber || metadata.order_number) as string | undefined;
+  const orderNum = (rawOrderNum && rawOrderNum !== "undefined") ? rawOrderNum : undefined;
+
   const lines = [
-    `Warevo Warehouse OS — ${eventType.replace(/_/g, " ")}`,
+    `Warevo — ${eventType.replace(/_/g, " ")}`,
     "==================================================",
     `Hello ${recipientName},`,
     "",
@@ -697,17 +737,18 @@ function buildEmailText(params: {
     "",
   ];
 
-  if (metadata.orderNumber) lines.push(`Order Number: ${metadata.orderNumber}`);
+  if (orderNum) lines.push(`Order Number: ${orderNum}`);
   if (metadata.invoiceNumber) lines.push(`Invoice Number: ${metadata.invoiceNumber}`);
-  if (metadata.paymentAmount) lines.push(`Payment Amount: $${metadata.paymentAmount}`);
+  if (metadata.paymentAmount || metadata.totalAmount) lines.push(`Amount: ₹${metadata.paymentAmount ?? metadata.totalAmount}`);
   if (metadata.verificationStatus) lines.push(`Verification Status: ${metadata.verificationStatus}`);
   if (metadata.itemsCount) lines.push(`Item Lines: ${metadata.itemsCount}`);
-  if (orderId) lines.push(`Reference Order ID: ${orderId}`);
+  if (orderId && orderId !== "undefined") lines.push(`Reference Order ID: ${orderId}`);
 
   lines.push("");
   lines.push(`View in Warevo Portal: ${fullActionUrl}`);
   lines.push("");
   lines.push("This is an automated notification sent according to your warehouse notification preferences.");
+  lines.push(`© ${new Date().getFullYear()} Warevo. All rights reserved.`);
 
   return lines.join("\n");
 }
