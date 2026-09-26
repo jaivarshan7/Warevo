@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from "react";
-import { User, Tenant, Role } from "@/types";
+import { User, Tenant, Role, ClientEmployeeRole } from "@/types";
 import { supabase } from "@/lib/supabase";
+import { DEFAULT_CLIENT_ROLE_PERMISSIONS } from "@/lib/permissions";
 
 export type AuthErrorType = "INVALID_CREDENTIALS" | "ACCOUNT_INACTIVE" | "NOT_REGISTERED" | "GENERAL";
 
@@ -36,6 +37,27 @@ export function normalizeUser(u: any): User {
     ? (rawClientEmployee.length > 0 ? rawClientEmployee[0] : null)
     : (rawClientEmployee || null);
 
+  const rawRoleDef = clientEmployee?.roleDefinition;
+  const roleDefinition = Array.isArray(rawRoleDef)
+    ? (rawRoleDef.length > 0 ? rawRoleDef[0] : null)
+    : (rawRoleDef || null);
+
+  // Authoritative permissions resolution:
+  // 1. Live permissions array if already attached (from rpc_get_my_permissions)
+  // 2. RoleDefinition permissions if loaded from DB
+  // 3. Fallback to default permissions by employeeRole
+  let permissions: string[] = [];
+  if (Array.isArray(u.permissions) && u.permissions.length > 0) {
+    permissions = u.permissions;
+  } else if (roleDefinition?.permissions && Array.isArray(roleDefinition.permissions) && roleDefinition.permissions.length > 0) {
+    permissions = roleDefinition.permissions
+      .map((rp: any) => rp.permission?.key || rp.key || rp.permissionId)
+      .filter(Boolean);
+  } else if (clientEmployee?.employeeRole) {
+    const roleKey = (clientEmployee.employeeRole || "").toUpperCase();
+    permissions = (DEFAULT_CLIENT_ROLE_PERMISSIONS as Record<string, string[]>)[roleKey] || [];
+  }
+
   // Resolve company from clientEmployee.client or fallback to u.client
   const rawClient = clientEmployee?.client || u.client;
   const client = Array.isArray(rawClient)
@@ -49,7 +71,8 @@ export function normalizeUser(u: any): User {
 
   return {
     ...u,
-    clientEmployee,
+    permissions,
+    clientEmployee: clientEmployee ? { ...clientEmployee, roleDefinition } : null,
     client: client
       ? {
           ...client,
@@ -70,7 +93,7 @@ export async function refreshUsersFromSupabase() {
   try {
     const { data: users } = await supabase
       .from("User")
-      .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))");
+      .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*), roleDefinition:RoleDefinition(*, permissions:RolePermission(*, permission:Permission(*))))");
     if (users && users.length > 0) {
       return (users as any[]).map(normalizeUser);
     }
@@ -105,7 +128,7 @@ export async function resolveWmsUserBySupabaseUserId(
   try {
     const { data, error } = await supabase
       .from("User")
-      .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))")
+      .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*), roleDefinition:RoleDefinition(*, permissions:RolePermission(*, permission:Permission(*))))")
       .eq("supabaseUserId", supabaseUserId)
       .limit(1);
 
@@ -152,6 +175,20 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       null;
     setTenant(resolvedTenant);
     setIsLoading(false);
+
+    if (normalized.role === "CLIENT" || (normalized.role as string) === "CLIENT_ACCOUNTANT") {
+      void supabase.rpc("rpc_get_my_permissions").then(
+        ({ data, error }) => {
+          if (!error && Array.isArray(data) && data.length > 0) {
+            setUser((prev: any) => (prev ? { ...prev, permissions: data } : prev));
+            if (userRef.current) {
+              userRef.current.permissions = data;
+            }
+          }
+        },
+        (err: any) => console.warn(err)
+      );
+    }
   };
 
   useEffect(() => {
@@ -177,7 +214,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         // ─── 2. Load all WMS users ─────────────────────────────────────────
         const { data: users } = await supabase
           .from("User")
-          .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*))");
+          .select("*, supabaseUserId, tenant:Tenant(*), clientEmployee:ClientEmployee(*, client:Client(*), roleDefinition:RoleDefinition(*, permissions:RolePermission(*, permission:Permission(*))))");
 
         const userList = ((users as any[]) || []).map(normalizeUser);
         if (isMounted) {
@@ -248,6 +285,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
               setTenant(null);
             } else if (wmsUser.status === "ACTIVE") {
               // Active user!
+              if (wmsUser.role === "CLIENT" || (wmsUser.role as string) === "CLIENT_ACCOUNTANT") {
+                try {
+                  const { data: myPerms } = await supabase.rpc("rpc_get_my_permissions");
+                  if (Array.isArray(myPerms) && myPerms.length > 0) {
+                    wmsUser.permissions = myPerms;
+                  }
+                } catch (permErr) {
+                  console.warn("[AuthContext] rpc_get_my_permissions error in initAuth:", permErr);
+                }
+              }
               console.debug("[AuthContext] setting authenticated user:", wmsUser.email);
               localStorage.removeItem("warehouse_os_logged_out");
               localStorage.setItem("warehouse_os_user_id", wmsUser.id);
@@ -358,6 +405,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
             setIsLoading(false);
           } else if (wmsUser.status === "ACTIVE") {
             // Persist and activate
+            if (wmsUser.role === "CLIENT" || (wmsUser.role as string) === "CLIENT_ACCOUNTANT") {
+              try {
+                const { data: myPerms } = await supabase.rpc("rpc_get_my_permissions");
+                if (Array.isArray(myPerms) && myPerms.length > 0) {
+                  wmsUser.permissions = myPerms;
+                }
+              } catch (permErr) {
+                console.warn("[AuthContext] rpc_get_my_permissions error in onAuthStateChange:", permErr);
+              }
+            }
             console.debug("[AuthContext] setting authenticated user:", wmsUser.email);
             localStorage.removeItem("warehouse_os_logged_out");
             localStorage.setItem("warehouse_os_user_id", wmsUser.id);

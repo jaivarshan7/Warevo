@@ -16,10 +16,13 @@ import {
   AlertCircle,
   FileCheck2,
   ArrowUpRight,
-  Truck
+  Truck,
+  BarChart3,
+  CreditCard,
+  PackageCheck
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/permissions";
+import { getRoleDisplay, getRoleBadgeStyle, resolveDashboardType } from "@/lib/permissions";
 
 export const DashboardPage: React.FC = () => {
   const { user, tenant, role } = useAuth();
@@ -30,6 +33,9 @@ export const DashboardPage: React.FC = () => {
     totalClients: number;
   }>({ orders: [], invoices: [], inventory: [], totalClients: 0 });
   const [loading, setLoading] = useState(true);
+
+  const clientEmpRole = user?.clientEmployee?.employeeRole || user?.client?.employeeRole;
+  const dashboardType = resolveDashboardType(role, clientEmpRole);
 
   useEffect(() => {
     async function load() {
@@ -51,7 +57,7 @@ export const DashboardPage: React.FC = () => {
   }
 
   // Specialized view for Warehouse Staff
-  if (role === "WAREHOUSE_STAFF") {
+  if (dashboardType === "WAREHOUSE_STAFF") {
     const pendingOrders = data.orders.filter((o) =>
       ["ISSUED", "PROCESSING", "READY_FOR_DISPATCH"].includes(o.status)
     );
@@ -173,9 +179,7 @@ export const DashboardPage: React.FC = () => {
   }
 
   // Specialized view for Client Receiver (Delivery Verification only)
-  const clientEmpRole = user?.clientEmployee?.employeeRole || user?.client?.employeeRole;
-
-  if (role === "CLIENT" && clientEmpRole === "RECEIVER") {
+  if (dashboardType === "CLIENT_RECEIVER") {
     const readyForVerification = data.orders.filter((o) =>
       o.status === "DISPATCHED" && !o.deliveryVerifiedAt
     );
@@ -266,7 +270,7 @@ export const DashboardPage: React.FC = () => {
   }
 
   // Specialized view for Client Storekeeper (Inventory Verification only)
-  if (role === "CLIENT" && clientEmpRole === "STORE") {
+  if (dashboardType === "CLIENT_STORE") {
     const readyForStore = data.orders.filter((o) =>
       o.status === "DISPATCHED" && Boolean(o.deliveryVerifiedAt) && !o.storeVerifiedAt
     );
@@ -356,12 +360,7 @@ export const DashboardPage: React.FC = () => {
   }
 
   // Specialized view for Accounts Team / Accountant / Client Accountant / Client Account employee
-  if (
-    role === "ACCOUNTS_TEAM" ||
-    role === "ACCOUNTANT" ||
-    role === "CLIENT_ACCOUNTANT" ||
-    (role === "CLIENT" && clientEmpRole === "ACCOUNT")
-  ) {
+  if (dashboardType === "CLIENT_ACCOUNT") {
     const unpaidInvoices = data.invoices.filter((i) => i.paymentStatus !== "PAID");
     const totalOutstanding = unpaidInvoices.reduce((sum, i) => sum + Number(i.total), 0);
 
@@ -466,7 +465,367 @@ export const DashboardPage: React.FC = () => {
     );
   }
 
-  // Management Overview (PLATFORM_ADMIN, WAREHOUSE_OWNER, MANAGER, GM, WAREHOUSE_MODERATOR)
+  // Dedicated Client Management Dashboard (MANAGER, GM, MD, and any unassigned CLIENT roles)
+  if (dashboardType === "CLIENT_MANAGEMENT") {
+    const pendingDeliveryOrders = data.orders.filter(
+      (o) => o.status === "DISPATCHED" && !o.deliveryVerifiedAt
+    );
+    const pendingStoreOrders = data.orders.filter(
+      (o) => o.status === "DISPATCHED" && Boolean(o.deliveryVerifiedAt) && !o.storeVerifiedAt
+    );
+    const unpaidInvoices = data.invoices.filter((inv) => inv.paymentStatus !== "PAID");
+    const totalOutstanding = unpaidInvoices.reduce(
+      (sum, inv) => sum + Number(inv.total || 0),
+      0
+    );
+
+    return (
+      <div className="space-y-6">
+        {/* Top Banner */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                {user?.client?.companyName || "Client"} Management
+              </h1>
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getRoleBadgeStyle(user, clientEmpRole)}`}>
+                {getRoleDisplay(user, clientEmpRole)}
+              </span>
+            </div>
+            <p className="text-sm text-slate-400 mt-1">
+              Executive oversight of inbound shipments, delivery verifications, store inventories, and invoice settlements.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              to="/operations/orders"
+              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold text-xs border border-slate-700 transition-colors flex items-center gap-1.5"
+            >
+              <Package className="w-4 h-4 text-indigo-400" /> All Orders
+            </Link>
+            <Link
+              to="/accounting"
+              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold text-xs border border-slate-700 transition-colors flex items-center gap-1.5"
+            >
+              <CreditCard className="w-4 h-4 text-emerald-400" /> Invoices & Payments
+            </Link>
+            <Link
+              to="/reports"
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors shadow-sm shadow-indigo-950 flex items-center gap-1.5"
+            >
+              <BarChart3 className="w-4 h-4" /> Reports
+            </Link>
+          </div>
+        </div>
+
+        {/* Executive KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="border-indigo-900/40 bg-gradient-to-br from-indigo-950/40 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-indigo-300">
+                  Active Orders
+                </p>
+                <p className="text-3xl font-bold text-white mt-1">{data.orders.length}</p>
+                <p className="text-[11px] text-indigo-400/80 mt-0.5">Total inbound orders</p>
+              </div>
+              <div className="p-3 rounded-xl bg-indigo-600/20 text-indigo-400">
+                <Package className="w-6 h-6" />
+              </div>
+            </div>
+          </Card>
+
+          <Card className="border-amber-900/40 bg-gradient-to-br from-amber-950/40 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-300">
+                  Pending Delivery Verify
+                </p>
+                <p className="text-3xl font-bold text-white mt-1">{pendingDeliveryOrders.length}</p>
+                <p className="text-[11px] text-amber-400/80 mt-0.5">Awaiting physical receipt</p>
+              </div>
+              <div className="p-3 rounded-xl bg-amber-600/20 text-amber-400">
+                <Clock className="w-6 h-6" />
+              </div>
+            </div>
+          </Card>
+
+          <Card className="border-blue-900/40 bg-gradient-to-br from-blue-950/40 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-300">
+                  Pending Store Verify
+                </p>
+                <p className="text-3xl font-bold text-white mt-1">{pendingStoreOrders.length}</p>
+                <p className="text-[11px] text-blue-400/80 mt-0.5">Awaiting inventory update</p>
+              </div>
+              <div className="p-3 rounded-xl bg-blue-600/20 text-blue-400">
+                <PackageCheck className="w-6 h-6" />
+              </div>
+            </div>
+          </Card>
+
+          <Card className="border-emerald-900/40 bg-gradient-to-br from-emerald-950/40 to-slate-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-300">
+                  Outstanding Invoices
+                </p>
+                <p className="text-2xl font-bold text-white mt-1 font-mono">
+                  ₹{totalOutstanding.toLocaleString("en-IN")}
+                </p>
+                <p className="text-[11px] text-emerald-400/80 mt-0.5">{unpaidInvoices.length} unpaid invoices</p>
+              </div>
+              <div className="p-3 rounded-xl bg-emerald-600/20 text-emerald-400">
+                <CreditCard className="w-6 h-6" />
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Action Required Section */}
+        {(pendingDeliveryOrders.length > 0 || pendingStoreOrders.length > 0) && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Orders Awaiting Delivery Verification */}
+            <Card className="border-amber-900/40 bg-slate-900/60">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-400" />
+                  <h2 className="text-sm font-semibold text-white">Delivery Verification Required</h2>
+                </div>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 font-mono">
+                  {pendingDeliveryOrders.length}
+                </span>
+              </div>
+              {pendingDeliveryOrders.length === 0 ? (
+                <p className="text-xs text-slate-400 py-2">No shipments waiting for delivery verification.</p>
+              ) : (
+                <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                  {pendingDeliveryOrders.map((o) => (
+                    <div
+                      key={o.id}
+                      className="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-700/50"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-xs text-white">{o.orderNumber}</span>
+                          <span className="text-[10px] text-slate-400">
+                            {o.expectedDelivery ? `Exp: ${new Date(o.expectedDelivery).toLocaleDateString()}` : "Dispatched"}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-mono text-emerald-400 mt-0.5">
+                          ₹{Number(o.totalAmount).toLocaleString("en-IN")}
+                        </p>
+                      </div>
+                      <Link
+                        to={`/operations/orders/${o.id}`}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors shrink-0 shadow-sm shadow-emerald-950 flex items-center gap-1"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Verify Delivery Now
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            {/* Orders Awaiting Store Inventory Verification */}
+            <Card className="border-blue-900/40 bg-slate-900/60">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <PackageCheck className="w-4 h-4 text-blue-400" />
+                  <h2 className="text-sm font-semibold text-white">Store Inventory Verification Required</h2>
+                </div>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800 font-mono">
+                  {pendingStoreOrders.length}
+                </span>
+              </div>
+              {pendingStoreOrders.length === 0 ? (
+                <p className="text-xs text-slate-400 py-2">No delivered orders waiting for store inventory confirmation.</p>
+              ) : (
+                <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                  {pendingStoreOrders.map((o) => (
+                    <div
+                      key={o.id}
+                      className="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-700/50"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-xs text-white">{o.orderNumber}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
+                            Delivered
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                          Verified on {o.deliveryVerifiedAt ? new Date(o.deliveryVerifiedAt).toLocaleDateString() : "recently"}
+                        </p>
+                      </div>
+                      <Link
+                        to={`/operations/orders/${o.id}`}
+                        className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors shrink-0 shadow-sm shadow-blue-950 flex items-center gap-1"
+                      >
+                        <PackageCheck className="w-3.5 h-3.5" /> Verify Store Inventory
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {/* Main Section: Recent Orders & Invoices */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Recent Orders */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold text-white">Recent Orders</h2>
+                <p className="text-xs text-slate-400">Inbound shipments and fulfillment status</p>
+              </div>
+              <Link
+                to="/operations/orders"
+                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+              >
+                View all <ArrowUpRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+
+            {data.orders.length === 0 ? (
+              <EmptyState title="No orders found" description="Orders placed for your company will appear here." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                      <th className="py-2.5 px-3">Order #</th>
+                      <th className="py-2.5 px-3">Status</th>
+                      <th className="py-2.5 px-3">Delivery</th>
+                      <th className="py-2.5 px-3">Store</th>
+                      <th className="py-2.5 px-3">Total</th>
+                      <th className="py-2.5 px-3">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {data.orders.slice(0, 6).map((order) => {
+                      const isDeliv = Boolean(order.deliveryVerifiedAt);
+                      const isStore = Boolean(order.storeVerifiedAt) || (order.status === "VERIFIED" && isDeliv);
+
+                      return (
+                        <tr key={order.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3 px-3 font-mono font-medium text-white text-xs">
+                            {order.orderNumber}
+                          </td>
+                          <td className="py-3 px-3">
+                            <StatusBadge status={order.status} type="order" />
+                          </td>
+                          <td className="py-3 px-3">
+                            {isDeliv ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800">
+                                <CheckCircle2 className="w-3 h-3" /> Verified
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-400 bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700">
+                                Pending
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
+                            {isStore ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-400 bg-blue-950/60 px-2 py-0.5 rounded border border-blue-800">
+                                <CheckCircle2 className="w-3 h-3" /> Updated
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-400 bg-slate-800/60 px-2 py-0.5 rounded border border-slate-700">
+                                Pending
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 font-mono text-xs text-slate-200">
+                            ₹{Number(order.totalAmount).toLocaleString("en-IN")}
+                          </td>
+                          <td className="py-3 px-3">
+                            <Link
+                              to={`/operations/orders/${order.id}`}
+                              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                            >
+                              Inspect →
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          {/* Recent Invoices */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold text-white">Recent Invoices</h2>
+                <p className="text-xs text-slate-400">Billing statements and payment settlement status</p>
+              </div>
+              <Link
+                to="/accounting"
+                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+              >
+                View all <ArrowUpRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+
+            {data.invoices.length === 0 ? (
+              <EmptyState title="No invoices found" description="Tax invoices issued for your orders will appear here." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                      <th className="py-2.5 px-3">Invoice #</th>
+                      <th className="py-2.5 px-3">Status</th>
+                      <th className="py-2.5 px-3">Payment</th>
+                      <th className="py-2.5 px-3">Amount</th>
+                      <th className="py-2.5 px-3">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {data.invoices.slice(0, 6).map((inv) => (
+                      <tr key={inv.id} className="hover:bg-slate-800/30 transition-colors">
+                        <td className="py-3 px-3 font-mono font-medium text-white text-xs">
+                          {inv.invoiceNumber}
+                        </td>
+                        <td className="py-3 px-3">
+                          <StatusBadge status={inv.status} type="invoice" />
+                        </td>
+                        <td className="py-3 px-3">
+                          <StatusBadge status={inv.paymentStatus} type="payment" />
+                        </td>
+                        <td className="py-3 px-3 font-mono text-xs text-slate-200">
+                          ₹{Number(inv.total).toLocaleString("en-IN")}
+                        </td>
+                        <td className="py-3 px-3">
+                          <Link
+                            to={`/accounting/invoices/${inv.id}`}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                          >
+                            Details →
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  // Warehouse Operations Overview (PLATFORM_ADMIN, WAREHOUSE_OWNER, WAREHOUSE_MODERATOR)
   const totalRevenue = data.orders.reduce((sum, o) => sum + Number(o.totalAmount || 0), 0);
   const completedOrders = data.orders.filter((o) => o.status === "COMPLETED" || o.status === "PAID").length;
 

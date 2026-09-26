@@ -147,13 +147,20 @@ export const DEFAULT_CLIENT_ROLE_PERMISSIONS: Record<ClientEmployeeRole, Permiss
   ]
 };
 
-export function hasPermission(role: Role, permission: string): boolean {
+export function hasPermission(role: Role, permission: string, user?: Partial<User> | null): boolean {
   if (role === "PLATFORM_ADMIN") return true;
+  if (role === "CLIENT" && user) {
+    if (hasClientPermission(user, permission as PermissionKey)) return true;
+  }
   return permissions[role]?.includes(permission) ?? false;
 }
 
 /**
- * Check if a client user has a specific granular permission key
+ * Check if a client user has a specific granular permission key.
+ * Authoritatively inspects:
+ * 1. user.permissions (from rpc_get_my_permissions)
+ * 2. user.clientEmployee.roleDefinition.permissions (from RoleDefinition/RolePermission)
+ * 3. Built-in default permissions for the employeeRole as fallback
  */
 export function hasClientPermission(
   actorOrRole?: Partial<User> | ClientEmployeeRole | string | null,
@@ -161,17 +168,34 @@ export function hasClientPermission(
 ): boolean {
   if (!actorOrRole || !permissionKey) return false;
 
-  let roleKey: ClientEmployeeRole | null = null;
   if (typeof actorOrRole === "object") {
     if (actorOrRole.status === "INACTIVE" || actorOrRole.clientEmployee?.status === "INACTIVE") {
       return false;
     }
-    roleKey = getClientEmployeeRole(actorOrRole);
-  } else if (typeof actorOrRole === "string") {
-    roleKey = actorOrRole.toUpperCase() as ClientEmployeeRole;
+
+    // 1. Authoritative resolved permissions array (from rpc_get_my_permissions / User.permissions)
+    const userPerms = (actorOrRole as any).permissions;
+    if (Array.isArray(userPerms) && userPerms.length > 0) {
+      return userPerms.includes(permissionKey);
+    }
+
+    // 2. Check if user.clientEmployee has loaded roleDefinition with permissions
+    const roleDef = actorOrRole.clientEmployee?.roleDefinition;
+    if (roleDef && Array.isArray(roleDef.permissions) && roleDef.permissions.length > 0) {
+      return roleDef.permissions.some(
+        (p: any) => (p.key || p.permission?.key) === permissionKey
+      );
+    }
+
+    // 3. Fallback to employeeRole resolution using DEFAULT_CLIENT_ROLE_PERMISSIONS
+    const roleKey = getClientEmployeeRole(actorOrRole);
+    if (!roleKey) return false;
+    const perms = DEFAULT_CLIENT_ROLE_PERMISSIONS[roleKey];
+    return perms ? perms.includes(permissionKey) : false;
   }
 
-  if (!roleKey) return false;
+  // String role key passed directly
+  const roleKey = actorOrRole.toUpperCase() as ClientEmployeeRole;
   const perms = DEFAULT_CLIENT_ROLE_PERMISSIONS[roleKey];
   return perms ? perms.includes(permissionKey) : false;
 }
@@ -190,8 +214,8 @@ export function getClientEmployeeRole(user?: Partial<User> | null): ClientEmploy
 
 /**
  * Delivery verification authorization helper:
- * RECEIVER, MANAGER, GM, MD can verify delivery.
- * STORE and ACCOUNT cannot verify delivery.
+ * Evaluates DELIVERY_VERIFY permission for client employees.
+ * Platform and warehouse operations staff retain administrative access.
  */
 export function canVerifyDelivery(user?: Partial<User> | null): boolean {
   if (!user) return false;
@@ -200,17 +224,15 @@ export function canVerifyDelivery(user?: Partial<User> | null): boolean {
     return true;
   }
   if (user.role === "CLIENT") {
-    const empRole = getClientEmployeeRole(user);
-    if (!empRole) return false;
-    return ["RECEIVER", "MANAGER", "GM", "MD"].includes(empRole);
+    return hasClientPermission(user, "DELIVERY_VERIFY");
   }
   return false;
 }
 
 /**
  * Store / Inventory verification authorization helper:
- * STORE, MANAGER, GM, MD can verify store inventory.
- * RECEIVER and ACCOUNT cannot verify store inventory.
+ * Evaluates INVENTORY_VERIFY permission for client employees.
+ * Platform and warehouse operations staff retain administrative access.
  */
 export function canVerifyInventory(user?: Partial<User> | null): boolean {
   if (!user) return false;
@@ -219,17 +241,15 @@ export function canVerifyInventory(user?: Partial<User> | null): boolean {
     return true;
   }
   if (user.role === "CLIENT") {
-    const empRole = getClientEmployeeRole(user);
-    if (!empRole) return false;
-    return ["STORE", "MANAGER", "GM", "MD"].includes(empRole);
+    return hasClientPermission(user, "INVENTORY_VERIFY");
   }
   return false;
 }
 
 /**
  * Payment recording authorization helper:
- * MD, GM, MANAGER, ACCOUNT (and accounting staff) can record payments.
- * RECEIVER and STORE cannot record payments.
+ * Evaluates PAYMENTS_RECORD permission for client employees.
+ * Warehouse accounting team / accountant retain administrative payment access.
  */
 export function canRecordPayment(user?: Partial<User> | null): boolean {
   if (!user) return false;
@@ -244,9 +264,7 @@ export function canRecordPayment(user?: Partial<User> | null): boolean {
     return true;
   }
   if (user.role === "CLIENT") {
-    const empRole = getClientEmployeeRole(user);
-    if (!empRole) return false;
-    return ["ACCOUNT", "MANAGER", "GM", "MD"].includes(empRole);
+    return hasClientPermission(user, "PAYMENTS_RECORD");
   }
   return false;
 }
@@ -256,7 +274,24 @@ export function canRecordPayment(user?: Partial<User> | null): boolean {
  * MD, GM, MANAGER, ACCOUNT can upload payment proof.
  */
 export function canUploadPaymentProof(user?: Partial<User> | null): boolean {
-  return canRecordPayment(user);
+  if (!user) return false;
+  if (user.status === "INACTIVE" || user.clientEmployee?.status === "INACTIVE") return false;
+  if (
+    user.role === "PLATFORM_ADMIN" ||
+    user.role === "WAREHOUSE_OWNER" ||
+    user.role === "ACCOUNTANT" ||
+    user.role === "ACCOUNTS_TEAM" ||
+    user.role === "CLIENT_ACCOUNTANT"
+  ) {
+    return true;
+  }
+  if (user.role === "CLIENT") {
+    return (
+      hasClientPermission(user, "PAYMENT_PROOF_UPLOAD") ||
+      hasClientPermission(user, "PAYMENTS_RECORD")
+    );
+  }
+  return false;
 }
 
 /**
@@ -290,6 +325,33 @@ export function canAccessAccounting(user?: Partial<User> | null): boolean {
   return false;
 }
 
+export type DashboardType =
+  | "WAREHOUSE_STAFF"
+  | "CLIENT_RECEIVER"
+  | "CLIENT_STORE"
+  | "CLIENT_ACCOUNT"
+  | "CLIENT_MANAGEMENT"
+  | "WAREHOUSE_OVERVIEW";
+
+export function resolveDashboardType(
+  role: Role,
+  employeeRole?: ClientEmployeeRole | null
+): DashboardType {
+  if (role === "WAREHOUSE_STAFF") {
+    return "WAREHOUSE_STAFF";
+  }
+  if (role === "CLIENT") {
+    if (employeeRole === "RECEIVER") return "CLIENT_RECEIVER";
+    if (employeeRole === "STORE") return "CLIENT_STORE";
+    if (employeeRole === "ACCOUNT") return "CLIENT_ACCOUNT";
+    return "CLIENT_MANAGEMENT";
+  }
+  if (role === "ACCOUNTS_TEAM" || role === "ACCOUNTANT" || role === "CLIENT_ACCOUNTANT") {
+    return "CLIENT_ACCOUNT";
+  }
+  return "WAREHOUSE_OVERVIEW";
+}
+
 export function canAccessRoute(
   role: Role,
   route: string,
@@ -299,24 +361,26 @@ export function canAccessRoute(
 
   if (role === "CLIENT") {
     if (employeeRole === "RECEIVER" || employeeRole === "STORE") {
-      // Operations and dashboard only; strictly no accounting
-      return ["/dashboard", "/operations/orders", "/notifications", "/profile"].some(
+      // Operations and dashboard only; strictly no accounting or warehouse admin
+      return ["/dashboard", "/operations/orders", "/orders", "/notifications", "/profile"].some(
         (r) => route === r || route.startsWith(r + "/")
       );
     }
 
     if (employeeRole === "ACCOUNT") {
-      // Accounting and dashboard only; strictly no delivery operations
-      return ["/dashboard", "/accounting", "/notifications", "/profile"].some(
+      // Accounting and dashboard only; strictly no delivery operations or warehouse admin
+      return ["/dashboard", "/accounting", "/invoices", "/notifications", "/profile"].some(
         (r) => route === r || route.startsWith(r + "/")
       );
     }
 
-    // MD, GM, MANAGER (and unassigned CLIENT) have full client access
+    // MD, GM, MANAGER (and unassigned CLIENT) have full client access; strictly no warehouse admin
     return [
       "/dashboard",
       "/operations/orders",
+      "/orders",
       "/accounting",
+      "/invoices",
       "/reports",
       "/notifications",
       "/profile"
@@ -324,13 +388,13 @@ export function canAccessRoute(
   }
 
   if (role === "WAREHOUSE_STAFF") {
-    return ["/dashboard", "/operations/orders", "/operations/inventory", "/notifications", "/profile"].some(
+    return ["/dashboard", "/operations/orders", "/orders", "/operations/inventory", "/notifications", "/profile"].some(
       (r) => route === r || route.startsWith(r + "/")
     );
   }
 
   if (role === "CLIENT_ACCOUNTANT") {
-    return ["/dashboard", "/accounting", "/reports", "/notifications", "/profile"].some(
+    return ["/dashboard", "/accounting", "/invoices", "/reports", "/notifications", "/profile"].some(
       (r) => route === r || route.startsWith(r + "/")
     );
   }
@@ -339,7 +403,9 @@ export function canAccessRoute(
     return [
       "/dashboard",
       "/operations/orders",
+      "/orders",
       "/accounting",
+      "/invoices",
       "/reports",
       "/notifications",
       "/profile"

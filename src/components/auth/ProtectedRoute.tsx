@@ -2,7 +2,7 @@ import React from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Role } from "@/types";
-import { hasPermission } from "@/lib/permissions";
+import { hasPermission, canAccessRoute, getClientEmployeeRole } from "@/lib/permissions";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 
 interface ProtectedRouteProps {
@@ -57,8 +57,15 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     return <Navigate to={fallbackPath} replace />;
   }
 
+  // Check route-level permissions via canAccessRoute
+  const clientEmpRole = getClientEmployeeRole(user);
+  if (!canAccessRoute(role, location.pathname, clientEmpRole)) {
+    console.debug("[ProtectedRoute] redirect decision: redirecting to fallback (canAccessRoute denied)", fallbackPath);
+    return <Navigate to={fallbackPath} replace />;
+  }
+
   // Check permission-based access
-  if (requirePermission && !hasPermission(role, requirePermission)) {
+  if (requirePermission && !hasPermission(role, requirePermission, user)) {
     console.debug("[ProtectedRoute] redirect decision: redirecting to fallback (permission denied)", fallbackPath);
     return <Navigate to={fallbackPath} replace />;
   }

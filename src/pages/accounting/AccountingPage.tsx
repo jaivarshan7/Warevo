@@ -28,6 +28,7 @@ import {
   AlertCircle,
   AlertTriangle
 } from "lucide-react";
+import { canRecordPayment } from "@/lib/permissions";
 
 export const AccountingPage: React.FC = () => {
   const { tenant, user, role } = useAuth();
@@ -366,7 +367,7 @@ export const AccountingPage: React.FC = () => {
                         <StatusBadge status={inv.paymentStatus} type="payment" />
                       </td>
                       <td className="py-3.5 px-4 text-right">
-                        {inv.paymentStatus !== "PAID" && (
+                        {canRecordPayment(user) && inv.paymentStatus !== "PAID" && (
                           Boolean(inv.order?.deliveryVerifiedAt) ? (
                             <button
                               onClick={() => {

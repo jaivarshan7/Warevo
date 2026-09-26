@@ -167,6 +167,7 @@ export interface User {
   client?: Client | null;
   clientId?: string | null;
   clientEmployee?: ClientEmployee | null;
+  permissions?: string[];
 }
 
 export interface ClientEmployee {
@@ -183,6 +184,7 @@ export interface ClientEmployee {
   updatedAt?: string;
   roleId?: string | null;
   role?: AdminRoleItem | null;
+  roleDefinition?: any;
   client?: Client | null;
   user?: User | null;
 }

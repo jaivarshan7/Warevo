@@ -62,26 +62,96 @@ export const App: React.FC = () => {
               }
             />
             <Route path="orders" element={<Navigate to="/operations/orders" replace />} />
-            <Route path="orders/:id" element={<OrderDetailPage />} />
-            <Route path="operations/orders/:id" element={<OrderDetailPage />} />
-            <Route path="operations/inventory" element={<InventoryPage />} />
-            <Route path="operations/clients" element={<ClientsPage />} />
-            <Route path="operations/employees" element={<EmployeesPage />} />
+            <Route
+              path="orders/:id"
+              element={
+                <ProtectedRoute>
+                  <OrderDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/:id"
+              element={
+                <ProtectedRoute>
+                  <OrderDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/inventory"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]}>
+                  <InventoryPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/clients"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
+                  <ClientsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/employees"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
+                  <EmployeesPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Employees route (alias) */}
-            <Route path="employees" element={<EmployeesPage />} />
+            <Route
+              path="employees"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
+                  <EmployeesPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Accounting */}
-            <Route path="accounting" element={<AccountingPage />} />
-            <Route path="accounting/invoices/:id" element={<InvoiceDetailPage />} />
-            <Route path="invoices/:id" element={<InvoiceDetailPage />} />
+            <Route
+              path="accounting"
+              element={
+                <ProtectedRoute>
+                  <AccountingPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="accounting/invoices/:id"
+              element={
+                <ProtectedRoute>
+                  <InvoiceDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="invoices/:id"
+              element={
+                <ProtectedRoute>
+                  <InvoiceDetailPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Change Log */}
             <Route path="change-log" element={<ChangeLogPage />} />
             <Route path="dashboard/change-log" element={<Navigate to="/change-log" replace />} />
 
             {/* Reports */}
-            <Route path="reports" element={<ReportsPage />} />
+            <Route
+              path="reports"
+              element={
+                <ProtectedRoute>
+                  <ReportsPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Notifications */}
             <Route path="notifications" element={<NotificationsPage />} />

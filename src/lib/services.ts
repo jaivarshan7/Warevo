@@ -124,12 +124,12 @@ export async function fetchDashboardSummary(
   try {
     let orderQuery = supabase
       .from("Order")
-      .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*)")
+      .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), invoices:Invoice(id, paymentStatus, total, status)")
       .order("createdAt", { ascending: false });
 
     let invoiceQuery = supabase
       .from("Invoice")
-      .select("*, client:Client(*, employees:ClientEmployee(*))")
+      .select("*, client:Client(*, employees:ClientEmployee(*)), order:Order(*)")
       .order("createdAt", { ascending: false });
 
     let inventoryQuery = supabase
@@ -162,6 +162,18 @@ export async function fetchDashboardSummary(
           invoiceQuery = invoiceQuery.eq("clientId", clientId);
         }
       }
+
+      const [ordersRes, invoicesRes] = await Promise.all([
+        orderQuery.limit(20),
+        invoiceQuery.limit(20)
+      ]);
+
+      return {
+        orders: (ordersRes.data as Order[]) || [],
+        invoices: (invoicesRes.data as Invoice[]) || [],
+        inventory: [] as Inventory[],
+        totalClients: 1
+      };
     }
 
     if (role === "WAREHOUSE_STAFF" && userId) {
@@ -4044,7 +4056,7 @@ export async function fetchAdminRoles(tenantId?: string | null): Promise<AdminRo
 
   // Fallback direct query via RLS
   let query = supabase
-    .from("Role")
+    .from("RoleDefinition")
     .select("*, permissions:RolePermission(*, permission:Permission(*))");
   if (tenantId) {
     query = query.or(`tenantId.is.null,tenantId.eq.${tenantId}`);

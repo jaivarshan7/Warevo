@@ -27,6 +27,7 @@ import {
   Clock,
   Check,
   ShieldCheck,
+  PackageCheck,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -130,8 +131,8 @@ export const OrderTrackPage: React.FC = () => {
 
   const activeOrder = orders.find((o) => o.id === selectedOrderId);
 
-  // If user doesn't have verification access (e.g., CLIENT_ACCOUNTANT), show unauthorized message
-  const isUnauthorized = role === "CLIENT_ACCOUNTANT" && !hasVerificationAccess;
+  // If user doesn't have verification access (neither delivery nor inventory verification), show unauthorized message
+  const isUnauthorized = !hasVerificationAccess;
 
   // Filter orders by search
   const filteredOrders = orders.filter((o) => {
@@ -537,20 +538,31 @@ export const OrderTrackPage: React.FC = () => {
                       {checkedCount} / {totalItems} items verified
                     </p>
                   </div>
-                  {activeOrder.verificationStatus !== "VERIFIED" && (
-                    <Button
-                      onClick={handleOpenVerifyModal}
-                      disabled={!allItemsChecked}
-                      className={`gap-1.5 w-full sm:w-auto ${
-                        allItemsChecked
-                          ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950"
-                          : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
-                      }`}
-                    >
-                      <ClipboardCheck className="w-4 h-4" />
-                      Verify Delivery Order
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {activeOrder.verificationStatus !== "VERIFIED" && canVerifyDelivery(user) && (
+                      <Button
+                        onClick={handleOpenVerifyModal}
+                        disabled={!allItemsChecked}
+                        className={`gap-1.5 w-full sm:w-auto ${
+                          allItemsChecked
+                            ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950"
+                            : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
+                        }`}
+                      >
+                        <ClipboardCheck className="w-4 h-4" />
+                        Verify Delivery Order
+                      </Button>
+                    )}
+                    {Boolean(activeOrder.deliveryVerifiedAt || activeOrder.verificationStatus === "VERIFIED") && !activeOrder.storeVerifiedAt && canVerifyInventory(user) && (
+                      <Link
+                        to={`/operations/orders/${activeOrder.id}`}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors shadow-sm shadow-blue-950"
+                      >
+                        <PackageCheck className="w-4 h-4" />
+                        Verify Store Inventory →
+                      </Link>
+                    )}
+                  </div>
                 </div>
               </Card>
 
