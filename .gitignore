@@ -119,3 +119,5 @@ manifet*
 tags
 ```
 supabase/.temp/
+supabase/bootstrap/
+production-bootstrap/
