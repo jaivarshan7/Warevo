@@ -631,12 +631,11 @@ function buildEmailHtml(params: {
   metadata?: Record<string, unknown>;
 }) {
   const { recipientName, title, message, eventType, orderId, actionUrl, metadata = {} } = params;
-  const appUrl = (
-    Deno.env.get("APP_URL") ||
-    Deno.env.get("NEXT_PUBLIC_APP_URL") ||
-    Deno.env.get("VITE_APP_URL") ||
-    "https://warevo-three.vercel.app"
-  ).trim().replace(/\/+$/, "");
+  const rawAppUrl = Deno.env.get("APP_URL");
+  if (!rawAppUrl || !rawAppUrl.trim()) {
+    throw new Error("Missing required environment variable: APP_URL must be configured for email notification links.");
+  }
+  const appUrl = rawAppUrl.trim().replace(/\/+$/, "");
   const fullActionUrl = actionUrl
     ? (actionUrl.startsWith("http") ? actionUrl : `${appUrl}${actionUrl.startsWith("/") ? "" : "/"}${actionUrl}`)
     : appUrl;
@@ -714,12 +713,11 @@ function buildEmailText(params: {
   metadata?: Record<string, unknown>;
 }) {
   const { recipientName, title, message, eventType, orderId, actionUrl, metadata = {} } = params;
-  const appUrl = (
-    Deno.env.get("APP_URL") ||
-    Deno.env.get("NEXT_PUBLIC_APP_URL") ||
-    Deno.env.get("VITE_APP_URL") ||
-    "https://warevo-three.vercel.app"
-  ).trim().replace(/\/+$/, "");
+  const rawAppUrl = Deno.env.get("APP_URL");
+  if (!rawAppUrl || !rawAppUrl.trim()) {
+    throw new Error("Missing required environment variable: APP_URL must be configured for email notification links.");
+  }
+  const appUrl = rawAppUrl.trim().replace(/\/+$/, "");
   const fullActionUrl = actionUrl
     ? (actionUrl.startsWith("http") ? actionUrl : `${appUrl}${actionUrl.startsWith("/") ? "" : "/"}${actionUrl}`)
     : appUrl;

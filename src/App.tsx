@@ -7,6 +7,8 @@ import { LoginPage } from "@/pages/auth/LoginPage";
 import { AuthCallbackPage } from "@/pages/auth/AuthCallbackPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { OrdersPage } from "@/pages/operations/OrdersPage";
+import { OrderCreatePage } from "@/pages/operations/OrderCreatePage";
+import { OrderEditPage } from "@/pages/operations/OrderEditPage";
 import { InvoiceImportPage } from "@/pages/operations/InvoiceImportPage";
 import { OrderDetailPage } from "@/pages/operations/OrderDetailPage";
 import { OrderTrackPage } from "@/pages/operations/OrderTrackPage";
@@ -46,6 +48,14 @@ export const App: React.FC = () => {
               }
             />
             <Route
+              path="operations/orders/new"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]}>
+                  <OrderCreatePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="operations/orders/import"
               element={
                 <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR"]}>
@@ -67,6 +77,14 @@ export const App: React.FC = () => {
               element={
                 <ProtectedRoute>
                   <OrderDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/:id/edit"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]}>
+                  <OrderEditPage />
                 </ProtectedRoute>
               }
             />

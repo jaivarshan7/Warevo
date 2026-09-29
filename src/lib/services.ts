@@ -25,9 +25,13 @@ import {
   AdminRoleItem,
   PermissionItem,
   PermissionKey,
-  OrderTimelineEvent
+  OrderTimelineEvent,
+  OrderComment,
+  DeliveryEvidenceAttachment,
+  UpdateOrderInput
 } from "@/types";
 import { getRoleDisplay } from "./roleDisplay";
+import { compressDeliveryImage } from "./imageCompression";
 
 export function isClientRole(role?: Role | null): boolean {
   return role === "CLIENT" || role === "CLIENT_ACCOUNTANT";
@@ -210,7 +214,7 @@ export async function fetchOrders(
 ): Promise<Order[]> {
   let query = supabase
     .from("Order")
-    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), invoices:Invoice(id, paymentStatus)")
+    .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), invoices:Invoice(id, paymentStatus), verification:VerificationResponse(*)")
     .order("createdAt", { ascending: false });
   
   if (role !== "PLATFORM_ADMIN" && tenantId) {
@@ -299,7 +303,7 @@ export async function fetchOrderById(
     return null;
   }
 
-  const [historyResult, verificationResult] = await Promise.all([
+  const [historyResult, verificationResult, commentsResult] = await Promise.all([
     supabase
       .from("OrderStatusHistory")
       .select("*")
@@ -309,13 +313,31 @@ export async function fetchOrderById(
       .from("VerificationResponse")
       .select("*")
       .eq("orderId", orderId)
-      .maybeSingle()
+      .maybeSingle(),
+    supabase
+      .from("OrderComment")
+      .select("*, user:User(id, name, role, clientEmployee:ClientEmployee(employeeRole))")
+      .eq("orderId", orderId)
+      .order("createdAt", { ascending: true })
   ]);
+
+  const rawComments = commentsResult.data || [];
+  const mappedComments: OrderComment[] = rawComments.map((c: any) => {
+    const u = Array.isArray(c.user) ? c.user[0] : c.user;
+    const emp = Array.isArray(u?.clientEmployee) ? u?.clientEmployee[0] : u?.clientEmployee;
+    return {
+      ...c,
+      authorName: u?.name || "User",
+      authorRole: u?.role || "Staff",
+      authorEmployeeRole: emp?.employeeRole || null
+    };
+  });
 
   return {
     ...(data as Order),
     statusHistory: (historyResult.data || []) as Order["statusHistory"],
-    verification: (verificationResult.data || null) as Order["verification"]
+    verification: (verificationResult.data || null) as Order["verification"],
+    comments: mappedComments
   };
 }
 
@@ -776,9 +798,48 @@ export async function createEnhancedOrder(payload: {
   return order;
 }
 
+export async function updateOrderBeforeDispatched(payload: UpdateOrderInput): Promise<{
+  success: boolean;
+  orderId: string;
+  orderNumber: string;
+  totalAmount: number;
+  updatedAt: string;
+}> {
+  const { data, error } = await supabase.rpc("rpc_update_order_before_dispatched", {
+    p_order_id: payload.orderId,
+    p_expected_delivery: payload.expectedDelivery || null,
+    p_notes: payload.notes || null,
+    p_assigned_staff_id: payload.assignedStaffId || null,
+    p_items: payload.items && payload.items.length > 0 ? payload.items : null
+  });
+
+  if (error) {
+    console.error("Error updating order before dispatched:", error);
+    throw new Error(error.message || "Failed to update order");
+  }
+
+  return data;
+}
+
+export async function deleteOrderBeforeDispatched(orderId: string): Promise<{
+  success: boolean;
+  orderId: string;
+  orderNumber: string;
+  deletedAt: string;
+}> {
+  const { data, error } = await supabase.rpc("rpc_delete_order_before_dispatched", {
+    p_order_id: orderId
+  });
+
+  if (error) {
+    console.error("Error deleting order before dispatched:", error);
+    throw new Error(error.message || "Failed to delete order");
+  }
+
+  return data;
+}
 
 
-// ======================== INVENTORY ========================
 
 export async function fetchInventory(tenantId?: string | null): Promise<Inventory[]> {
   let query = supabase
@@ -1479,6 +1540,140 @@ export async function fetchPendingVerificationOrders(
   const { data, error } = await query;
   if (error) throw error;
   return (data as Order[]) || [];
+}
+
+// ======================== RECEIVER NOTES & EVIDENCE ========================
+
+export async function updateReceiverNotes(
+  orderId: string,
+  comments: string
+): Promise<{ success: boolean; orderId: string; comments: string; updatedAt: string }> {
+  const { data, error } = await supabase.rpc("rpc_update_receiver_notes", {
+    p_order_id: orderId,
+    p_comments: comments
+  });
+
+  if (error) {
+    console.error("Error updating receiver notes:", error);
+    throw new Error(error.message || "Failed to update receiver notes");
+  }
+
+  return data;
+}
+
+export async function uploadDeliveryEvidence(
+  file: File,
+  tenantId: string,
+  orderId: string
+): Promise<DeliveryEvidenceAttachment> {
+  // 1. Off-thread compression to WebP ~1MB / 1920px max dimension
+  const compressedFile = await compressDeliveryImage(file);
+
+  // 2. Generate unique filename and scoped path
+  const fileExt = compressedFile.name.split(".").pop() || "webp";
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+  const safeFileName = `${uniqueId}.${fileExt}`;
+  const storagePath = `${tenantId}/${orderId}/${safeFileName}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("delivery-evidence")
+    .upload(storagePath, compressedFile, {
+      upsert: false,
+      contentType: compressedFile.type || "image/webp"
+    });
+
+  if (uploadError) {
+    console.error("DELIVERY EVIDENCE UPLOAD ERROR:", uploadError);
+    throw new Error(`Failed to upload delivery evidence: ${uploadError.message}`);
+  }
+
+  return {
+    path: storagePath,
+    fileName: file.name,
+    contentType: compressedFile.type || "image/webp",
+    size: compressedFile.size,
+    uploadedAt: new Date().toISOString()
+  };
+}
+
+export async function getSignedDeliveryEvidenceUrl(storagePath: string): Promise<string | null> {
+  if (!storagePath) return null;
+
+  let cleanPath = storagePath;
+  if (cleanPath.startsWith("delivery-evidence/")) {
+    cleanPath = cleanPath.replace("delivery-evidence/", "");
+  }
+
+  const { data, error } = await supabase.storage
+    .from("delivery-evidence")
+    .createSignedUrl(cleanPath, 60 * 60); // 1 hour expiry
+
+  if (error || !data?.signedUrl) {
+    console.warn("Error generating signed delivery evidence URL:", error);
+    return null;
+  }
+
+  return data.signedUrl;
+}
+
+// ======================== ORDER COMMENTS ========================
+
+export async function getOrderComments(orderId: string): Promise<OrderComment[]> {
+  const { data, error } = await supabase
+    .from("OrderComment")
+    .select("*, user:User(id, name, role, clientEmployee:ClientEmployee(employeeRole))")
+    .eq("orderId", orderId)
+    .order("createdAt", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching order comments:", error);
+    return [];
+  }
+
+  return (data || []).map((c: any) => {
+    const u = Array.isArray(c.user) ? c.user[0] : c.user;
+    const emp = Array.isArray(u?.clientEmployee) ? u?.clientEmployee[0] : u?.clientEmployee;
+    return {
+      ...c,
+      authorName: u?.name || "User",
+      authorRole: u?.role || "Staff",
+      authorEmployeeRole: emp?.employeeRole || null
+    };
+  });
+}
+
+export async function addOrderComment(
+  orderId: string,
+  comment: string
+): Promise<{ success: boolean; commentId: string; orderId: string; comment: string; createdAt: string }> {
+  const { data, error } = await supabase.rpc("rpc_add_order_comment", {
+    p_order_id: orderId,
+    p_comment: comment
+  });
+
+  if (error) {
+    console.error("Error adding order comment:", error);
+    throw new Error(error.message || "Failed to add comment");
+  }
+
+  return data;
+}
+
+export async function updateOrderComment(
+  commentId: string,
+  comment: string
+): Promise<{ success: boolean; commentId: string; comment: string; updatedAt: string }> {
+  const { data, error } = await supabase.rpc("rpc_update_order_comment", {
+    p_comment_id: commentId,
+    p_comment: comment
+  });
+
+  if (error) {
+    console.error("Error updating order comment:", error);
+    throw new Error(error.message || "Failed to update comment");
+  }
+
+  return data;
 }
 
 // ======================== ACCOUNTING & INVOICES ========================

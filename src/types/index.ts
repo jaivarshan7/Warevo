@@ -327,6 +327,43 @@ export interface OrderStatusHistory {
   changedBy?: User | null;
 }
 
+export interface DeliveryEvidenceAttachment {
+  path: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+  signedUrl?: string | null;
+}
+
+export interface OrderComment {
+  id: string;
+  tenantId: string;
+  orderId: string;
+  userId: string;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  user?: User | null;
+  authorName?: string;
+  authorRole?: string;
+  authorEmployeeRole?: string | null;
+}
+
+export interface UpdateOrderInput {
+  orderId: string;
+  expectedDelivery?: string | null;
+  notes?: string | null;
+  assignedStaffId?: string | null;
+  items?: Array<{
+    productId: string;
+    quantity: number;
+    unitPrice: number;
+    taxRate: number;
+    discount?: number;
+  }>;
+}
+
 export interface VerificationResponse {
   id: string;
   tenantId: string;
@@ -336,7 +373,7 @@ export interface VerificationResponse {
   status: VerificationStatus;
   responses: Array<{ text: string; checked: boolean }>;
   comments?: string | null;
-  attachments?: unknown;
+  attachments?: DeliveryEvidenceAttachment[] | unknown;
   createdAt: string;
 }
 
@@ -370,6 +407,7 @@ export interface Order {
   items?: OrderItem[];
   statusHistory?: OrderStatusHistory[];
   verification?: VerificationResponse | null;
+  comments?: OrderComment[] | null;
   invoices?: Invoice[] | null;
 }
 
