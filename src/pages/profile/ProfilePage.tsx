@@ -63,23 +63,6 @@ export const ProfilePage: React.FC = () => {
         </p>
       </div>
 
-      {shouldShowEmailStats && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Card className="p-5">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-medium text-slate-400">Emails Sent</span>
-              <div className="p-2 rounded-lg bg-indigo-950/60 border border-indigo-800/60 text-indigo-400">
-                <Mail className="w-4 h-4" />
-              </div>
-            </div>
-            <div className="text-2xl font-bold text-white">
-              {loadingCount ? "..." : emailSentCount !== null ? emailSentCount.toLocaleString() : "—"}
-            </div>
-            <p className="text-xs text-slate-500 mt-1">Successfully delivered</p>
-          </Card>
-        </div>
-      )}
-
       <Card>
         <div className="flex items-center gap-4 mb-6">
           <div className="w-16 h-16 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold text-xl text-white shadow-lg shadow-indigo-950">
@@ -130,6 +113,33 @@ export const ProfilePage: React.FC = () => {
           )}
         </div>
       </Card>
+
+      {shouldShowEmailStats && (
+        <div className="space-y-3 pt-2">
+          <div>
+            <h2 className="text-lg font-bold text-white tracking-tight">Email Activity</h2>
+            <p className="text-xs text-slate-400">
+              {isPlatformAdmin
+                ? "Platform-wide email dispatch metrics."
+                : "Tenant-specific email dispatch metrics."}
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Card className="p-5">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-medium text-slate-400">Emails Sent</span>
+                <div className="p-2 rounded-lg bg-indigo-950/60 border border-indigo-800/60 text-indigo-400">
+                  <Mail className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-2xl font-bold text-white">
+                {loadingCount ? "..." : emailSentCount !== null ? emailSentCount.toLocaleString() : "—"}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Successfully sent emails</p>
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

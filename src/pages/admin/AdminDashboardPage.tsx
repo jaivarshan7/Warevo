@@ -48,7 +48,7 @@ import {
   AdminCompanyGroupItem,
   AdminTenantItem
 } from "@/lib/services";
-import { Role, ClientEmployeeRole, UserStatus } from "@/types";
+import { Role, ClientEmployeeRole, UserStatus, TenantStatus } from "@/types";
 import { useAuth } from "@/contexts/AuthContext";
 
 import { RolesPermissionsTab } from "@/components/admin/RolesPermissionsTab";
@@ -97,6 +97,15 @@ export const AdminDashboardPage: React.FC = () => {
     status: UserStatus;
   } | null>(null);
   const [editingTenant, setEditingTenant] = useState<AdminTenantItem | null>(null);
+  const [tenantEditForm, setTenantEditForm] = useState({
+    name: "",
+    slug: "",
+    status: "ACTIVE" as TenantStatus,
+    gstNumber: "",
+    email: "",
+    phone: "",
+    address: ""
+  });
   const [editForm, setEditForm] = useState<Record<string, string>>({});
 
   const [tenantForm, setTenantForm] = useState({
@@ -666,7 +675,6 @@ export const AdminDashboardPage: React.FC = () => {
           companyGroupId: editForm.companyGroupId || null,
         });
       }
-      if (editingTenant) await updateAdminTenant(editingTenant.id, editForm);
       setEditingWarehouse(null);
       setEditingUser(null);
       setEditingClient(null);
@@ -676,6 +684,48 @@ export const AdminDashboardPage: React.FC = () => {
       await refreshUsers();
     } catch (err: any) {
       setActionMessage({ type: "error", text: err.message || "Failed to update record." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpdateTenant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTenant) return;
+    if (!tenantEditForm.name.trim()) {
+      setActionMessage({ type: "error", text: "Organization Name is required." });
+      return;
+    }
+    if (!tenantEditForm.slug.trim()) {
+      setActionMessage({ type: "error", text: "Organization Slug is required." });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await updateAdminTenant(editingTenant.id, {
+        name: tenantEditForm.name.trim(),
+        slug: tenantEditForm.slug.trim().toLowerCase(),
+        status: tenantEditForm.status,
+        gstNumber: tenantEditForm.gstNumber.trim() || null,
+        email: tenantEditForm.email.trim() || null,
+        phone: tenantEditForm.phone.trim() || null,
+        address: tenantEditForm.address.trim() || null
+      });
+
+      const updatedName = tenantEditForm.name.trim();
+      setEditingTenant(null);
+      setActionMessage({
+        type: "success",
+        text: `Organization "${updatedName}" updated successfully.`
+      });
+      await loadData();
+    } catch (err: any) {
+      console.error("Failed to update organization:", err);
+      setActionMessage({
+        type: "error",
+        text: err.message || "Failed to update organization."
+      });
     } finally {
       setSubmitting(false);
     }
@@ -1931,7 +1981,15 @@ export const AdminDashboardPage: React.FC = () => {
                       <button
                         onClick={() => {
                           setEditingTenant(t);
-                          setEditForm({ name: t.name, slug: t.slug, status: t.status });
+                          setTenantEditForm({
+                            name: t.name || "",
+                            slug: t.slug || "",
+                            status: (t.status as TenantStatus) || "ACTIVE",
+                            gstNumber: t.gstNumber || "",
+                            email: t.email || "",
+                            phone: t.phone || "",
+                            address: t.address || ""
+                          });
                         }}
                         className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-indigo-300"
                         title="Edit organization"
@@ -2870,18 +2928,17 @@ export const AdminDashboardPage: React.FC = () => {
       </Modal>
 
       <Modal
-        isOpen={Boolean(editingWarehouse || editingUser || editingClient || editingTenant)}
+        isOpen={Boolean(editingWarehouse || editingUser || editingClient)}
         onClose={() => {
           setEditingWarehouse(null);
           setEditingUser(null);
           setEditingClient(null);
-          setEditingTenant(null);
         }}
-        title={`Edit ${editingWarehouse ? "Warehouse" : editingUser ? "User" : editingClient ? "Client Company" : "Organization"}`}
+        title={`Edit ${editingWarehouse ? "Warehouse" : editingUser ? "User" : "Client Company"}`}
         description="Update the record and save the changes."
       >
         <form onSubmit={handleUpdateRecord} className="space-y-4">
-          {(editingWarehouse || editingUser || editingTenant) && (
+          {(editingWarehouse || editingUser) && (
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">Name</label>
               <input
@@ -2994,10 +3051,163 @@ export const AdminDashboardPage: React.FC = () => {
             </div>
           )}
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-            <Button type="button" variant="outline" size="sm" onClick={() => { setEditingWarehouse(null); setEditingUser(null); setEditingClient(null); setEditingTenant(null); }}>Cancel</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setEditingWarehouse(null); setEditingUser(null); setEditingClient(null); }}>Cancel</Button>
             <Button type="submit" size="sm" isLoading={submitting}>Save Changes</Button>
           </div>
         </form>
+      </Modal>
+
+      {/* MODAL: EDIT ORGANIZATION */}
+      <Modal
+        isOpen={Boolean(editingTenant)}
+        onClose={() => setEditingTenant(null)}
+        title={`Edit Organization: ${editingTenant?.name || ""}`}
+        description="Update organization identifiers, contact details, operating address, and system status."
+      >
+        {editingTenant && (
+          <form onSubmit={handleUpdateTenant} className="space-y-4">
+            {/* Section 1: Organization Information */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">
+                Organization Information
+              </h4>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Organization Name *
+                </label>
+                <input
+                  type="text"
+                  value={tenantEditForm.name}
+                  onChange={(e) => setTenantEditForm({ ...tenantEditForm, name: e.target.value })}
+                  placeholder="e.g. Apex Logistics Global"
+                  required
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Slug / System Identifier *
+                  </label>
+                  <input
+                    type="text"
+                    value={tenantEditForm.slug}
+                    onChange={(e) => setTenantEditForm({ ...tenantEditForm, slug: e.target.value })}
+                    placeholder="e.g. apex-logistics"
+                    required
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-purple-300 font-mono focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Unique tenant URL key.
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Operating Status *
+                  </label>
+                  <select
+                    value={tenantEditForm.status}
+                    onChange={(e) => setTenantEditForm({ ...tenantEditForm, status: e.target.value as TenantStatus })}
+                    required
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="PENDING">PENDING</option>
+                    <option value="SUSPENDED">SUSPENDED</option>
+                    <option value="DEACTIVATED">DEACTIVATED</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Contact Information */}
+            <div className="space-y-3 pt-3 border-t border-slate-800">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">
+                Contact Information
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Official Email
+                  </label>
+                  <input
+                    type="email"
+                    value={tenantEditForm.email}
+                    onChange={(e) => setTenantEditForm({ ...tenantEditForm, email: e.target.value })}
+                    placeholder="ops@company.com"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Contact Phone / Mobile
+                  </label>
+                  <input
+                    type="tel"
+                    value={tenantEditForm.phone}
+                    onChange={(e) => setTenantEditForm({ ...tenantEditForm, phone: e.target.value })}
+                    placeholder="+91 98765 43210"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 3: Address & Tax Information */}
+            <div className="space-y-3 pt-3 border-t border-slate-800">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">
+                Address & Tax Information
+              </h4>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Registered Address
+                </label>
+                <textarea
+                  rows={2}
+                  value={tenantEditForm.address}
+                  onChange={(e) => setTenantEditForm({ ...tenantEditForm, address: e.target.value })}
+                  placeholder="Registered corporate / warehouse address"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  GSTIN / Tax Number
+                </label>
+                <input
+                  type="text"
+                  value={tenantEditForm.gstNumber}
+                  onChange={(e) => setTenantEditForm({ ...tenantEditForm, gstNumber: e.target.value })}
+                  placeholder="29ABCDE1234F1Z5"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono uppercase focus:outline-none focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEditingTenant(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                isLoading={submitting}
+                className="bg-purple-600 hover:bg-purple-500 text-white"
+              >
+                Save Changes
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   );

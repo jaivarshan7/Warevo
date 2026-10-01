@@ -2725,6 +2725,11 @@ export interface AdminTenantItem {
   name: string;
   slug: string;
   status: string;
+  gstNumber?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  logoUrl?: string | null;
   warehousesCount: number;
   usersCount: number;
   clientsCount: number;
@@ -2881,6 +2886,11 @@ export async function fetchAdminDashboardData(tenantId?: string | null, role?: R
     name: t.name,
     slug: t.slug,
     status: t.status,
+    gstNumber: t.gstNumber ?? null,
+    email: t.email ?? null,
+    phone: t.phone ?? null,
+    address: t.address ?? null,
+    logoUrl: t.logoUrl ?? null,
     warehousesCount: Array.isArray(t.warehouses) ? t.warehouses.length : 0,
     usersCount: Array.isArray(t.users) ? t.users.length : 0,
     clientsCount: Array.isArray(t.clients) ? t.clients.length : 0
@@ -3348,8 +3358,43 @@ export async function deleteAdminClient(id: string) {
   if (error) throw error;
 }
 
-export async function updateAdminTenant(id: string, payload: Partial<{ name: string; slug: string; gstNumber: string; email: string; phone: string; address: string; status: string }>) {
-  const { data, error } = await supabase.from("Tenant").update(payload).eq("id", id).select().single();
+export async function updateAdminTenant(
+  id: string,
+  payload: Partial<{
+    name: string;
+    slug: string;
+    gstNumber: string | null;
+    email: string | null;
+    phone: string | null;
+    address: string | null;
+    logoUrl?: string | null;
+    status: string;
+  }>
+) {
+  const updatePayload: Record<string, any> = {};
+  if (payload.name !== undefined) updatePayload.name = payload.name.trim();
+  if (payload.slug !== undefined) {
+    updatePayload.slug = payload.slug
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+  if (payload.gstNumber !== undefined) updatePayload.gstNumber = payload.gstNumber?.trim() || null;
+  if (payload.email !== undefined) updatePayload.email = payload.email?.trim() || null;
+  if (payload.phone !== undefined) updatePayload.phone = payload.phone?.trim() || null;
+  if (payload.address !== undefined) updatePayload.address = payload.address?.trim() || null;
+  if (payload.logoUrl !== undefined) updatePayload.logoUrl = payload.logoUrl?.trim() || null;
+  if (payload.status !== undefined) updatePayload.status = payload.status;
+  updatePayload.updatedAt = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("Tenant")
+    .update(updatePayload)
+    .eq("id", id)
+    .select()
+    .single();
+
   if (error) throw error;
   return data;
 }
