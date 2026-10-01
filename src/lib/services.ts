@@ -4380,6 +4380,47 @@ export async function fetchEmailLogs(tenantId?: string | null): Promise<EmailLog
   return (data as EmailLog[]) || [];
 }
 
+export interface FetchEmailSentCountParams {
+  tenantId?: string | null;
+  role?: Role | null;
+}
+
+/**
+ * Fetches the count of successfully dispatched emails (status = 'SENT')
+ * via the secure database aggregate RPC `rpc_get_email_sent_count`.
+ *
+ * Security:
+ * - PLATFORM_ADMIN: fetches platform-wide count if tenantId is not provided, or scoped to tenant.
+ * - Warehouse users: strictly scoped to the user's authenticated tenant. Cross-tenant access is rejected.
+ * - Ignores PENDING, SKIPPED, and FAILED emails.
+ * - Never exposes raw EmailLog records.
+ */
+export async function fetchEmailSentCount(
+  params?: FetchEmailSentCountParams
+): Promise<number | null> {
+  try {
+    const isPlatformAdmin = params?.role === "PLATFORM_ADMIN";
+    const targetTenantId = isPlatformAdmin
+      ? params?.tenantId || null
+      : params?.tenantId || null;
+
+    const { data, error } = await supabase.rpc("rpc_get_email_sent_count", {
+      p_tenant_id: targetTenantId,
+    });
+
+    if (error) {
+      console.warn("fetchEmailSentCount RPC error:", error);
+      return null;
+    }
+
+    if (data === null || data === undefined) return 0;
+    return typeof data === "number" ? data : Number(data) || 0;
+  } catch (err) {
+    console.warn("fetchEmailSentCount unexpected error:", err);
+    return null;
+  }
+}
+
 /**
  * Builds an email payload for client notifications
  */

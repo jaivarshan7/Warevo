@@ -1,13 +1,58 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { UserCheck, Building, ShieldCheck, Mail, Phone } from "lucide-react";
 
 import { getRoleDisplay, getRoleBadgeStyle } from "@/lib/permissions";
+import { fetchEmailSentCount } from "@/lib/services";
 
 export const ProfilePage: React.FC = () => {
   const { user, tenant, role } = useAuth();
+  const [emailSentCount, setEmailSentCount] = useState<number | null>(null);
+  const [loadingCount, setLoadingCount] = useState<boolean>(false);
+
+  const isWarehouseUser =
+    role === "WAREHOUSE_OWNER" ||
+    role === "WAREHOUSE_MODERATOR" ||
+    role === "WAREHOUSE_STAFF" ||
+    role === "ACCOUNTANT" ||
+    role === "ACCOUNTS_TEAM";
+
+  const isPlatformAdmin = role === "PLATFORM_ADMIN";
+  const shouldShowEmailStats = isPlatformAdmin || isWarehouseUser;
+
+  useEffect(() => {
+    if (!shouldShowEmailStats) return;
+
+    let isMounted = true;
+    setLoadingCount(true);
+
+    fetchEmailSentCount({
+      tenantId: isPlatformAdmin ? null : tenant?.id,
+      role: role || undefined
+    })
+      .then((count) => {
+        if (isMounted) {
+          setEmailSentCount(count);
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load email sent count:", err);
+        if (isMounted) {
+          setEmailSentCount(null);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoadingCount(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [shouldShowEmailStats, isPlatformAdmin, tenant?.id, role, user?.id]);
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -17,6 +62,23 @@ export const ProfilePage: React.FC = () => {
           Account identity, assigned role credentials, and tenant authorization.
         </p>
       </div>
+
+      {shouldShowEmailStats && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-medium text-slate-400">Emails Sent</span>
+              <div className="p-2 rounded-lg bg-indigo-950/60 border border-indigo-800/60 text-indigo-400">
+                <Mail className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="text-2xl font-bold text-white">
+              {loadingCount ? "..." : emailSentCount !== null ? emailSentCount.toLocaleString() : "—"}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">Successfully delivered</p>
+          </Card>
+        </div>
+      )}
 
       <Card>
         <div className="flex items-center gap-4 mb-6">

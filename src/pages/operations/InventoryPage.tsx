@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchInventory,
@@ -15,7 +15,7 @@ import { Modal } from "@/components/ui/Modal";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Tabs } from "@/components/ui/Tabs";
-import { Boxes, ArrowUpDown, History, Plus, CheckCircle2 } from "lucide-react";
+import { Boxes, ArrowUpDown, History, Plus, CheckCircle2, Search, X } from "lucide-react";
 import { formatDateTime } from "@/lib/dateUtils";
 
 export const InventoryPage: React.FC = () => {
@@ -26,6 +26,31 @@ export const InventoryPage: React.FC = () => {
   const [warehouses, setWarehouses] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredInventory = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return inventory;
+
+    return inventory.filter((inv) => {
+      const p = inv.product;
+      if (!p) return false;
+
+      const name = (p.name || "").toLowerCase();
+      const sku = (p.sku || "").toLowerCase();
+      const category = (p.category?.name || "").toLowerCase();
+      const barcode = (p.barcode || "").toLowerCase();
+      const productId = (p.id || "").toLowerCase();
+
+      return (
+        name.includes(query) ||
+        sku.includes(query) ||
+        category.includes(query) ||
+        barcode.includes(query) ||
+        productId.includes(query)
+      );
+    });
+  }, [inventory, searchQuery]);
 
   // Stock Adjustment Modal
   const [isAdjustOpen, setIsAdjustOpen] = useState(false);
@@ -208,15 +233,45 @@ export const InventoryPage: React.FC = () => {
         </div>
       )}
 
-      {/* Tabs: Stock vs Movement History */}
-      <Tabs
-        tabs={[
-          { id: "stock", label: "Stock Levels", count: inventory.length, icon: Boxes },
-          { id: "movements", label: "Movement History", count: movements.length, icon: History }
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
+      {/* Tabs and Search Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <Tabs
+          tabs={[
+            {
+              id: "stock",
+              label: "Stock Levels",
+              count: searchQuery.trim() ? filteredInventory.length : inventory.length,
+              icon: Boxes
+            },
+            { id: "movements", label: "Movement History", count: movements.length, icon: History }
+          ]}
+          activeTab={activeTab}
+          onChange={setActiveTab}
+        />
+
+        {activeTab === "stock" && (
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search products, SKU, or category..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-9 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white rounded-md hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
       {loading ? (
         <LoadingSpinner message="Scanning warehouse inventory..." />
@@ -224,8 +279,16 @@ export const InventoryPage: React.FC = () => {
         <Card className="p-0 overflow-hidden">
           {inventory.length === 0 ? (
             <EmptyState
-              title="No inventory records"
+              title="No inventory items found"
               description="No products are currently tracked in this warehouse."
+            />
+          ) : filteredInventory.length === 0 ? (
+            <EmptyState
+              icon={Search}
+              title="No products match your search"
+              description="Try a different product name, SKU, or category."
+              actionLabel="Clear search"
+              onAction={() => setSearchQuery("")}
             />
           ) : (
             <div className="overflow-x-auto">
@@ -242,7 +305,7 @@ export const InventoryPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {inventory.map((inv) => {
+                  {filteredInventory.map((inv) => {
                     const isLowStock =
                       inv.availableQuantity <= (inv.product?.reorderLevel || 10);
                     return (
