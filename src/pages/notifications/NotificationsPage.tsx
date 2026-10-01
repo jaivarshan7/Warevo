@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { NotificationType } from "@/types";
+import { formatRelativeTime, formatDateTime } from "@/lib/dateUtils";
 
 function getNotifStyle(type?: string | null) {
   const t = (type || "").toUpperCase();
@@ -147,41 +148,11 @@ function getPriorityBadge(priority?: string | null) {
 }
 
 function formatTimeAgo(dateStr?: string | null): string {
-  if (!dateStr) return "Recently";
-  try {
-    const now = new Date();
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return "Recently";
-    const diffMs = now.getTime() - d.getTime();
-    if (diffMs < 0) return "Just now";
-    const diffSec = Math.floor(diffMs / 1000);
-    const diffMin = Math.floor(diffSec / 60);
-    const diffHr = Math.floor(diffMin / 60);
-    const diffDay = Math.floor(diffHr / 24);
-
-    if (diffMin < 1) return "Just now";
-    if (diffMin < 60) return `${diffMin}m ago`;
-    if (diffHr < 24) return `${diffHr}h ago`;
-    if (diffDay === 1) return "Yesterday";
-    if (diffDay < 7) return `${diffDay}d ago`;
-    return d.toLocaleDateString();
-  } catch {
-    return "Recently";
-  }
+  return formatRelativeTime(dateStr);
 }
 
 function formatFullDate(dateStr?: string | null): string {
-  if (!dateStr) return "";
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return "";
-    return `${d.toLocaleDateString()} at ${d.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit"
-    })}`;
-  } catch {
-    return "";
-  }
+  return formatDateTime(dateStr, "");
 }
 
 export const NotificationsPage: React.FC = () => {

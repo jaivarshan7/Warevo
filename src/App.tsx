@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { AuthCallbackPage } from "@/pages/auth/AuthCallbackPage";
+import { UpdatePasswordPage } from "@/pages/auth/UpdatePasswordPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { OrdersPage } from "@/pages/operations/OrdersPage";
 import { OrderCreatePage } from "@/pages/operations/OrderCreatePage";
@@ -32,6 +33,7 @@ export const App: React.FC = () => {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          <Route path="/auth/update-password" element={<UpdatePasswordPage />} />
 
           <Route path="/" element={<AppShell />}>
             <Route index element={<Navigate to="/dashboard" replace />} />

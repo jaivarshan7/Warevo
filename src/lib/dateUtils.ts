@@ -114,3 +114,27 @@ export function formatTime(
 
   return new Intl.DateTimeFormat(undefined, defaultOptions).format(date);
 }
+
+/**
+ * Formats a timestamp into relative time (e.g. "Just now", "5m ago", "2h ago", "Yesterday", or "29 Sep 2026").
+ */
+export function formatRelativeTime(
+  timestamp: string | Date | number | null | undefined,
+  fallback = "Recently"
+): string {
+  const date = parseUtcDate(timestamp);
+  if (!date) return fallback;
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+
+  if (diffMin < 1) return "Just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffDay === 1) return "Yesterday";
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return formatDate(date);
+}

@@ -18,6 +18,15 @@ export const AppShell: React.FC = () => {
     );
   }
 
+  // Intercept recovery redirects landing on root shell
+  if (typeof window !== "undefined") {
+    const hash = window.location.hash || "";
+    const search = window.location.search || "";
+    if (hash.includes("type=recovery") || search.includes("type=recovery")) {
+      return <Navigate to={`/auth/update-password${search}${hash}`} replace />;
+    }
+  }
+
   if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }

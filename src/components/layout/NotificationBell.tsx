@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Bell, Check, ExternalLink } from "lucide-react";
 import { useNotifications } from "@/hooks/useNotifications";
 import { Link } from "react-router-dom";
+import { formatRelativeTime } from "@/lib/dateUtils";
 
 export const NotificationBell: React.FC = () => {
   const { notifications, unreadCount, markAsRead } = useNotifications();
@@ -71,16 +72,7 @@ export const NotificationBell: React.FC = () => {
                       <p className="text-xs font-semibold text-slate-200 truncate">{n.title}</p>
                       <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{n.message}</p>
                       <span className="text-[10px] text-slate-500 mt-1 block">
-                        {(() => {
-                          try {
-                            const d = new Date(n.createdAt);
-                            return isNaN(d.getTime())
-                              ? "Recently"
-                              : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-                          } catch {
-                            return "Recently";
-                          }
-                        })()}
+                        {formatRelativeTime(n.createdAt)}
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">

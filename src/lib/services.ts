@@ -32,6 +32,9 @@ import {
 } from "@/types";
 import { getRoleDisplay } from "./roleDisplay";
 import { compressDeliveryImage } from "./imageCompression";
+import { getAppUrl } from "./config";
+import { formatDateTime } from "./dateUtils";
+import { isOrderDeliveryVerified } from "./orderWorkflow";
 
 export function isClientRole(role?: Role | null): boolean {
   return role === "CLIENT" || role === "CLIENT_ACCOUNTANT";
@@ -306,7 +309,7 @@ export async function fetchOrderById(
   const [historyResult, verificationResult, commentsResult] = await Promise.all([
     supabase
       .from("OrderStatusHistory")
-      .select("*")
+      .select("*, changedBy:User!changedById(id, name, role)")
       .eq("orderId", orderId)
       .order("createdAt", { ascending: true }),
     supabase
@@ -320,6 +323,76 @@ export async function fetchOrderById(
       .eq("orderId", orderId)
       .order("createdAt", { ascending: true })
   ]);
+
+  // Resolve verification details and actor user
+  let verifData = verificationResult.data ? { ...verificationResult.data } : null;
+  if (verifData) {
+    const actorId = verifData.userId || (data as any).deliveryVerifiedById;
+    if (actorId) {
+      const { data: uData } = await supabase
+        .from("User")
+        .select("id, name, role, supabaseUserId")
+        .or(`id.eq.${actorId},supabaseUserId.eq.${actorId}`)
+        .maybeSingle();
+      if (uData) {
+        verifData.user = uData;
+      }
+    }
+  }
+
+  // Fallback: If verificationResponse row wasn't found but order has deliveryVerifiedAt & deliveryVerifiedById
+  if (!verifData && (data as any).deliveryVerifiedAt) {
+    const actorId = (data as any).deliveryVerifiedById;
+    let actorUser = null;
+    if (actorId) {
+      const { data: uData } = await supabase
+        .from("User")
+        .select("id, name, role, supabaseUserId")
+        .or(`id.eq.${actorId},supabaseUserId.eq.${actorId}`)
+        .maybeSingle();
+      actorUser = uData;
+    }
+    verifData = {
+      id: `vr_${data.id}`,
+      tenantId: data.tenantId,
+      orderId: data.id,
+      clientId: data.clientId,
+      userId: actorId,
+      status: "VERIFIED",
+      responses: [],
+      comments: null,
+      attachments: [],
+      source: actorUser?.role?.includes("WAREHOUSE") || actorUser?.role === "PLATFORM_ADMIN" ? "WAREHOUSE_OVERRIDE" : "CLIENT",
+      verifiedByRole: actorUser?.role || "WAREHOUSE_OWNER",
+      createdAt: (data as any).deliveryVerifiedAt,
+      user: actorUser
+    };
+  }
+
+  // Also ensure any OrderStatusHistory whose changedBy could not be joined (due to supabaseUserId) is resolved
+  const historyData = (historyResult.data || []) as any[];
+  const missingHistoryActorIds = historyData
+    .filter((h) => !h.changedBy && h.changedById)
+    .map((h) => h.changedById) as string[];
+  if (missingHistoryActorIds.length > 0) {
+    const uniqueIds = Array.from(new Set(missingHistoryActorIds));
+    const { data: hUsers } = await supabase
+      .from("User")
+      .select("id, name, role, supabaseUserId")
+      .or(`id.in.(${uniqueIds.join(",")}),supabaseUserId.in.(${uniqueIds.join(",")})`);
+    if (hUsers && hUsers.length > 0) {
+      const uMap = new Map<string, any>();
+      for (const u of hUsers) {
+        if (u.id) uMap.set(u.id, u);
+        if (u.supabaseUserId) uMap.set(u.supabaseUserId, u);
+      }
+      for (const h of historyData) {
+        if (!h.changedBy && h.changedById && uMap.has(h.changedById)) {
+          h.changedBy = uMap.get(h.changedById);
+        }
+      }
+    }
+  }
 
   const rawComments = commentsResult.data || [];
   const mappedComments: OrderComment[] = rawComments.map((c: any) => {
@@ -335,8 +408,8 @@ export async function fetchOrderById(
 
   return {
     ...(data as Order),
-    statusHistory: (historyResult.data || []) as Order["statusHistory"],
-    verification: (verificationResult.data || null) as Order["verification"],
+    statusHistory: historyData as Order["statusHistory"],
+    verification: verifData as Order["verification"],
     comments: mappedComments
   };
 }
@@ -444,14 +517,18 @@ export async function fetchOrderTimeline(
   // 4. Resolve users and client employees
   const [usersRes, empRes] = await Promise.all([
     actorIds.length > 0
-      ? supabase.from("User").select("id, name, email, role, tenantId").in("id", actorIds)
+      ? supabase.from("User").select("id, supabaseUserId, name, email, role, tenantId").or(`id.in.(${actorIds.join(",")}),supabaseUserId.in.(${actorIds.join(",")})`)
       : Promise.resolve({ data: [] }),
     actorIds.length > 0
       ? supabase.from("ClientEmployee").select("id, userId, employeeRole, contactPerson, mobile, email").in("userId", actorIds)
       : Promise.resolve({ data: [] })
   ]);
 
-  const userMap = new Map((usersRes.data || []).map((u: any) => [u.id, u]));
+  const userMap = new Map<string, any>();
+  for (const u of (usersRes.data || [])) {
+    if (u.id) userMap.set(u.id, u);
+    if (u.supabaseUserId) userMap.set(u.supabaseUserId, u);
+  }
   const empMap = new Map((empRes.data || []).map((e: any) => [e.userId, e]));
 
   // Also include client employees from order.client
@@ -472,7 +549,15 @@ export async function fetchOrderTimeline(
     const user = userMap.get(actorId);
     const emp = empMap.get(actorId);
 
-    const name = user?.name || emp?.contactPerson || "Warehouse Staff";
+    let name = user?.name || emp?.contactPerson;
+    // Guard against exposing raw UUIDs as the display name
+    if (!name || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)) {
+      name = user?.role
+        ? (["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"].includes(user.role)
+          ? "Warehouse User"
+          : "Client User")
+        : "Warehouse User";
+    }
     const baseRole = user?.role || (emp ? "CLIENT" : "WAREHOUSE_STAFF");
     const employeeRole = emp?.employeeRole || null;
     const roleDisplay = getRoleDisplay({ role: baseRole, clientEmployee: { employeeRole } });
@@ -529,16 +614,17 @@ export async function fetchOrderTimeline(
 
   if (deliveryTime) {
     const actor = resolveActor(deliveryActorId);
+    const isOverride = verif?.source === "WAREHOUSE_OVERRIDE" || (actor.roleDisplay && !actor.roleDisplay.includes("Client"));
     events.push({
       id: `delivery_verif_${order.id}`,
       type: "DELIVERY_VERIFIED",
-      title: "Delivery Verified",
+      title: isOverride ? "Delivery Verification Overridden" : "Delivery Verified",
       timestamp: deliveryTime,
       actorName: actor.name,
       actorRole: actor.roleDisplay,
       actorEmployeeRole: actor.employeeRole,
-      notes: verif?.comments || "Delivered items inspected and verified by client receiver.",
-      source: "DELIVERY_VERIFICATION"
+      notes: verif?.comments || (isOverride ? "Delivery verification manually verified and overridden by warehouse operations." : "Delivered items inspected and verified by client receiver."),
+      source: isOverride ? "WAREHOUSE_OVERRIDE" : "DELIVERY_VERIFICATION"
     });
   }
 
@@ -1329,8 +1415,9 @@ export async function deleteClientEmployeeRecord(id: string) {
 
 export async function sendPasswordResetEmail(email: string) {
   const normalizedEmail = email.trim().toLowerCase();
+  const appUrl = getAppUrl();
   const { data, error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-    redirectTo: `${window.location.origin}/login`
+    redirectTo: `${appUrl}/auth/update-password`
   });
   if (error) throw error;
   return data;
@@ -1517,7 +1604,8 @@ export async function submitClientReceiverVerification(payload: {
 export async function fetchPendingVerificationOrders(
   clientId?: string | null,
   tenantId?: string | null,
-  role?: Role
+  role?: Role,
+  statusFilter: "ALL" | "PENDING" | "VERIFIED" = "PENDING"
 ): Promise<Order[]> {
   if (isClientRole(role) && !clientId) {
     return [];
@@ -1526,8 +1614,7 @@ export async function fetchPendingVerificationOrders(
   let query = supabase
     .from("Order")
     .select("*, client:Client(*, employees:ClientEmployee(*)), createdBy:User!createdById(*), assignedStaff:User!assignedStaffId(*), items:OrderItem(*, product:Product(*)), verification:VerificationResponse(*)")
-    .eq("status", "DISPATCHED")
-    .eq("verificationStatus", "PENDING")
+    .in("status", ["DISPATCHED", "VERIFIED"])
     .order("createdAt", { ascending: false });
 
   if (tenantId) {
@@ -1539,7 +1626,73 @@ export async function fetchPendingVerificationOrders(
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data as Order[]) || [];
+  const rawOrders = (data as any[]) || [];
+
+  // Collect verifier user IDs from verification responses or deliveryVerifiedById
+  const verifierIds = rawOrders
+    .map((o) => {
+      const v = Array.isArray(o.verification) ? o.verification[0] || null : o.verification;
+      return v?.userId || o.deliveryVerifiedById;
+    })
+    .filter(Boolean) as string[];
+
+  const verifierMap = new Map<string, any>();
+  if (verifierIds.length > 0) {
+    const uniqueIds = Array.from(new Set(verifierIds));
+    const { data: vUsers } = await supabase
+      .from("User")
+      .select("id, name, role, supabaseUserId")
+      .or(`id.in.(${uniqueIds.join(",")}),supabaseUserId.in.(${uniqueIds.join(",")})`);
+    if (vUsers) {
+      for (const u of vUsers) {
+        if (u.id) verifierMap.set(u.id, u);
+        if (u.supabaseUserId) verifierMap.set(u.supabaseUserId, u);
+      }
+    }
+  }
+
+  const orders = rawOrders.map((o) => {
+    let v = Array.isArray(o.verification) ? o.verification[0] || null : o.verification;
+    const actorId = v?.userId || o.deliveryVerifiedById;
+    const actorUser = actorId ? verifierMap.get(actorId) || null : null;
+
+    if (v) {
+      v = {
+        ...v,
+        user: actorUser || v.user
+      };
+    } else if (o.deliveryVerifiedAt) {
+      v = {
+        id: `vr_${o.id}`,
+        tenantId: o.tenantId,
+        orderId: o.id,
+        clientId: o.clientId,
+        userId: actorId,
+        status: "VERIFIED",
+        responses: [],
+        comments: null,
+        attachments: [],
+        source: actorUser?.role?.includes("WAREHOUSE") || actorUser?.role === "PLATFORM_ADMIN" ? "WAREHOUSE_OVERRIDE" : "CLIENT",
+        verifiedByRole: actorUser?.role || "WAREHOUSE_OWNER",
+        createdAt: o.deliveryVerifiedAt,
+        user: actorUser
+      };
+    }
+
+    return {
+      ...o,
+      verification: v
+    };
+  }) as Order[];
+
+  if (statusFilter === "PENDING") {
+    return orders.filter((o) => !isOrderDeliveryVerified(o));
+  }
+  if (statusFilter === "VERIFIED") {
+    return orders.filter((o) => isOrderDeliveryVerified(o));
+  }
+
+  return orders;
 }
 
 // ======================== RECEIVER NOTES & EVIDENCE ========================
@@ -1564,7 +1717,10 @@ export async function updateReceiverNotes(
 export async function uploadDeliveryEvidence(
   file: File,
   tenantId: string,
-  orderId: string
+  orderId: string,
+  source: "CLIENT" | "WAREHOUSE" = "CLIENT",
+  uploadedBy?: string,
+  uploaderRole?: string
 ): Promise<DeliveryEvidenceAttachment> {
   // 1. Off-thread compression to WebP ~1MB / 1920px max dimension
   const compressedFile = await compressDeliveryImage(file);
@@ -1592,8 +1748,25 @@ export async function uploadDeliveryEvidence(
     fileName: file.name,
     contentType: compressedFile.type || "image/webp",
     size: compressedFile.size,
-    uploadedAt: new Date().toISOString()
+    uploadedAt: new Date().toISOString(),
+    source,
+    uploadedBy,
+    uploaderRole
   };
+}
+
+export async function addDeliveryEvidence(
+  orderId: string,
+  attachments: DeliveryEvidenceAttachment[],
+  source: "CLIENT" | "WAREHOUSE" = "WAREHOUSE"
+) {
+  const { data, error } = await supabase.rpc("rpc_add_delivery_evidence", {
+    p_order_id: orderId,
+    p_attachments: attachments,
+    p_source: source
+  });
+  if (error) throw error;
+  return data;
 }
 
 export async function getSignedDeliveryEvidenceUrl(storagePath: string): Promise<string | null> {
@@ -2406,7 +2579,35 @@ export async function fetchAuditLogs(tenantId?: string | null): Promise<AuditLog
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data as AuditLog[]) || [];
+  const logs = (data as AuditLog[]) || [];
+
+  // Resolve missing users by id or supabaseUserId
+  const missingUserIds = logs
+    .filter((l) => !l.user && l.userId)
+    .map((l) => l.userId) as string[];
+
+  if (missingUserIds.length > 0) {
+    const uniqueIds = Array.from(new Set(missingUserIds));
+    const { data: users } = await supabase
+      .from("User")
+      .select("*")
+      .or(`id.in.(${uniqueIds.join(",")}),supabaseUserId.in.(${uniqueIds.join(",")})`);
+
+    if (users && users.length > 0) {
+      const uMap = new Map<string, any>();
+      for (const u of users) {
+        if (u.id) uMap.set(u.id, u);
+        if (u.supabaseUserId) uMap.set(u.supabaseUserId, u);
+      }
+      for (const log of logs) {
+        if (!log.user && log.userId && uMap.has(log.userId)) {
+          log.user = uMap.get(log.userId);
+        }
+      }
+    }
+  }
+
+  return logs;
 }
 
 // ======================== PRODUCTS ========================
@@ -4221,7 +4422,7 @@ ${title}
 ${message}
 
 Event: ${eventLabel}
-Timestamp: ${new Date(createdAt).toLocaleString()}
+Timestamp: ${formatDateTime(createdAt)}
 
 ${actionLink}
 

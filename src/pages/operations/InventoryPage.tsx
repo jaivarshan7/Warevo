@@ -16,6 +16,7 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Tabs } from "@/components/ui/Tabs";
 import { Boxes, ArrowUpDown, History, Plus, CheckCircle2 } from "lucide-react";
+import { formatDateTime } from "@/lib/dateUtils";
 
 export const InventoryPage: React.FC = () => {
   const { tenant, user, role } = useAuth();
@@ -321,11 +322,7 @@ export const InventoryPage: React.FC = () => {
                 {movements.map((mov) => (
                   <tr key={mov.id} className="hover:bg-slate-800/40 transition-colors">
                     <td className="py-3 px-4 text-xs text-slate-400">
-                      {new Date(mov.createdAt).toLocaleDateString()}{" "}
-                      {new Date(mov.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                      })}
+                      {formatDateTime(mov.createdAt)}
                     </td>
                     <td className="py-3 px-4 text-xs font-semibold text-white">
                       {mov.product?.name || "Product"}

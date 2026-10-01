@@ -11,6 +11,7 @@ import {
   deleteOrderBeforeDispatched,
   updateReceiverNotes,
   uploadDeliveryEvidence,
+  addDeliveryEvidence,
   getSignedDeliveryEvidenceUrl,
   addOrderComment,
   updateOrderComment
@@ -113,6 +114,14 @@ export const OrderDetailPage: React.FC = () => {
 
   // Action message state
   const [actionMessage, setActionMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Additional Warehouse Evidence state
+  const [isAddEvidenceOpen, setIsAddEvidenceOpen] = useState(false);
+  const [warehouseEvidenceFiles, setWarehouseEvidenceFiles] = useState<
+    Array<{ file: File; previewUrl: string; originalSize: number; compressedSize: number }>
+  >([]);
+  const [isCompressingWhEvidence, setIsCompressingWhEvidence] = useState(false);
+  const [isUploadingWhEvidence, setIsUploadingWhEvidence] = useState(false);
 
   const loadOrder = async () => {
     if (!id) return;
@@ -444,6 +453,74 @@ export const OrderDetailPage: React.FC = () => {
       setActionMessage({ type: "error", text: err.message || "Failed to update comment" });
     } finally {
       setIsUpdatingComment(false);
+    }
+  };
+
+  const handleWarehouseEvidenceFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    setIsCompressingWhEvidence(true);
+    const processed: Array<{ file: File; previewUrl: string; originalSize: number; compressedSize: number }> = [];
+
+    for (const f of files) {
+      try {
+        const compressed = await compressDeliveryImage(f);
+        processed.push({
+          file: compressed,
+          previewUrl: URL.createObjectURL(compressed),
+          originalSize: f.size,
+          compressedSize: compressed.size
+        });
+      } catch (err) {
+        console.error("Failed to compress image:", err);
+        processed.push({
+          file: f,
+          previewUrl: URL.createObjectURL(f),
+          originalSize: f.size,
+          compressedSize: f.size
+        });
+      }
+    }
+
+    setWarehouseEvidenceFiles((prev) => [...prev, ...processed]);
+    setIsCompressingWhEvidence(false);
+  };
+
+  const handleUploadWarehouseEvidence = async () => {
+    if (!order || warehouseEvidenceFiles.length === 0) return;
+    try {
+      setIsUploadingWhEvidence(true);
+      for (const item of warehouseEvidenceFiles) {
+        const uploadRes = await uploadDeliveryEvidence(
+          item.file,
+          order.id,
+          order.tenantId,
+          "WAREHOUSE",
+          user?.id
+        );
+        await addDeliveryEvidence(order.id, [
+          {
+            path: uploadRes.path,
+            fileName: item.file.name,
+            size: item.compressedSize,
+            contentType: item.file.type || "image/jpeg",
+            uploadedAt: new Date().toISOString(),
+            source: "WAREHOUSE",
+            uploadedByUserId: user?.id,
+            uploadedByRole: role || undefined
+          }
+        ]);
+      }
+      setActionMessage({ type: "success", text: "Warehouse evidence uploaded successfully!" });
+      setIsAddEvidenceOpen(false);
+      setWarehouseEvidenceFiles([]);
+      await loadOrder();
+    } catch (err: any) {
+      console.error("Failed to upload warehouse evidence:", err);
+      setActionMessage({ type: "error", text: err?.message || "Failed to upload warehouse evidence" });
+    } finally {
+      setIsUploadingWhEvidence(false);
     }
   };
 
@@ -805,43 +882,72 @@ export const OrderDetailPage: React.FC = () => {
           {/* FEATURE 3: SEPARATE RECEIVER NOTES & EVIDENCE CARD */}
           {order.verification && (
             <Card className="border-emerald-900/40 bg-emerald-950/10 space-y-4">
-              <div className="flex items-center justify-between border-b border-emerald-900/40 pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-900/40 pb-3">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                   <div>
-                    <h3 className="text-base font-semibold text-white">Receiver Delivery Notes & Evidence</h3>
-                    <p className="text-xs text-slate-400">
-                      Recorded on {new Date(order.verification.createdAt).toLocaleString()} • Status:{" "}
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-semibold text-white">
+                        {order.verification.source === "WAREHOUSE_OVERRIDE"
+                          ? "Warehouse Override Delivery Verification"
+                          : "Receiver Delivery Notes & Evidence"}
+                      </h3>
+                      {order.verification.source === "WAREHOUSE_OVERRIDE" ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                          Warehouse Override ({order.verification.verifiedByRole?.replace(/_/g, " ") || "Staff"})
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                          Store / Client Verified
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Recorded on {formatDateTime(order.verification.createdAt)} • Status:{" "}
                       <span className="font-semibold text-emerald-300">{order.verification.status}</span>
                     </p>
                   </div>
                 </div>
-                {canEditReceiverNotes && (
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setEditNotesValue(order.verification?.comments || "");
-                      setIsEditNotesOpen(true);
-                    }}
-                    className="text-xs border-emerald-700/60 text-emerald-300 hover:bg-emerald-950/50 gap-1"
-                  >
-                    <Edit3 className="w-3.5 h-3.5 mr-1" />
-                    Edit Receiver Note
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  {isWarehouseStaffOrAdmin && (
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsAddEvidenceOpen(true)}
+                      className="text-xs border-amber-600/50 text-amber-300 hover:bg-amber-950/50 gap-1"
+                    >
+                      <Upload className="w-3.5 h-3.5 mr-1" />
+                      Add Warehouse Evidence
+                    </Button>
+                  )}
+                  {canEditReceiverNotes && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setEditNotesValue(order.verification?.comments || "");
+                        setIsEditNotesOpen(true);
+                      }}
+                      className="text-xs border-emerald-700/60 text-emerald-300 hover:bg-emerald-950/50 gap-1"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 mr-1" />
+                      Edit Receiver Note
+                    </Button>
+                  )}
+                </div>
               </div>
 
               {/* Note Content */}
               <div>
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                  Receiver Verification Comments:
+                  {order.verification.source === "WAREHOUSE_OVERRIDE"
+                    ? "Warehouse Verification Comments / Override Reason:"
+                    : "Receiver Verification Comments:"}
                 </span>
                 {order.verification.comments ? (
                   <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
                     {order.verification.comments}
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 italic">No comments entered by receiver.</p>
+                  <p className="text-xs text-slate-500 italic">No comments recorded.</p>
                 )}
               </div>
 
@@ -855,59 +961,121 @@ export const OrderDetailPage: React.FC = () => {
                     {order.verification.responses.map((resp, i) => (
                       <div
                         key={i}
-                        className="flex items-center gap-2 p-2 rounded-lg bg-slate-900/50 border border-slate-800/80 text-xs text-slate-300"
+                        className="flex flex-col gap-1 p-2.5 rounded-lg bg-slate-900/50 border border-slate-800/80 text-xs text-slate-300"
                       >
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span className="truncate">{resp.text}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 truncate">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <span className="truncate font-medium">{resp.text}</span>
+                          </div>
+                          {resp.status && (
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase shrink-0 ${
+                                resp.status === "VERIFIED"
+                                  ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                                  : resp.status === "DAMAGED"
+                                  ? "bg-rose-950 text-rose-300 border-rose-800"
+                                  : resp.status === "MISSING"
+                                  ? "bg-amber-950 text-amber-300 border-amber-800"
+                                  : resp.status === "REPLACED"
+                                  ? "bg-purple-950 text-purple-300 border-purple-800"
+                                  : "bg-slate-800 text-slate-300 border-slate-700"
+                              }`}
+                            >
+                              {resp.status}
+                            </span>
+                          )}
+                        </div>
+                        {resp.note && (
+                          <p className="text-[11px] text-slate-400 italic pl-5 mt-0.5">
+                            Note: {resp.note}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* FEATURE 5 & 6: Delivery Evidence Photo Gallery */}
+              {/* Delivery Evidence Photo Galleries (Client Evidence & Warehouse Evidence displayed separately) */}
               {Array.isArray(order.verification.attachments) &&
-                order.verification.attachments.length > 0 && (
-                  <div className="pt-2 border-t border-slate-800/60">
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2 flex items-center gap-1.5">
-                      <ImageIcon className="w-3.5 h-3.5 text-indigo-400" />
-                      Delivery Evidence Photos ({order.verification.attachments.length}):
-                    </span>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                      {(order.verification.attachments as DeliveryEvidenceAttachment[]).map(
-                        (att, index) => {
-                          const signedUrl = evidenceSignedUrls[att.path];
-                          return (
-                            <div
-                              key={index}
-                              onClick={() => signedUrl && setPreviewModalUrl(signedUrl)}
-                              className="group relative rounded-xl border border-slate-800 bg-slate-900/80 overflow-hidden cursor-pointer hover:border-indigo-500 transition-all shadow-sm"
-                            >
-                              <div className="aspect-square w-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                                {signedUrl ? (
-                                  <img
-                                    src={signedUrl}
-                                    alt={att.fileName || "Delivery evidence"}
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                  />
-                                ) : (
-                                  <div className="flex flex-col items-center justify-center text-slate-500 text-xs">
-                                    <Loader2 className="w-5 h-5 animate-spin mb-1 text-slate-400" />
-                                    <span>Loading...</span>
-                                  </div>
-                                )}
-                              </div>
-                              <div className="p-2 text-[10px] bg-slate-900/90 truncate border-t border-slate-800/60">
-                                <p className="font-mono text-white truncate">{att.fileName}</p>
-                                <p className="text-slate-400">{(att.size / 1024).toFixed(0)} KB</p>
-                              </div>
+                order.verification.attachments.length > 0 &&
+                (() => {
+                  const allAtts = order.verification.attachments as DeliveryEvidenceAttachment[];
+                  const clientAtts = allAtts.filter((a) => a.source !== "WAREHOUSE");
+                  const warehouseAtts = allAtts.filter((a) => a.source === "WAREHOUSE");
+
+                  const renderAttachmentCard = (
+                    att: DeliveryEvidenceAttachment,
+                    idx: number,
+                    isWh: boolean
+                  ) => {
+                    const signedUrl = evidenceSignedUrls[att.path];
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => signedUrl && setPreviewModalUrl(signedUrl)}
+                        className={`group relative rounded-xl border overflow-hidden cursor-pointer transition-all shadow-sm ${
+                          isWh
+                            ? "border-amber-900/40 bg-amber-950/20 hover:border-amber-500"
+                            : "border-slate-800 bg-slate-900/80 hover:border-indigo-500"
+                        }`}
+                      >
+                        <div className="aspect-square w-full bg-slate-950 flex items-center justify-center overflow-hidden">
+                          {signedUrl ? (
+                            <img
+                              src={signedUrl}
+                              alt={att.fileName || "Delivery evidence"}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center text-slate-500 text-xs">
+                              <Loader2 className="w-5 h-5 animate-spin mb-1 text-slate-400" />
+                              <span>Loading...</span>
                             </div>
-                          );
-                        }
+                          )}
+                        </div>
+                        <div className="p-2 text-[10px] bg-slate-900/90 truncate border-t border-slate-800/60">
+                          <p className="font-mono text-white truncate">{att.fileName}</p>
+                          <p className="text-slate-400">
+                            {(att.size / 1024).toFixed(0)} KB
+                            {att.uploadedAt ? ` • ${formatDate(att.uploadedAt)}` : ""}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <div className="pt-2 border-t border-slate-800/60 space-y-4">
+                      {/* Client Evidence */}
+                      {clientAtts.length > 0 && (
+                        <div>
+                          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2 flex items-center gap-1.5">
+                            <ImageIcon className="w-3.5 h-3.5 text-indigo-400" />
+                            Client Evidence Photos ({clientAtts.length}):
+                          </span>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                            {clientAtts.map((att, idx) => renderAttachmentCard(att, idx, false))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Warehouse Evidence */}
+                      {warehouseAtts.length > 0 && (
+                        <div>
+                          <span className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider block mb-2 flex items-center gap-1.5">
+                            <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                            Warehouse Evidence Photos ({warehouseAtts.length}):
+                          </span>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                            {warehouseAtts.map((att, idx) => renderAttachmentCard(att, idx, true))}
+                          </div>
+                        </div>
                       )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
             </Card>
           )}
 
@@ -1486,6 +1654,100 @@ export const OrderDetailPage: React.FC = () => {
               </Button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {/* ADD WAREHOUSE EVIDENCE MODAL */}
+      {isAddEvidenceOpen && (
+        <Modal
+          isOpen={isAddEvidenceOpen}
+          onClose={() => {
+            setIsAddEvidenceOpen(false);
+            setWarehouseEvidenceFiles([]);
+          }}
+          title="Add Warehouse Evidence"
+          description={`Upload supplemental warehouse photographic evidence or inspection documents for order ${order.orderNumber}.`}
+          maxWidth="md"
+        >
+          <div className="space-y-4">
+            <div className="border-2 border-dashed border-slate-700 hover:border-amber-500/50 rounded-xl p-6 text-center transition-colors bg-slate-900/40">
+              <input
+                type="file"
+                id="wh-evidence-upload"
+                multiple
+                accept="image/*"
+                onChange={handleWarehouseEvidenceFileSelect}
+                className="hidden"
+                disabled={isCompressingWhEvidence || isUploadingWhEvidence}
+              />
+              <label
+                htmlFor="wh-evidence-upload"
+                className="cursor-pointer flex flex-col items-center justify-center gap-2"
+              >
+                <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                  <Upload className="w-6 h-6" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-white">
+                    {isCompressingWhEvidence ? "Compressing photos..." : "Click to select warehouse evidence"}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Images will be automatically compressed before upload
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {warehouseEvidenceFiles.length > 0 && (
+              <div className="space-y-2">
+                <span className="text-xs font-semibold text-slate-300">
+                  Ready to upload ({warehouseEvidenceFiles.length}):
+                </span>
+                <div className="grid grid-cols-3 gap-2">
+                  {warehouseEvidenceFiles.map((f, i) => (
+                    <div
+                      key={i}
+                      className="relative group rounded-lg overflow-hidden border border-slate-800 bg-slate-900"
+                    >
+                      <img src={f.previewUrl} alt="preview" className="aspect-square object-cover w-full" />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setWarehouseEvidenceFiles((prev) => prev.filter((_, idx) => idx !== i))
+                        }
+                        className="absolute top-1 right-1 p-1 bg-black/70 hover:bg-rose-600 rounded text-white"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="p-1 text-[9px] text-slate-400 bg-slate-950/80 truncate">
+                        {(f.compressedSize / 1024).toFixed(0)} KB
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsAddEvidenceOpen(false);
+                  setWarehouseEvidenceFiles([]);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleUploadWarehouseEvidence}
+                disabled={warehouseEvidenceFiles.length === 0 || isUploadingWhEvidence}
+                isLoading={isUploadingWhEvidence}
+                className="bg-amber-600 hover:bg-amber-500 text-white"
+              >
+                Upload Evidence
+              </Button>
+            </div>
+          </div>
         </Modal>
       )}
 

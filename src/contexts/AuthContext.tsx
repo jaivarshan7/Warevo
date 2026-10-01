@@ -236,6 +236,20 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           return;
         }
 
+        // If on /auth/update-password or URL indicates password recovery, defer to UpdatePasswordPage.
+        const hash = typeof window !== "undefined" ? window.location.hash : "";
+        const search = typeof window !== "undefined" ? window.location.search : "";
+        if (
+          pathname.startsWith("/auth/update-password") ||
+          hash.includes("type=recovery") ||
+          search.includes("type=recovery")
+        ) {
+          console.debug("[AuthContext] Password recovery flow detected; deferring to UpdatePasswordPage");
+          setIsLoading(false);
+          initialized.current = true;
+          return;
+        }
+
         if (!supabaseSession?.user) {
           // No live Supabase Auth session — clear any stale WMS user state
           console.debug("[AuthContext] clearing user (no live Supabase session)");
@@ -347,10 +361,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       const pathname = typeof window !== "undefined" ? window.location.pathname : "";
       console.debug("[AuthContext] onAuthStateChange event:", event);
       console.debug("[AuthContext] session user:", session?.user?.id, session?.user?.email);
-      console.debug("[AuthContext] current pathname:", pathname);
+      if (event === "PASSWORD_RECOVERY") {
+        console.debug("[AuthContext] PASSWORD_RECOVERY event received; routing to /auth/update-password");
+        setIsLoading(false);
+        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/auth/update-password")) {
+          window.location.href = `/auth/update-password${window.location.search}${window.location.hash}`;
+        }
+        return;
+      }
 
-      if (pathname.startsWith("/auth/callback")) {
-        console.debug("[AuthContext] onAuthStateChange on /auth/callback; letting AuthCallbackPage process");
+      if (pathname.startsWith("/auth/callback") || pathname.startsWith("/auth/update-password")) {
+        console.debug("[AuthContext] onAuthStateChange on auth flow route; letting page process");
         return;
       }
 

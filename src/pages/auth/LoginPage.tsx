@@ -3,9 +3,11 @@ import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useAuth, AuthErrorType } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { ArrowRight, ArrowLeft, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
+import { ArrowRight, ArrowLeft, AlertTriangle, ShieldAlert, CheckCircle2, KeyRound } from "lucide-react";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { config } from "@/lib/config";
+import { sendPasswordResetEmail } from "@/lib/services";
 
 export const LoginPage: React.FC = () => {
   const { user, isLoading: authLoading, allUsers, switchUser, signInWithEmailAndPassword, signInWithGoogle } = useAuth();
@@ -20,6 +22,13 @@ export const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
 
+  // Forgot Password Modal State
+  const [isForgotOpen, setIsForgotOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+
   const from =
     (location.state?.from?.pathname
       ? `${location.state.from.pathname}${location.state.from.search || ""}`
@@ -31,6 +40,15 @@ export const LoginPage: React.FC = () => {
       navigate(from, { replace: true });
     }
   }, [authLoading, user, navigate, from]);
+
+  // If landing on /login with password recovery parameters or hash, forward to /auth/update-password
+  React.useEffect(() => {
+    const hash = window.location.hash || "";
+    const search = window.location.search || "";
+    if (hash.includes("type=recovery") || search.includes("type=recovery")) {
+      navigate(`/auth/update-password${search}${hash}`, { replace: true });
+    }
+  }, [navigate]);
 
   // Check URL parameters or navigation state for auth errors (e.g. from OAuth callback or route guards)
   React.useEffect(() => {
@@ -101,6 +119,25 @@ export const LoginPage: React.FC = () => {
       navigate(from, { replace: true });
     } catch (err: any) {
       setError(err?.message || "Failed to switch user");
+    }
+  };
+
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetEmail.trim()) return;
+    setResetLoading(true);
+    setResetError(null);
+    setResetSuccess(null);
+    try {
+      await sendPasswordResetEmail(resetEmail.trim());
+      setResetSuccess(
+        `A password recovery link has been sent to ${resetEmail.trim()}. Please check your inbox and click the link to reset your password.`
+      );
+    } catch (err: any) {
+      console.error("Forgot password error:", err);
+      setResetError(err?.message || "Failed to send reset email. Please try again.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -211,9 +248,23 @@ export const LoginPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">
-                    Password
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-medium text-slate-300">
+                      Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetEmail(email || "");
+                        setResetSuccess(null);
+                        setResetError(null);
+                        setIsForgotOpen(true);
+                      }}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <input
                     type="password"
                     value={password}
@@ -285,6 +336,77 @@ export const LoginPage: React.FC = () => {
             </>
           )}
         </Card>
+
+        {/* Forgot Password Modal */}
+        {isForgotOpen && (
+          <Modal
+            isOpen={isForgotOpen}
+            onClose={() => setIsForgotOpen(false)}
+            title="Reset Password"
+            description="Enter your registered email address and we'll send you a link to reset your password."
+          >
+            {resetSuccess ? (
+              <div className="space-y-4 py-2">
+                <div className="p-4 rounded-xl bg-emerald-950/60 border border-emerald-800 text-xs text-emerald-300 flex items-start gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-emerald-400" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-emerald-200">Reset Email Sent</p>
+                    <p>{resetSuccess}</p>
+                  </div>
+                </div>
+                <div className="flex justify-end pt-2">
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setIsForgotOpen(false);
+                      setResetSuccess(null);
+                    }}
+                  >
+                    Done
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotPasswordSubmit} className="space-y-4 pt-1">
+                {resetError && (
+                  <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-xs text-rose-200 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                    <span>{resetError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Account Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setIsForgotOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" isLoading={resetLoading}>
+                    <KeyRound className="w-4 h-4 mr-1.5" />
+                    Send Reset Link
+                  </Button>
+                </div>
+              </form>
+            )}
+          </Modal>
+        )}
       </div>
     </div>
   );

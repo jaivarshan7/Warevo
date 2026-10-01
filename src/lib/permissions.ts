@@ -57,7 +57,8 @@ export const permissions: Record<Role, string[]> = {
   WAREHOUSE_STAFF: [
     "dashboard:read",
     "inventory:operate",
-    "orders:operate"
+    "orders:operate",
+    "verification:operate"
   ],
   ACCOUNTANT: [
     "dashboard:read",
@@ -220,7 +221,12 @@ export function getClientEmployeeRole(user?: Partial<User> | null): ClientEmploy
 export function canVerifyDelivery(user?: Partial<User> | null): boolean {
   if (!user) return false;
   if (user.status === "INACTIVE" || user.clientEmployee?.status === "INACTIVE") return false;
-  if (user.role === "PLATFORM_ADMIN" || user.role === "WAREHOUSE_OWNER" || user.role === "WAREHOUSE_MODERATOR") {
+  if (
+    user.role === "PLATFORM_ADMIN" ||
+    user.role === "WAREHOUSE_OWNER" ||
+    user.role === "WAREHOUSE_MODERATOR" ||
+    user.role === "WAREHOUSE_STAFF"
+  ) {
     return true;
   }
   if (user.role === "CLIENT") {
@@ -237,7 +243,12 @@ export function canVerifyDelivery(user?: Partial<User> | null): boolean {
 export function canVerifyInventory(user?: Partial<User> | null): boolean {
   if (!user) return false;
   if (user.status === "INACTIVE" || user.clientEmployee?.status === "INACTIVE") return false;
-  if (user.role === "PLATFORM_ADMIN" || user.role === "WAREHOUSE_OWNER" || user.role === "WAREHOUSE_MODERATOR") {
+  if (
+    user.role === "PLATFORM_ADMIN" ||
+    user.role === "WAREHOUSE_OWNER" ||
+    user.role === "WAREHOUSE_MODERATOR" ||
+    user.role === "WAREHOUSE_STAFF"
+  ) {
     return true;
   }
   if (user.role === "CLIENT") {
