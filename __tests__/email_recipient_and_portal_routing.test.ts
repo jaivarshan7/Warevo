@@ -51,11 +51,12 @@ describe("Email Recipient and Portal Link Routing", () => {
     expect(content).toContain("navigate(from, { replace: true });");
   });
 
-  it("send-email Edge Function uses verified domain warevo.online and Vercel production URL", () => {
+  it("send-email Edge Function uses verified domain warevo.online and configurable APP_URL", () => {
     const edgeFunctionPath = resolve(__dirname, "../supabase/functions/send-email/index.ts");
     const content = readFileSync(edgeFunctionPath, "utf-8");
     expect(content).toContain("Warevo <notifications@warevo.online>");
-    expect(content).toContain("https://warevo-three.vercel.app");
+    expect(content).toContain('Deno.env.get("APP_URL")');
+    expect(content).not.toContain("https://warevo-three.vercel.app");
     expect(content).not.toContain("https://warevo.in");
     expect(content).not.toContain("onboarding@resend.dev");
   });

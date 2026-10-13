@@ -168,3 +168,47 @@ describe("Unified Timeline Chronology & Event Structure", () => {
     expect(mockEvents[6].actorName).toBe("System");
   });
 });
+
+describe("Centralized Date & Timezone Utilities (dateUtils)", () => {
+  // Dynamic import of dateUtils
+  it("correctly interprets database timestamps without Z as UTC", async () => {
+    const { parseUtcDate } = await import("@/src/lib/dateUtils");
+    
+    // PostgreSQL timestamp without time zone produces strings without Z
+    const dbUtcTimestamp = "2026-09-29T14:18:02.519";
+    const parsed = parseUtcDate(dbUtcTimestamp);
+    
+    expect(parsed).not.toBeNull();
+    expect(parsed!.toISOString()).toBe("2026-09-29T14:18:02.519Z");
+    expect(parsed!.getUTCHours()).toBe(14);
+    expect(parsed!.getUTCMinutes()).toBe(18);
+  });
+
+  it("handles timestamptz with +00:00 and ISO with Z correctly", async () => {
+    const { parseUtcDate } = await import("@/src/lib/dateUtils");
+    
+    const isoWithZ = "2026-09-29T14:18:02.519Z";
+    const pgTimestamptz = "2026-09-29T14:18:02.519+00:00";
+    
+    const parsed1 = parseUtcDate(isoWithZ);
+    const parsed2 = parseUtcDate(pgTimestamptz);
+    
+    expect(parsed1!.getTime()).toBe(parsed2!.getTime());
+  });
+
+  it("formats date, time, and dateTime into localized strings", async () => {
+    const { formatDateTime, formatDate, formatTime } = await import("@/src/lib/dateUtils");
+    
+    const timestamp = "2026-09-29T14:18:02.519";
+    const dtStr = formatDateTime(timestamp);
+    const dStr = formatDate(timestamp);
+    const tStr = formatTime(timestamp);
+    
+    expect(dtStr).toBeTruthy();
+    expect(dStr).toBeTruthy();
+    expect(tStr).toBeTruthy();
+    expect(formatDateTime(null)).toBe("—");
+    expect(formatDate(undefined, "N/A")).toBe("N/A");
+  });
+});
+

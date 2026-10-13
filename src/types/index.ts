@@ -327,6 +327,74 @@ export interface OrderStatusHistory {
   changedBy?: User | null;
 }
 
+export type ItemVerificationStatus =
+  | "Verified"
+  | "Missing"
+  | "Damaged"
+  | "Replaced"
+  | "Other"
+  | "VERIFIED"
+  | "MISSING"
+  | "DAMAGED"
+  | "REPLACED"
+  | "OTHER";
+
+export interface DeliveryEvidenceAttachment {
+  path: string;
+  fileName: string;
+  contentType?: string;
+  type?: string;
+  size: number;
+  uploadedAt: string;
+  signedUrl?: string | null;
+  uploadedBy?: string;
+  uploadedByUserId?: string;
+  uploaderRole?: string;
+  uploadedByRole?: string;
+  source?: "CLIENT" | "WAREHOUSE" | "WAREHOUSE_OVERRIDE" | string;
+}
+
+export interface OrderComment {
+  id: string;
+  tenantId: string;
+  orderId: string;
+  userId: string;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  user?: User | null;
+  authorName?: string;
+  authorRole?: string;
+  authorEmployeeRole?: string | null;
+}
+
+export interface UpdateOrderInput {
+  orderId: string;
+  expectedDelivery?: string | null;
+  notes?: string | null;
+  assignedStaffId?: string | null;
+  items?: Array<{
+    productId: string;
+    quantity: number;
+    unitPrice: number;
+    taxRate: number;
+    discount?: number;
+  }>;
+}
+
+export interface VerificationItemResponse {
+  text: string;
+  checked: boolean;
+  orderItemId?: string;
+  productId?: string;
+  productName?: string;
+  orderedQty?: number;
+  verifiedQty?: number;
+  status?: ItemVerificationStatus;
+  notes?: string;
+  [key: string]: any;
+}
+
 export interface VerificationResponse {
   id: string;
   tenantId: string;
@@ -334,9 +402,12 @@ export interface VerificationResponse {
   clientId: string;
   userId?: string | null;
   status: VerificationStatus;
-  responses: Array<{ text: string; checked: boolean }>;
+  responses: VerificationItemResponse[];
   comments?: string | null;
-  attachments?: unknown;
+  attachments?: DeliveryEvidenceAttachment[] | unknown;
+  source?: "CLIENT" | "WAREHOUSE_OVERRIDE" | string | null;
+  verifiedByRole?: string | null;
+  user?: User | null;
   createdAt: string;
 }
 
@@ -370,6 +441,7 @@ export interface Order {
   items?: OrderItem[];
   statusHistory?: OrderStatusHistory[];
   verification?: VerificationResponse | null;
+  comments?: OrderComment[] | null;
   invoices?: Invoice[] | null;
 }
 

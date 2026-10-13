@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { Activity, Search, Filter, RefreshCw, User, Calendar, Shield } from "lucide-react";
+import { formatDateTime } from "@/lib/dateUtils";
 
 export const ChangeLogPage: React.FC = () => {
   const { tenant, role } = useAuth();
@@ -171,11 +172,7 @@ export const ChangeLogPage: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-slate-400">
-                      {new Date(log.createdAt).toLocaleDateString()}{" "}
-                      {new Date(log.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit"
-                      })}
+                      {formatDateTime(log.createdAt)}
                     </td>
                   </tr>
                 ))}

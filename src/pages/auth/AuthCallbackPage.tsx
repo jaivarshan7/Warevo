@@ -41,6 +41,15 @@ export const AuthCallbackPage: React.FC = () => {
 
     async function resolveGoogleUser() {
       try {
+        // Forward password recovery callbacks to /auth/update-password
+        const hash = window.location.hash || "";
+        const search = window.location.search || "";
+        if (hash.includes("type=recovery") || search.includes("type=recovery")) {
+          console.debug("[AuthCallbackPage] Detected password recovery; forwarding to /auth/update-password");
+          navigate(`/auth/update-password${search}${hash}`, { replace: true });
+          return;
+        }
+
         // 1. Obtain authenticated Supabase user
         const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
 

@@ -168,3 +168,122 @@ export function deriveClientWorkflowStages(
 
   return stages;
 }
+
+export const ORDER_LIFECYCLE_STEPS: OrderStatus[] = [
+  "ISSUED",
+  "PROCESSING",
+  "READY_FOR_DISPATCH",
+  "DISPATCHED",
+  "VERIFIED"
+];
+
+export interface OrderProgressStepInfo {
+  step: OrderStatus;
+  label: string;
+  isCompleted: boolean;
+  isCurrent: boolean;
+}
+
+/**
+ * Authoritative check for whether an order has completed delivery verification
+ * (by client, warehouse override, or completion).
+ */
+export function isOrderDeliveryVerified(order?: {
+  status?: string | null;
+  deliveryVerifiedAt?: string | null;
+  verification?: any;
+  verificationStatus?: string | null;
+} | null): boolean {
+  if (!order) return false;
+  const v = Array.isArray(order.verification) ? order.verification[0] : order.verification;
+  return Boolean(
+    order.deliveryVerifiedAt ||
+    order.status === "VERIFIED" ||
+    order.status === "COMPLETED" ||
+    (v && (v.status === "VERIFIED" || v.status === "PARTIALLY_VERIFIED")) ||
+    order.verificationStatus === "VERIFIED" ||
+    order.verificationStatus === "PARTIALLY_VERIFIED"
+  );
+}
+
+/**
+ * Authoritative Order Lifecycle Progress calculation.
+ * Lifecycle: ISSUED -> PROCESSING -> READY_FOR_DISPATCH -> DISPATCHED -> VERIFIED
+ *
+ * If: order.status = ISSUED: ISSUED ✓, others pending
+ * If: order.status = PROCESSING: ISSUED ✓, PROCESSING ✓, others pending
+ * If: order.status = READY_FOR_DISPATCH: ISSUED ✓, PROCESSING ✓, READY ✓, others pending
+ * If: order.status = DISPATCHED & delivery not verified:
+ *     ISSUED ✓, PROCESSING ✓, READY ✓, DISPATCHED ✓ (active), VERIFIED ○
+ * If: delivery verification is complete (by client or warehouse override):
+ *     all five steps completed (✓), VERIFIED ✓
+ */
+export function getOrderProgressSteps(
+  orderStatus: OrderStatus | string,
+  isDeliveryVerified: boolean = false
+): OrderProgressStepInfo[] {
+  const isCompletedOrVerified = isDeliveryVerified || orderStatus === "VERIFIED" || orderStatus === "COMPLETED";
+
+  const statusIndexMap: Record<string, number> = {
+    DRAFT: -1,
+    ISSUED: 0,
+    PROCESSING: 1,
+    READY_FOR_DISPATCH: 2,
+    DISPATCHED: 3,
+    RECEIVED: 3,
+    VERIFICATION_PENDING: 3,
+    VERIFIED: 4,
+    COMPLETED: 4
+  };
+
+  let highestStageIndex = statusIndexMap[orderStatus] ?? -1;
+
+  // If order status is DISPATCHED, progress index must be at least DISPATCHED = stage 3 (0-indexed: stage 4 of 5)
+  if (orderStatus === "DISPATCHED" && highestStageIndex < 3) {
+    highestStageIndex = 3;
+  }
+
+  // If delivery verification is complete, highest stage is VERIFIED = stage 4 (0-indexed: stage 5 of 5)
+  if (isCompletedOrVerified) {
+    highestStageIndex = 4;
+  }
+
+  const labels: Record<string, string> = {
+    ISSUED: "ISSUED",
+    PROCESSING: "PROCESSING",
+    READY_FOR_DISPATCH: "READY",
+    DISPATCHED: "DISPATCHED",
+    VERIFIED: "VERIFIED"
+  };
+
+  return ORDER_LIFECYCLE_STEPS.map((step, idx) => {
+    const isCompleted = highestStageIndex >= idx;
+    // Current active state:
+    // If verified: stage 4 (VERIFIED) is active
+    // If not verified: highest completed stage is active (e.g. DISPATCHED)
+    const isCurrent = isCompletedOrVerified ? idx === 4 : idx === highestStageIndex;
+    return {
+      step,
+      label: labels[step] || step,
+      isCompleted,
+      isCurrent
+    };
+  });
+}
+
+/**
+ * Convenience helper accepting an order directly.
+ * Evaluates both order.status and persisted delivery verification state.
+ */
+export function getDeliveryProgress(order?: {
+  status: OrderStatus | string;
+  deliveryVerifiedAt?: string | null;
+  verification?: any;
+  verificationStatus?: string | null;
+} | null): OrderProgressStepInfo[] {
+  if (!order) {
+    return getOrderProgressSteps("ISSUED", false);
+  }
+  const verified = isOrderDeliveryVerified(order);
+  return getOrderProgressSteps(order.status, verified);
+}

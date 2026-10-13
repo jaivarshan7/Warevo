@@ -5,8 +5,11 @@ import { AppShell } from "@/components/layout/AppShell";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { AuthCallbackPage } from "@/pages/auth/AuthCallbackPage";
+import { UpdatePasswordPage } from "@/pages/auth/UpdatePasswordPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { OrdersPage } from "@/pages/operations/OrdersPage";
+import { OrderCreatePage } from "@/pages/operations/OrderCreatePage";
+import { OrderEditPage } from "@/pages/operations/OrderEditPage";
 import { InvoiceImportPage } from "@/pages/operations/InvoiceImportPage";
 import { OrderDetailPage } from "@/pages/operations/OrderDetailPage";
 import { OrderTrackPage } from "@/pages/operations/OrderTrackPage";
@@ -30,6 +33,7 @@ export const App: React.FC = () => {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          <Route path="/auth/update-password" element={<UpdatePasswordPage />} />
 
           <Route path="/" element={<AppShell />}>
             <Route index element={<Navigate to="/dashboard" replace />} />
@@ -42,6 +46,14 @@ export const App: React.FC = () => {
               element={
                 <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF", "CLIENT", "CLIENT_ACCOUNTANT", "ACCOUNTS_TEAM", "ACCOUNTANT"]}>
                   <OrdersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/new"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]}>
+                  <OrderCreatePage />
                 </ProtectedRoute>
               }
             />
@@ -67,6 +79,14 @@ export const App: React.FC = () => {
               element={
                 <ProtectedRoute>
                   <OrderDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="operations/orders/:id/edit"
+              element={
+                <ProtectedRoute allowedRoles={["PLATFORM_ADMIN", "WAREHOUSE_OWNER", "WAREHOUSE_MODERATOR", "WAREHOUSE_STAFF"]}>
+                  <OrderEditPage />
                 </ProtectedRoute>
               }
             />

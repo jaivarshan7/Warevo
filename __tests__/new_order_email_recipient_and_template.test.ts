@@ -20,14 +20,16 @@ function extractTemplateFunctions() {
   const transpiledText = ts.transpileModule(textCode, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
 
   // Wrap into executable functions
-  const buildHtml = new Function("params", `
-    const Deno = { env: { get: () => undefined } };
+  const buildHtml = new Function("params", "customEnv", `
+    const envVars = { APP_URL: "https://warevo.online", ...(customEnv || {}) };
+    const Deno = { env: { get: (k) => envVars[k] } };
     ${transpiledHtml}
     return buildEmailHtml(params);
   `);
 
-  const buildText = new Function("params", `
-    const Deno = { env: { get: () => undefined } };
+  const buildText = new Function("params", "customEnv", `
+    const envVars = { APP_URL: "https://warevo.online", ...(customEnv || {}) };
+    const Deno = { env: { get: (k) => envVars[k] } };
     ${transpiledText}
     return buildEmailText(params);
   `);
@@ -302,7 +304,7 @@ describe("NEW_ORDER Email Recipient Isolation, Template Normalization, and Brand
   });
 
   describe("PART 6 — PORTAL LINK & SENDER INTEGRITY", () => {
-    it("Portal link points to https://warevo-three.vercel.app/orders/<orderId>", () => {
+    it("Portal link points to configured APP_URL/orders/<orderId>", () => {
       const payload = {
         recipientName: "Test Partner",
         title: "New Order",
@@ -313,13 +315,30 @@ describe("NEW_ORDER Email Recipient Isolation, Template Normalization, and Brand
         metadata: { orderNumber: "ORD-123" },
       };
 
-      const html = buildHtml(payload);
-      const text = buildText(payload);
+      const html = buildHtml(payload, { APP_URL: "https://warevo.online" });
+      const text = buildText(payload, { APP_URL: "https://warevo.online" });
 
-      expect(html).toContain('href="https://warevo-three.vercel.app/orders/ord_abc123"');
-      expect(text).toContain("View in Warevo Portal: https://warevo-three.vercel.app/orders/ord_abc123");
+      expect(html).toContain('href="https://warevo.online/orders/ord_abc123"');
+      expect(text).toContain("View in Warevo Portal: https://warevo.online/orders/ord_abc123");
       expect(html).not.toContain("warevo.in");
       expect(text).not.toContain("warevo.in");
+      expect(html).not.toContain("warevo-three.vercel.app");
+      expect(text).not.toContain("warevo-three.vercel.app");
+    });
+
+    it("Throws explicit configuration error when APP_URL is missing", () => {
+      const payload = {
+        recipientName: "Test Partner",
+        title: "New Order",
+        message: "Order created",
+        eventType: "NEW_ORDER",
+        orderId: "ord_abc123",
+        actionUrl: "/orders/ord_abc123",
+        metadata: { orderNumber: "ORD-123" },
+      };
+
+      expect(() => buildHtml(payload, { APP_URL: "" })).toThrow(/APP_URL must be configured/);
+      expect(() => buildText(payload, { APP_URL: "" })).toThrow(/APP_URL must be configured/);
     });
 
     it("Edge function verified sender is Warevo <notifications@warevo.online>", () => {

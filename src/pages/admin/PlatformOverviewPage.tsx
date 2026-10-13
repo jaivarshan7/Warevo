@@ -14,6 +14,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { formatDateTime } from "@/lib/dateUtils";
 
 export const PlatformOverviewPage: React.FC = () => {
   const { role, user } = useAuth();
@@ -237,7 +238,7 @@ export const PlatformOverviewPage: React.FC = () => {
                   <td className="py-3 px-4 text-slate-300">{log.user?.name || "System"}</td>
                   <td className="py-3 px-4 font-mono text-[10px] text-slate-400">{log.userRole}</td>
                   <td className="py-3 px-4 text-right font-mono text-slate-400 text-[11px]">
-                    {new Date(log.createdAt).toLocaleString()}
+                    {formatDateTime(log.createdAt)}
                   </td>
                 </tr>
               ))}

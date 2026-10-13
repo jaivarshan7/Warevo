@@ -29,6 +29,7 @@ import {
   AlertTriangle
 } from "lucide-react";
 import { canRecordPayment } from "@/lib/permissions";
+import { formatDate } from "@/lib/dateUtils";
 
 export const AccountingPage: React.FC = () => {
   const { tenant, user, role } = useAuth();
@@ -246,9 +247,13 @@ export const AccountingPage: React.FC = () => {
               <p className="text-[11px] text-slate-500 mt-2">{invoices.length} invoices generated</p>
             </Card>
 
-            <Card className="border-emerald-900/40 bg-gradient-to-br from-emerald-950/40 to-slate-900">
+            <Card
+              className="border-emerald-900/40 bg-gradient-to-br from-emerald-950/40 to-slate-900"
+              aria-label="Total Amount Paid"
+              title="Total recorded and approved payments against invoices"
+            >
               <p className="text-xs font-semibold uppercase tracking-wider text-emerald-300">
-                Total Collected
+                Total Amount Paid
               </p>
               <p className="text-3xl font-bold text-white mt-1 font-mono">
                 ₹{totalCollected.toLocaleString("en-IN")}
@@ -293,7 +298,7 @@ export const AccountingPage: React.FC = () => {
                         {inv.client?.companyName}
                       </td>
                       <td className="py-3 px-3 text-slate-400 text-xs">
-                        {new Date(inv.createdAt).toLocaleDateString()}
+                        {formatDate(inv.createdAt)}
                       </td>
                       <td className="py-3 px-3 font-mono font-semibold text-white text-right">
                         ₹{Number(inv.total).toLocaleString("en-IN")}
@@ -343,7 +348,7 @@ export const AccountingPage: React.FC = () => {
                         {inv.invoiceNumber}
                       </td>
                       <td className="py-3.5 px-4 text-xs text-slate-400">
-                        {new Date(inv.createdAt).toLocaleDateString()}
+                        {formatDate(inv.createdAt)}
                       </td>
                       <td className="py-3.5 px-4 text-slate-200 font-medium">
                         {inv.client?.companyName}
@@ -423,7 +428,7 @@ export const AccountingPage: React.FC = () => {
                   {allPayments.map((p) => (
                     <tr key={p.id} className="hover:bg-slate-800/40 transition-colors">
                       <td className="py-3.5 px-4 text-xs text-slate-400">
-                        {new Date(p.createdAt).toLocaleDateString()}
+                        {formatDate(p.createdAt)}
                       </td>
                       <td className="py-3.5 px-4 font-mono font-semibold text-white">
                         {p.invoiceNumber}
