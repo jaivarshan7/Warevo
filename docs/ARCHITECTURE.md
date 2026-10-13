@@ -1,68 +1,148 @@
-# Multi-Tenant WMS Architecture
+# Warevo System Architecture
 
-This is the short architecture reference. See [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md) for the complete route, schema, API, setup, deployment, and risk inventory.
+This document outlines the system architecture, component relationships, data flow boundaries, and operational layers of **Warevo — Multi-Tenant Warehouse Management System (WMS)**.
 
-## Runtime Shape
+---
 
-The system is a Next.js 15 App Router application. Pages and server actions run against Prisma/PostgreSQL. Supabase supplies Auth and Storage. React components and hooks provide client-side interaction where needed. There is no middleware file; pages and service functions perform authentication and authorization checks directly.
+## 1. High-Level Architectural Diagram
 
-```text
-Browser
-	-> Next.js App Router pages and route handlers
-		-> lib/auth.ts, lib/rbac.ts, lib/services.ts
-			-> Prisma -> PostgreSQL
-			-> Supabase Auth / Storage
+```mermaid
+flowchart TD
+    subgraph ClientBrowser [Browser Client Tier - React 19 SPA]
+        UI[Tailwind CSS UI Components]
+        Router[React Router 7 Navigation]
+        AuthCtx[Auth Context & Role Normalizer]
+        ServiceLayer[Service Layer & State Store]
+    end
+
+    subgraph SecurityBoundary [Authentication & Edge Services]
+        SupabaseAuth[Supabase Auth - Identity Provider]
+        EdgeFuncs[Supabase Edge Functions - Deno Runtime]
+        Storage[Supabase Storage - Private Buckets]
+    end
+
+    subgraph DatabaseTier [PostgreSQL 15 Database Tier]
+        RLS[Row-Level Security Policies]
+        RPC[Atomic RPC Functions - Transaction Engine]
+        PublicSchema[(Public Schema - 35 Core Tables)]
+        AuditEngine[(AuditLog & OrderStatusHistory)]
+    end
+
+    UI --> Router
+    Router --> AuthCtx
+    AuthCtx --> ServiceLayer
+
+    ServiceLayer -- "1. Authenticate & Token Refresh" --> SupabaseAuth
+    ServiceLayer -- "2. File Upload (Invoices, Proofs, Evidence)" --> Storage
+    ServiceLayer -- "3. Employee Creation & Email Dispatch" --> EdgeFuncs
+    ServiceLayer -- "4. Atomic RPC Invocations & PostgREST Queries" --> RLS
+
+    RLS --> RPC
+    RPC --> PublicSchema
+    RPC --> AuditEngine
+    EdgeFuncs -- "Service Role" --> PublicSchema
 ```
 
-## Tenant Model
+---
 
-`Tenant` represents an independent warehouse company. Tenant-owned operational records carry `tenantId`, and non-platform users must match the resource tenant. `PLATFORM_ADMIN` is the cross-tenant exception.
+## 2. Core Architectural Components
 
-Physical warehouse support is modeled as:
+### 2.1 Single Page Application (SPA) Tier
+- **Framework**: React 19 with Vite 6.4 bundler.
+- **Client Routing**: React Router 7 (`react-router-dom`) with declarative protected route guards (`<ProtectedRoute allowedRoles={[...]} />`).
+- **Styling System**: Tailwind CSS 3.4 with custom palette (slate-950 dark theme), Lucide React iconography, and Recharts operational data visualizations.
+- **Client Document Processing**: Client-side PDF rendering via `pdfjs-dist` worker and image compression via `browser-image-compression` to handle mobile delivery proof uploads efficiently.
 
-`Tenant -> Warehouse -> WarehouseLocation -> Inventory -> Product`
+### 2.2 Identity & Access Tier
+- **Supabase Auth**: Issues and validates JWT session tokens.
+- **Profile Resolution**: The frontend maps `auth.uid()` against `public."User"."supabaseUserId"` to establish tenant ownership, role definitions, and business profile.
+- **Status Gate**: Accounts in `INACTIVE` or `SUSPENDED` status are terminated at the authentication layer before accessing application routes.
 
-Business relationships continue through:
+### 2.3 PostgreSQL Engine & Transaction Tier
+Rather than delegating multi-table transactional guarantees to client JavaScript, all high-stakes warehouse actions execute directly inside PostgreSQL:
+- **Atomic Operations**: Order status transitions, stock movements, and delivery verification submissions are handled by PostgreSQL stored procedures (`SECURITY DEFINER`).
+- **Data Invariants**: Enforces business rules (e.g., negative stock protection, dispatch immutability, payment-before-verification prevention) at the database layer.
+- **Audit Logging**: Every state change triggers synchronous records in `OrderStatusHistory` and `AuditLog`.
 
-`Tenant -> Client -> Order -> OrderItem -> Invoice -> Payment`
+### 2.4 Serverless Edge Function Tier
+Edge Functions run on Deno within Supabase:
+1. `create-employee`: Securely provisions new warehouse and client staff by invoking Supabase Admin API and mapping local user records without exposing service role keys to browsers.
+2. `send-email`: Formats and delivers transactional email notifications (order dispatch, verification confirmation, payment receipt) via Resend.
 
-## Authentication and Authorization
+---
 
-`getCurrentUser()` first maps the Supabase Auth identity to the local `User`, then supports explicit local/demo headers, cookies, and `DEMO_USER_EMAIL`. `requireUser()` redirects unauthenticated users to `/login` and can restrict allowed roles.
+## 3. Data Flow Pathways
 
-Client access uses tenant-aware mobile OTP endpoints:
+### 3.1 Order Lifecycle & Dispatch Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Staff as Warehouse Staff
+    participant SPA as Warevo SPA
+    participant DB as PostgreSQL (RPC)
+    participant Edge as Edge Function (send-email)
+    actor Client as Client Receiver
 
-- `POST /api/client-otp/request`
-- `POST /api/client-otp/verify`
+    Staff->>SPA: Create Order (Items, Client, Warehouse)
+    SPA->>DB: rpc_create_order_with_invoice()
+    DB-->>SPA: Order created with status = ISSUED
+    Staff->>SPA: Mark Order Packed & Dispatched
+    SPA->>DB: rpc_transition_order(orderId, 'DISPATCHED')
+    DB-->>SPA: Status updated & Audit log recorded
+    SPA->>Edge: Trigger new order notification
+    Edge-->>Client: Email sent with tracking details & verification link
+```
 
-The request path checks that the tenant and client are active and asks Supabase not to create unknown users. The verification path links the verified Supabase user to the local client user.
+### 3.2 Client Delivery Verification & Invoicing Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Receiver as Client Receiver
+    participant SPA as Warevo SPA
+    participant Storage as Supabase Storage
+    participant DB as PostgreSQL (RPC)
+    actor Accounts as Warehouse Accountant
 
-Authorization has three practical layers:
+    Receiver->>SPA: Access Order Verification Portal
+    Receiver->>Storage: Upload Delivery Evidence Photo
+    Storage-->>SPA: Evidence Storage URL
+    Receiver->>SPA: Submit Checklist (All items verified)
+    SPA->>DB: rpc_submit_verification(status='VERIFIED', evidence)
+    DB-->>SPA: Order verificationStatus = VERIFIED
+    Accounts->>SPA: Review Order in Accounting Page
+    SPA->>DB: rpc_record_payment_secure(invoiceId, amount, proof)
+    DB-->>SPA: Payment logged & Invoice marked PAID
+```
 
-1. Session resolution through `lib/auth.ts`.
-2. Role permissions and dashboard-route checks through `lib/rbac.ts`.
-3. Tenant ownership checks in services and resource operations.
+---
 
-Navigation restrictions are not a security boundary. Server-side checks must remain on every protected mutation.
+## 4. Multi-Tenant Data Isolation Architecture
 
-## Order and Invoice Invariants
+```text
+[ Tenant ] (e.g., "Apex Logistics" / "Pure Aura")
+   │
+   ├── [ Warehouse ] (Physical facility)
+   │     └── [ WarehouseLocation ] (Aisles, Racks, Bins)
+   │           └── [ Inventory ] ── [ Product ]
+   │                 └── [ InventoryMovement ] (Immutable ledger)
+   │
+   ├── [ User ] (Warehouse Owner, Staff, Accountant)
+   │
+   └── [ Client ] (Customer Company)
+         ├── [ ClientEmployee ] (MD, General Manager, Receiver, Accountant)
+         │     └── [ RoleDefinition ] ── [ RolePermission ]
+         │
+         └── [ Order ]
+               ├── [ OrderItem ]
+               ├── [ OrderStatusHistory ]
+               ├── [ OrderComment ]
+               ├── [ DeliveryVerification ] ── [ DeliveryVerificationItem ]
+               └── [ Invoice ]
+                     ├── [ InvoiceItem ]
+                     └── [ Payment ] (Transaction receipt & proof)
+```
 
-Order transitions are centralized in `lib/order-workflow.ts`. `assertValidTransition()` prevents arbitrary jumps. `transitionOrder()` records `OrderStatusHistory` and `AuditLog` entries in the same transaction.
-
-Client verification updates the order verification state and creates a `VerificationResponse`. Final invoice generation is blocked unless:
-
-`order.verificationStatus === VERIFIED`
-
-Draft invoices can be created earlier; final invoices cannot be generated from pending, partially verified, or rejected orders.
-
-## Inventory Invariant
-
-Inventory changes should use `receiveOrAdjustStock()`. The service checks tenant ownership, rejects non-positive quantities and negative available stock, updates inventory, creates `InventoryMovement`, and writes an audit record transactionally.
-
-## Storage Boundary
-
-Documents store Supabase Storage URLs and metadata in `Document`. The current helper names the buckets `invoices`, `eway-bills`, `product-images`, `user-avatars`, and `warehouse-documents`. The helper can create public buckets, so production policies must be reviewed carefully and must prevent cross-tenant access.
-
-## Deployment Boundary
-
-Vercel runs `npm run build`, which generates Prisma Client and builds Next.js. `vercel.json` points to `.next` and does not rewrite every request to `/index`. Runtime environment variables, especially `DATABASE_URL` and Supabase credentials, must be configured in the Vercel environment independently of local `.env`.
+### Isolation Guarantees:
+1. **Foreign Key Binding**: Operational tables must link to a valid `tenantId`.
+2. **Row-Level Security**: All `SELECT`, `UPDATE`, and `DELETE` queries are filtered through `can_access_tenant("tenantId")`.
+3. **Cross-Tenant Prevention**: If Tenant A sends a request containing Tenant B's order ID, PostgreSQL returns empty rows or raises an access error.
