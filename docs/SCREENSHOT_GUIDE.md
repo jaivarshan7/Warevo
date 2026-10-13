@@ -21,20 +21,17 @@ Warevo is a production system used by active commercial warehouse operations and
 
 | # | Screen / Feature | Target File | Status | Verification & Sanitization Notes |
 |---|------------------|-------------|:------:|-----------------------------------|
-| 1 | **Login Page** | `docs/screenshots/login.png` | **Captured** | Live capture via Vite SPA at `http://localhost:3000/login`. Dark theme, Warevo branding, email/password and Google OAuth entry points. Zero user records exposed. |
-| 2 | **Main Dashboard** | `docs/screenshots/dashboard.png` | *Pending Demo Seed* | Metric cards (Pending Orders, Dispatched, Stock Value, Low Stock Alerts), Quick actions, Order activity feed. Requires synthetic tenant session. |
-| 3 | **Inventory Management** | `docs/screenshots/inventory.png` | *Pending Demo Seed* | Inventory table with SKU, category, stock level badges, location bins, reorder thresholds, and search filters. |
-| 4 | **Product Details** | `docs/screenshots/product-details.png` | *Pending Demo Seed* | Product specification modal/drawer, stock level breakdown across locations, and stock adjustment history. |
-| 5 | **Order Management** | `docs/screenshots/order-management.png` | *Pending Demo Seed* | Order list with lifecycle status badges (`ISSUED`, `PROCESSING`, `DISPATCHED`, `DELIVERED`, `CANCELLED`), client tags, and date filters. |
-| 6 | **Order Detail & Lifecycle** | `docs/screenshots/order-details.png` | *Pending Demo Seed* | Complete order timeline, line items, order comments feed, dispatch metadata, and linked invoice status. |
-| 7 | **Client Delivery Verification** | `docs/screenshots/order-verification.png` | *Pending Demo Seed* | Client receiving checklist, discrepancy item flags, condition verification, receiver comments, and photo attachment slot. |
-| 8 | **Invoice Management** | `docs/screenshots/invoices.png` | *Pending Demo Seed* | Invoices overview showing status (`DRAFT`, `FINAL`, `PAID`, `OVERDUE`), invoice number sequence (`INV-2026-XXXXXX`), and payment status badges. |
-| 9 | **Invoice Details** | `docs/screenshots/invoice-details.png` | *Pending Demo Seed* | Printable invoice view with line items, tax breakdown, client billing details, and payment recording modal. |
-| 10 | **Payment Proof Workflow** | `docs/screenshots/payment-proofs.png` | *Pending Demo Seed* | Secure payment modal with transaction reference, payment method selector, and synthetic document upload trigger. |
-| 11 | **Employee Management** | `docs/screenshots/employee-management.png` | *Pending Demo Seed* | Warehouse staff and client employee role management table (`MD`, `GENERAL_MANAGER`, `MANAGER`, `RECEIVER`, `ACCOUNTANT`). |
-| 12 | **Client Company Management** | `docs/screenshots/client-management.png` | *Pending Demo Seed* | Client directory, corporate group affiliations, credit settings, contact personnel, and assigned warehouse linkages. |
-| 13 | **Notification Center** | `docs/screenshots/notifications.png` | *Pending Demo Seed* | Notification list showing order dispatch alerts, verification approvals, payment receipts, and read/unread toggles. |
-| 14 | **Platform Admin Overview** | `docs/screenshots/admin-dashboard.png` | *Pending Demo Seed* | Cross-tenant metrics, tenant directory, warehouse provisioning, and global system health indicators. |
+| 1 | **Login Page** | `docs/screenshots/login.png` | **Captured** | Live capture via Vite SPA at `http://localhost:3000/login`. Dark theme, Warevo branding, email/password and Google OAuth entry points. |
+| 2 | **Main Dashboard** | `docs/screenshots/dashboard.png` | **Captured** | Real-time operations overview with order metrics, gross volume, and active client counts. |
+| 3 | **Order Management** | `docs/screenshots/order-management.png` | **Captured** | Controlled lifecycle status badges (`DISPATCHED`), client tags, and verification state indicators. |
+| 4 | **Order Detail & Timeline** | `docs/screenshots/order-details.png` | **Captured** | Order line items, GST rate calculations, payment status, and chronological audit history timeline. |
+| 5 | **Invoices & Accounting** | `docs/screenshots/invoices.png` | **Captured** | Invoicing overview with gross billing, outstanding balances, and payment statuses (`FINAL`, `PAYMENT PENDING`). |
+| 6 | **Platform Admin Console** | `docs/screenshots/admin-dashboard.png` | **Captured** | Multi-tenant system console with system warehouses, organizations, and RBAC management. |
+| 7 | **Inventory Management** | `docs/screenshots/inventory.png` | **Captured** | Warehouse inventory view with stock levels and movement audit logs. |
+| 8 | **Live Delivery Tracker** | `docs/screenshots/order-verification.png` | **Captured** | Real-time dispatch monitor and warehouse verification override interface. |
+| 9 | **Employee Management** | `docs/screenshots/employee-management.png` | **Captured** | Tenant staff and employee role administration portal. |
+| 10 | **Client Management** | `docs/screenshots/client-management.png` | **Captured** | Client company directory and contact records. |
+| 11 | **Notification Center** | `docs/screenshots/notifications.png` | **Captured** | Notification inbox with transactional dispatch and receiving alerts. |
 
 ---
 

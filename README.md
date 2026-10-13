@@ -103,29 +103,46 @@ Traditional warehouse logistics suffer from:
 
 ## 5. Application Screenshot Gallery
 
-Warevo features a responsive dark-themed user interface (`slate-950`) tailored for desktop operations, warehouse floor tablets, and mobile delivery workflows.
+Warevo features a responsive dark-themed user interface (`slate-950`) tailored for desktop operations, warehouse floor tablets, and mobile delivery workflows. All screenshots below are genuinely captured from the live application running against the development environment.
 
 ### 5.1 Authentication Portal
-![Warevo Login Screen](docs/screenshots/login.png)
+![Warevo Authentication Screen](docs/screenshots/login.png)
 *Live capture of the Warevo authentication portal featuring tenant-aware email/password login, Google OAuth integration, and password recovery workflows.*
 
 ---
 
-### 5.2 Visual Documentation & Capture Standards
-To protect active client confidentiality, commercial trade names, phone numbers, and financial slips are strictly excluded from public repository assets.
+### 5.2 Real-Time Warehouse Dashboard
+![Warevo Operational Dashboard](docs/screenshots/dashboard.png)
+*Central operations dashboard displaying active tenant metrics, live order volume, gross billing calculations, and recent order status.*
 
-| Screen | Target Asset Path | Description |
-|:-------|:------------------|:------------|
-| **Main Operational Dashboard** | `docs/screenshots/dashboard.png` | Real-time metric cards, recent order feed, and inventory status |
-| **Inventory Management** | `docs/screenshots/inventory.png` | SKU registers, stock levels, warehouse bin locations, and reorder tags |
-| **Order Management** | `docs/screenshots/order-management.png` | Comprehensive order ledger with lifecycle status filters |
-| **Order Details & Comments** | `docs/screenshots/order-details.png` | Line items, dispatch metadata, and synchronized order comment thread |
-| **Client Delivery Verification** | `docs/screenshots/order-verification.png` | Tamper checklist, condition inspection, and photo attachment slot |
-| **Invoicing & Accounting** | `docs/screenshots/invoices.png` | Billing ledger with payment status tracking and PDF invoice generation |
-| **Employee & Role Directory** | `docs/screenshots/employee-management.png` | Warehouse and client employee role management interface |
+---
 
-> [!NOTE]
-> For instructions on capturing remaining screens using an isolated synthetic demo sandbox, refer to [docs/SCREENSHOT_GUIDE.md](docs/SCREENSHOT_GUIDE.md).
+### 5.3 Orders & Dispatch Ledger
+![Warevo Orders and Dispatch Management](docs/screenshots/order-management.png)
+*Orders ledger displaying controlled lifecycle statuses (`ISSUED`, `PROCESSING`, `DISPATCHED`), client linkages, delivery verification badges, and rapid action triggers.*
+
+---
+
+### 5.4 Order Detail & Timeline Tracking
+![Warevo Order Lifecycle and Details](docs/screenshots/order-details.png)
+*Order inspection drawer featuring atomic state progression steps, product line items, GST rate calculations, and synchronous audit history events.*
+
+---
+
+### 5.5 Accounting & Invoice Management
+![Warevo Accounting and Invoices](docs/screenshots/invoices.png)
+*Accounts receivable ledger showing total invoiced volume, payment statuses (`UNPAID`, `PAYMENT PENDING`, `FINAL`), and payment recording entry points.*
+
+---
+
+### 5.6 Multi-Tenant Admin Console
+![Warevo Multi-Tenant System Admin](docs/screenshots/admin-dashboard.png)
+*Platform Admin console for managing multi-tenant warehouses, facility locations, corporate client entities, and system-wide RBAC role permissions.*
+
+---
+
+> [!TIP]
+> For additional screens and visual asset capture guidelines, refer to [docs/SCREENSHOT_GUIDE.md](docs/SCREENSHOT_GUIDE.md).
 
 ---
 
